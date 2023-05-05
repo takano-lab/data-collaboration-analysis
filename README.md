@@ -5,7 +5,7 @@
 
 1. 以下コマンドを実行
 ```
-git clone git@github.com:tomos7231/DataCollaborationAnalysis.git
+git clone git@github.com:takano-lab/dca_yanagi.git
 cd DataCollaborationAnalysis
 poetry shell
 poetry install
