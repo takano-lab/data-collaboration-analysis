@@ -28,7 +28,13 @@ neighbors_individual: 5 # 個別解析での協調フィルタリングの近傍
 
 3. 実験を実行
 ```
-poetry run python main.py exp001
+make run exp001
 ```
 
 以上でoutputフォルダに使用したtrain/testテストと実験結果が保存される。
+
+# コードフォーマット
+isort, black, autoflakeによる整形
+```
+make format
+```
