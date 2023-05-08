@@ -1,3 +1,4 @@
+from pathlib import Path
 from dataclasses import dataclass
 
 
@@ -12,6 +13,6 @@ class Config:
     dim_integrate: int  # 統合表現の次元数
     neighbors_centlize: int  # 集中解析での協調フィルタリングの近傍数
     neighbors_individual: int  # 個別解析での協調フィルタリングの近傍数
-    output_path: str  # 出力先のパス
-    input_path: str  # 入力先のパス
+    output_path: Path  # 出力先のパス
+    input_path: Path  # 入力先のパス
     seed: int = 10
