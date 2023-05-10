@@ -26,6 +26,7 @@ pyfm = "^0.2.4"
 logzero = "^1.7.0"
 isort = "^5.12.0"
 flake8 = "^6.0.0"
+autoflake = "^2.1.1"
 
 [tool.poetry.dev-dependencies]
 ipykernel = "^6.22.0"

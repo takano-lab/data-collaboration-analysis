@@ -53,6 +53,22 @@ six = "*"
 test = ["astroid", "pytest"]
 
 [[package]]
+name = "autoflake"
+version = "2.1.1"
+description = "Removes unused imports and unused variables"
+category = "main"
+optional = false
+python-versions = ">=3.7"
+files = [
+    {file = "autoflake-2.1.1-py3-none-any.whl", hash = "sha256:94e330a2bcf5ac01384fb2bf98bea60c6383eaa59ea62be486e376622deba985"},
+    {file = "autoflake-2.1.1.tar.gz", hash = "sha256:75524b48d42d6537041d91f17573b8a98cb645642f9f05c7fcc68de10b1cade3"},
+]
+
+[package.dependencies]
+pyflakes = ">=3.0.0"
+tomli = {version = ">=2.0.1", markers = "python_version < \"3.11\""}
+
+[[package]]
 name = "backcall"
 version = "0.2.0"
 description = "Specifications for callback functions passed in to an API"
@@ -2601,4 +2617,4 @@ testing = ["big-O", "flake8 (<5)", "jaraco.functools", "jaraco.itertools", "more
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.8.1,<4.0"
-content-hash = "ae811cd20dc255a8f2e4832b45c729edc144a1b7b4d37d8c206d692869f17845"
+content-hash = "1d54c8fea65562a3c797136fcc13c9577bb8a9e4967e7e9c80e24725d13de25c"
