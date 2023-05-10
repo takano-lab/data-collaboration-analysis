@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
 import category_encoders as ce
+import pandas as pd
+from sklearn.model_selection import train_test_split
 
 
 def load_data(dataset: str, seed: int, input_path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -34,9 +33,7 @@ def load_data(dataset: str, seed: int, input_path: Path) -> tuple[pd.DataFrame, 
         df = pd.read_csv(input_path / "osushi.csv")
 
         # trainとtestに分割
-        train_df, test_df = train_test_split(
-            df, test_size=0.2, random_state=seed, stratify=df["uid"]
-        )
+        train_df, test_df = train_test_split(df, test_size=0.2, random_state=seed, stratify=df["uid"])
         # uidでソート
         train_df = train_df.sort_values(by="uid").reset_index(drop=True)
         test_df = test_df.sort_values(by="uid").reset_index(drop=True)
@@ -67,7 +64,9 @@ def load_data(dataset: str, seed: int, input_path: Path) -> tuple[pd.DataFrame, 
     return train_df, test_df
 
 
-def save_data(dataset: str, num_institution: int, num_institution_user: int, train: pd.DataFrame, test: pd.DataFrame, output_path) -> None:
+def save_data(
+    dataset: str, num_institution: int, num_institution_user: int, train: pd.DataFrame, test: pd.DataFrame, output_path
+) -> None:
     # configのnum_institutionとnum_institution_userの積を計算
     # (sushiはuidが0始まりなことに注意)
     if dataset == "movielens":
