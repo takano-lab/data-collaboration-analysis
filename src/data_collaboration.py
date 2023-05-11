@@ -4,18 +4,18 @@ from typing import TypeVar
 
 import numpy as np
 import pandas as pd
-from sklearn.decomposition import TruncatedSVD
 from tqdm import tqdm
 
 from config.config import Config
+from src.train_val import svd
 
 logger = TypeVar("logger")
 
 
 class DataCollaborationAnalysis:
-    def __init__(self, config: Config, logger: logger, train_df: pd.DataFrame, test_df: pd.DataFrame) -> None:
+    def __init__(self, train_df: pd.DataFrame, test_df: pd.DataFrame, config: Config, logger: logger) -> None:
         self.config: Config = config
-        self.logger: logger = logger
+        self.logger = logger
 
         # 本当はできるだけattributeを持たせない方が良い
         # 元データ
@@ -129,13 +129,13 @@ class DataCollaborationAnalysis:
         """
         中間表現を生成する関数
         """
-        for institute in tqdm(range(self.config.num_institution)):
+        for X_train, X_test in zip(tqdm(self.Xs_train), self.Xs_test):
             # 各機関の訓練データ, テストデータおよびアンカーデータを取得し、svdを適用
-            X_train_svd, X_test_svd, anchor_svd = DataCollaborationAnalysis.svd(
-                self.Xs_train[institute],
-                self.Xs_test[institute],
-                self.anchor,
-                self.config.dim_intermediate,
+            X_train_svd, X_test_svd, anchor_svd = svd(
+                X_train=X_train,
+                X_test=X_test,
+                n_components=self.config.dim_intermediate,
+                anchor=self.anchor,
             )
             # svdを適用したデータをリストに格納
             self.Xs_train_inter.append(X_train_svd)
@@ -161,16 +161,18 @@ class DataCollaborationAnalysis:
 
         # 各機関の統合関数を求め、統合表現を生成
         Xs_train_integrate, Xs_test_integrate = [], []
-        for institute in tqdm(range(self.config.num_institution)):
+        for X_train_inter, X_test_inter, anchor_inter in zip(
+            tqdm(self.Xs_train_inter), self.Xs_test_inter, self.anchors_inter
+        ):
             # 各機関のアンカーデータの中間表現を転置して、擬似逆行列を求める
-            pseudo_inverse = np.linalg.pinv(self.anchors_inter[institute].T)  # \hat{X}^{anc}+
+            pseudo_inverse = np.linalg.pinv(anchor_inter.T)  # \hat{X}^{anc}+
 
             # 各機関の統合関数を求める
             integrate_function = np.dot(Z, pseudo_inverse)  # G^{(i)}
 
             # 統合関数で各機関の中間表現を統合表現に変換
-            X_train_integrate = np.dot(integrate_function, self.Xs_train_inter[institute].T)
-            X_test_integrate = np.dot(integrate_function, self.Xs_test_inter[institute].T)
+            X_train_integrate = np.dot(integrate_function, X_train_inter.T)
+            X_test_integrate = np.dot(integrate_function, X_test_inter.T)
 
             # 統合表現をリストに格納
             Xs_train_integrate.append(X_train_integrate.T)
@@ -191,17 +193,3 @@ class DataCollaborationAnalysis:
         self.logger.info(f"統合表現（テストデータ）の数と次元数: {self.X_test_integ.shape}")
         self.logger.info(f"統合表現（訓練データの正解）の数と次元数: {self.y_train_integ.shape}")
         self.logger.info(f"統合表現（テストデータの正解）の数と次元数: {self.y_test_integ.shape}")
-
-    @staticmethod
-    def svd(
-        X_train: np.ndarray, X_test: np.ndarray, anchor: np.ndarray, n_components: int
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        X_trainを基準にsvdを適用し、X_train, X_test, anchorを次元削減する関数
-        """
-        svd = TruncatedSVD(n_components=n_components)
-        svd.fit(X_train)
-        X_train_svd = svd.transform(X_train)
-        X_test_svd = svd.transform(X_test)
-        anchor_svd = svd.transform(anchor)
-        return X_train_svd, X_test_svd, anchor_svd
