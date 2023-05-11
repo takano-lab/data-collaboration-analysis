@@ -1,34 +1,37 @@
-import optuna.integration.lightgbm as tlgb
+from __future__ import annotations
+
+from typing import Optional
+
 import lightgbm as lgb
 import numpy as np
-from sklearn.model_selection import StratifiedKFold
+import optuna.integration.lightgbm as tlgb
+import pandas as pd
 from sklearn.metrics import mean_squared_error
-from surprise import Dataset, Reader, accuracy
-from surprise import (
-    NormalPredictor,
-    BaselineOnly,
-    KNNBasic,
-    KNNWithMeans,
-    KNNWithZScore,
-    KNNBaseline,
-    SVD,
-    SVDpp,
-    NMF,
-    SlopeOne,
-    CoClustering,
-)
+from sklearn.model_selection import StratifiedKFold
+from surprise import Dataset, KNNBasic, Reader, accuracy
 
 # from pyfm import pylibfm
 # from scipy.sparse import csr_matrix
 
 
 def run_lgbm(
-    config, X_train, y_train, X_test, y_test, categorical_cols=[], use_optuna=False
-):
-    y_preds = []
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    categorical_cols: Optional[list[str]] = None,
+    use_optuna: bool = False,
+    seed: int = 0,
+) -> float:
+    """
+    LightGBMの予測を評価する関数
+    """
+    if categorical_cols is None:
+        categorical_cols = []
+
     models = []
     oof_train = np.zeros((len(X_train),))
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=config["seed"])
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
 
     params = {
         "objective": "regression",
@@ -36,10 +39,10 @@ def run_lgbm(
         "boosting": "gbdt",
         "learning_rate": 0.1,
         "verbosity": -1,
-        "random_state": config["seed"],
+        "random_state": seed,
     }
 
-    for fold_id, (train_index, valid_index) in enumerate(cv.split(X_train, y_train)):
+    for _, (train_index, valid_index) in enumerate(cv.split(X_train, y_train)):
         X_tr = X_train[train_index, :]
         X_val = X_train[valid_index, :]
         y_tr = y_train[train_index]
@@ -47,10 +50,7 @@ def run_lgbm(
 
         if use_optuna:
             lgb_train = tlgb.Dataset(X_tr, y_tr, categorical_feature=categorical_cols)
-
-            lgb_eval = tlgb.Dataset(
-                X_val, y_val, reference=lgb_train, categorical_feature=categorical_cols
-            )
+            lgb_eval = tlgb.Dataset(X_val, y_val, reference=lgb_train, categorical_feature=categorical_cols)
 
             model = tlgb.train(
                 params,
@@ -61,13 +61,9 @@ def run_lgbm(
                     lgb.log_evaluation(period=100),
                 ],
             )
-
         else:
             lgb_train = lgb.Dataset(X_tr, y_tr, categorical_feature=categorical_cols)
-
-            lgb_eval = lgb.Dataset(
-                X_val, y_val, reference=lgb_train, categorical_feature=categorical_cols
-            )
+            lgb_eval = lgb.Dataset(X_val, y_val, reference=lgb_train, categorical_feature=categorical_cols)
 
             model = lgb.train(
                 params,
@@ -78,11 +74,7 @@ def run_lgbm(
                     lgb.log_evaluation(period=100),
                 ],
             )
-
-        oof_train[valid_index] = model.predict(
-            X_val, num_iteration=model.best_iteration
-        )
-
+        oof_train[valid_index] = model.predict(X_val, num_iteration=model.best_iteration)
         models.append(model)
 
     # testデータでの性能を評価
@@ -92,16 +84,19 @@ def run_lgbm(
     return rmse
 
 
-def run_surprise(config, train, test, neightbors=10):
-    rating_columns = ["uid", "mid", "rating"]
-    if config["dataset"] == "movielens":
+def run_surprise(dataset: str, train_df: pd.DataFrame, test_df: pd.DataFrame, neightbors: int = 10) -> float:
+    """
+    推薦システムでの性能を評価する関数
+    """
+    rating_columns = ["uid", "mid", "rating"]  # レーティングのカラム名
+    if dataset == "movielens":
         reader = Reader(rating_scale=(1, 5))
-    elif config["dataset"] == "sushi":
+    elif dataset == "sushi":
         reader = Reader(rating_scale=(0, 4))
 
     # surpriseでデータを読み込む
-    train_surprise_data = Dataset.load_from_df(train[rating_columns], reader)
-    test_surprise_data = Dataset.load_from_df(test[rating_columns], reader)
+    train_surprise_data = Dataset.load_from_df(train_df[rating_columns], reader)
+    test_surprise_data = Dataset.load_from_df(test_df[rating_columns], reader)
 
     # データセットをビルド
     trainset = train_surprise_data.build_full_trainset()
