@@ -1090,21 +1090,6 @@ wheel = "*"
 dask = ["dask[array] (>=2.0.0)", "dask[dataframe] (>=2.0.0)", "dask[distributed] (>=2.0.0)", "pandas"]
 
 [[package]]
-name = "logzero"
-version = "1.7.0"
-description = "Robust and effective logging for Python 2 and 3"
-category = "main"
-optional = false
-python-versions = "*"
-files = [
-    {file = "logzero-1.7.0-py2.py3-none-any.whl", hash = "sha256:23eb1f717a2736f9ab91ca0d43160fd2c996ad49ae6bad34652d47aba908769d"},
-    {file = "logzero-1.7.0.tar.gz", hash = "sha256:7f73ddd3ae393457236f081ffebd044a3aa2e423a47ae6ddb5179ab90d0ad082"},
-]
-
-[package.dependencies]
-colorama = {version = "*", markers = "sys_platform == \"win32\""}
-
-[[package]]
 name = "mako"
 version = "1.2.4"
 description = "A super-fast templating language that borrows the best ideas from the existing templating languages."
@@ -2617,4 +2602,4 @@ testing = ["big-O", "flake8 (<5)", "jaraco.functools", "jaraco.itertools", "more
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.8.1,<4.0"
-content-hash = "1d54c8fea65562a3c797136fcc13c9577bb8a9e4967e7e9c80e24725d13de25c"
+content-hash = "f04011736e8aa4e97397bb4fd7af8b89c4d0220ef2a09c1dac9bb543b3db1932"
