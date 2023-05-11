@@ -6,19 +6,21 @@ import category_encoders as ce
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
+from config.config import Config
 
-def load_data(dataset: str, seed: int, input_path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+
+def load_data(config: Config) -> tuple[pd.DataFrame, pd.DataFrame]:
     print("********************データの読み込み********************")
-    if dataset == "movielens":
+    if config.dataset == "movielens":
         # inputフォルダのmovielensデータを読み込み
         train = pd.read_csv(
-            input_path / "ua.base",
+            config.input_path / "ua.base",
             names=["uid", "mid", "rating", "timestamp"],
             sep="\t",
             dtype=int,
         )
         test = pd.read_csv(
-            input_path / "ua.test",
+            config.input_path / "ua.test",
             names=["uid", "mid", "rating", "timestamp"],
             sep="\t",
             dtype=int,
@@ -28,18 +30,25 @@ def load_data(dataset: str, seed: int, input_path: Path) -> tuple[pd.DataFrame, 
         train = train.drop(["timestamp"], axis=1)
         test = test.drop(["timestamp"], axis=1)
 
-    elif dataset == "sushi":
+    elif config.dataset == "sushi":
         # inputフォルダのsushiデータを読み込み
-        df = pd.read_csv(input_path / "osushi.csv")
+        df = pd.read_csv(config.input_path / "osushi.csv")
 
         # trainとtestに分割
-        train_df, test_df = train_test_split(df, test_size=0.2, random_state=seed, stratify=df["uid"])
+        train_df, test_df = train_test_split(df, test_size=0.2, random_state=config.seed, stratify=df["uid"])
         # uidでソート
         train_df = train_df.sort_values(by="uid").reset_index(drop=True)
         test_df = test_df.sort_values(by="uid").reset_index(drop=True)
 
     # data保存
-    # save_data(config, train, test)
+    save_data(
+        dataset=config.dataset,
+        num_institution=config.num_institution,
+        num_institution_user=config.num_institution_user,
+        output_path=config.output_path,
+        train_df=train_df,
+        test_df=test_df,
+    )
 
     # ratingの列を取り出し
     train_rating_ser = train_df["rating"]
@@ -65,7 +74,12 @@ def load_data(dataset: str, seed: int, input_path: Path) -> tuple[pd.DataFrame, 
 
 
 def save_data(
-    dataset: str, num_institution: int, num_institution_user: int, train: pd.DataFrame, test: pd.DataFrame, output_path
+    dataset: str,
+    num_institution: int,
+    num_institution_user: int,
+    output_path: Path,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
 ) -> None:
     # configのnum_institutionとnum_institution_userの積を計算
     # (sushiはuidが0始まりなことに注意)
@@ -75,8 +89,8 @@ def save_data(
         max_uid = num_institution * num_institution_user - 1
 
     # train, testそれぞれでuidがmax_uid以下のものだけを抽出
-    train_df = train[train["uid"] <= max_uid].reset_index(drop=True)
-    test_df = test[test["uid"] <= max_uid].reset_index(drop=True)
+    train_df = train_df[train_df["uid"] <= max_uid].reset_index(drop=True)
+    test_df = test_df[test_df["uid"] <= max_uid].reset_index(drop=True)
 
     # train, testをcsvに書き出し
     train_df.to_csv(output_path / "train.csv", index=False)
