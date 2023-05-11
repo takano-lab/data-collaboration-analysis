@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 from logging import INFO, FileHandler, getLogger
 
@@ -23,13 +25,13 @@ with open(cfg_path) as f:
 # ログの設定
 logger = getLogger(__name__)
 logger.setLevel(INFO)
-handler = FileHandler(filename=config["output_path"] / "result.log")
+handler = FileHandler(filename=config.output_path / "result.log")
 logger.addHandler(handler)
 
 
 def main():
     # datasetの読み込み
-    train_df, test_df = load_data(dataset=config.dataset, seed=config.seed, input_path=config.input_path)
+    train_df, test_df = load_data(config=config)
 
     # インスタンスの生成
     data_collaboration = DataCollaborationAnalysis(config=config, logger=logger, train_df=train_df, test_df=test_df)
@@ -41,16 +43,23 @@ def main():
     centralize_analysis(config, logger)
 
     # 個別解析
-    individual_analysis(config, train_x_list, train_y_list, test_x_list, test_y_list, logger)
+    individual_analysis(
+        config=config,
+        logger=logger,
+        Xs_train=data_collaboration.Xs_train,
+        ys_train=data_collaboration.ys_train,
+        Xs_test=data_collaboration.Xs_test,
+        ys_test=data_collaboration.ys_test,
+    )
 
     # 提案手法
     dca_analysis(
-        config,
-        integrate_train_x,
-        integrate_test_x,
-        integrate_train_y,
-        integrate_test_y,
-        logger,
+        X_train_integ=data_collaboration.X_train_integ,
+        X_test_integ=data_collaboration.X_test_integ,
+        y_train_integ=data_collaboration.y_train_integ,
+        y_test_integ=data_collaboration.y_test_integ,
+        logger=logger,
+        seed=config.seed,
     )
 
 
