@@ -21,7 +21,7 @@ def run_lgbm(
     y_test: np.ndarray,
     categorical_cols: Optional[list[str]] = None,
     use_optuna: bool = False,
-    seed: int = 0,
+    seed: int = 42,
 ) -> float:
     """
     LightGBMの予測を評価する関数
