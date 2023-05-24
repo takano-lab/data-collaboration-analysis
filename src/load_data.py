@@ -13,13 +13,13 @@ def load_data(config: Config) -> tuple[pd.DataFrame, pd.DataFrame]:
     print("********************データの読み込み********************")
     if config.dataset == "movielens":
         # inputフォルダのmovielensデータを読み込み
-        train = pd.read_csv(
+        train_df = pd.read_csv(
             config.input_path / "ua.base",
             names=["uid", "mid", "rating", "timestamp"],
             sep="\t",
             dtype=int,
         )
-        test = pd.read_csv(
+        test_df = pd.read_csv(
             config.input_path / "ua.test",
             names=["uid", "mid", "rating", "timestamp"],
             sep="\t",
@@ -27,8 +27,8 @@ def load_data(config: Config) -> tuple[pd.DataFrame, pd.DataFrame]:
         )
 
         # timestampを削除
-        train = train.drop(["timestamp"], axis=1)
-        test = test.drop(["timestamp"], axis=1)
+        train_df = train_df.drop(["timestamp"], axis=1)
+        test_df = test_df.drop(["timestamp"], axis=1)
 
     elif config.dataset == "sushi":
         # inputフォルダのsushiデータを読み込み
