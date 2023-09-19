@@ -4,6 +4,7 @@ from typing import TypeVar
 
 import numpy as np
 import pandas as pd
+from scipy import linalg
 from tqdm import tqdm
 
 from config.config import Config
@@ -63,7 +64,8 @@ class DataCollaborationAnalysis:
         self.make_intermediate_expression()
 
         # 統合表現の生成
-        self.make_integrate_expression()
+        # self.make_integrate_expression()
+        self.make_integrate_expression_kawakami()
 
     @staticmethod
     def train_test_split(
@@ -154,7 +156,7 @@ class DataCollaborationAnalysis:
 
         # 特異値分解（Uはアンカーデータ数 × 統合表現の次元数）
         U, _, _ = np.linalg.svd(centralized_anchor)
-        U = U[:, : self.config.dim_integrate]  # 固有値の大きい順に統合表現の次元数だけ取得
+        U = U[:, : self.config.self.config.dim_integrate]  # 固有値の大きい順に統合表現の次元数だけ取得
 
         # Zは統合表現の次元数 × アンカーデータ数
         Z = U.T
@@ -193,3 +195,27 @@ class DataCollaborationAnalysis:
         self.logger.info(f"統合表現（テストデータ）の数と次元数: {self.X_test_integ.shape}")
         self.logger.info(f"統合表現（訓練データの正解）の数と次元数: {self.y_train_integ.shape}")
         self.logger.info(f"統合表現（テストデータの正解）の数と次元数: {self.y_test_integ.shape}")
+
+    def make_integrate_expression_kawakami(self) -> None:
+        # 解析対象の行列構築
+        N = self.config.dim_integrate * (self.config.num_institution)
+        Q = np.zeros((self.config.num_anchor_data, N))
+        R = np.zeros((N, N))
+        for institution in tqdm(range(self.config.num_institution)):
+            anchor = self.anchors_inter[institution]
+            q, r = linalg.qr(anchor, mode="economic")
+            # i, i
+            base = self.config.dim_integrate * institution
+            Q[:, base : base + self.config.dim_integrate] = q
+            R[base : base + self.config.dim_integrate, base : base + self.config.dim_integrate] = linalg.inv(r)
+
+        # start = time.time()  # 測定開始
+        # U, s, V = sli.svd(Q, eps_or_k = self.config.dim_integrate, rand = False)
+        try:
+            U, s, V = linalg.svd(Q, full_matrices=False)
+        except linalg.LinAlgError as e:
+            U, s, V = linalg.svd(Q, full_matrices=False, lapack_driver="gesvd")
+        l = (-2 * np.square(s[: self.config.dim_integrate])) + (2 * self.num_institution)
+        v = R @ V.T[:, : self.config.dim_integrate]
+
+        print(v.shape)
