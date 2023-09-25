@@ -22,6 +22,9 @@ output_path = OUTPUT_DIR / args.name
 with open(cfg_path) as f:
     config = Config(**dict(**yaml.safe_load(f), **{"output_path": output_path, "input_path": INPUT_DIR}))
 
+# output_pathの作成
+output_path.mkdir(exist_ok=True, parents=True)
+
 # ログの設定
 logger = getLogger(__name__)
 logger.setLevel(INFO)
@@ -39,7 +42,7 @@ def main():
     # データ分割 -> 統合表現の獲得まで一気に実行
     data_collaboration.run()
 
-    # 集中解析
+    # # 集中解析
     centralize_analysis(config, logger)
 
     # 個別解析

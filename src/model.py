@@ -42,6 +42,10 @@ def run_lgbm(
         "random_state": seed,
     }
 
+    train_params = {
+        "num_boost_round": 999999,
+    }
+
     for _, (train_index, valid_index) in enumerate(cv.split(X_train, y_train)):
         X_tr = X_train[train_index, :]
         X_val = X_train[valid_index, :]
@@ -56,10 +60,8 @@ def run_lgbm(
                 params,
                 lgb_train,
                 valid_sets=[lgb_train, lgb_eval],
-                callbacks=[
-                    lgb.early_stopping(stopping_rounds=100, verbose=True),
-                    lgb.log_evaluation(period=100),
-                ],
+                callbacks=[lgb.early_stopping(100), lgb.log_evaluation(1000)],
+                **train_params,
             )
         else:
             lgb_train = lgb.Dataset(X_tr, y_tr, categorical_feature=categorical_cols)
@@ -69,10 +71,8 @@ def run_lgbm(
                 params,
                 lgb_train,
                 valid_sets=[lgb_train, lgb_eval],
-                callbacks=[
-                    lgb.early_stopping(stopping_rounds=100, verbose=True),
-                    lgb.log_evaluation(period=100),
-                ],
+                callbacks=[lgb.early_stopping(100), lgb.log_evaluation(1000)],
+                **train_params,
             )
         oof_train[valid_index] = model.predict(X_val, num_iteration=model.best_iteration)
         models.append(model)
