@@ -64,8 +64,8 @@ class DataCollaborationAnalysis:
         self.make_intermediate_expression()
 
         # 統合表現の生成
-        # self.make_integrate_expression()
-        self.make_integrate_expression_kawakami()
+        self.make_integrate_expression()
+        # self.make_integrate_expression_kawakami()
 
     @staticmethod
     def train_test_split(
@@ -156,7 +156,7 @@ class DataCollaborationAnalysis:
 
         # 特異値分解（Uはアンカーデータ数 × 統合表現の次元数）
         U, _, _ = np.linalg.svd(centralized_anchor)
-        U = U[:, : self.config.self.config.dim_integrate]  # 固有値の大きい順に統合表現の次元数だけ取得
+        U = U[:, : self.config.dim_integrate]  # 固有値の大きい順に統合表現の次元数だけ取得
 
         # Zは統合表現の次元数 × アンカーデータ数
         Z = U.T
@@ -197,25 +197,60 @@ class DataCollaborationAnalysis:
         self.logger.info(f"統合表現（テストデータの正解）の数と次元数: {self.y_test_integ.shape}")
 
     def make_integrate_expression_kawakami(self) -> None:
+        print("********************統合表現の生成********************")
         # 解析対象の行列構築
-        N = self.config.dim_integrate * (self.config.num_institution)
+        N = self.config.dim_intermediate * (self.config.num_institution)
         Q = np.zeros((self.config.num_anchor_data, N))
         R = np.zeros((N, N))
         for institution in tqdm(range(self.config.num_institution)):
+            # ある機関のアンカーデータを取得
             anchor = self.anchors_inter[institution]
+            # QR分解
             q, r = linalg.qr(anchor, mode="economic")
-            # i, i
-            base = self.config.dim_integrate * institution
-            Q[:, base : base + self.config.dim_integrate] = q
-            R[base : base + self.config.dim_integrate, base : base + self.config.dim_integrate] = linalg.inv(r)
+            # 解析対象の行列に代入
+            base = self.config.dim_intermediate * institution
+            Q[:, base : base + self.config.dim_intermediate] = q
+            R[base : base + self.config.dim_intermediate, base : base + self.config.dim_intermediate] = linalg.inv(r)
 
         # start = time.time()  # 測定開始
-        # U, s, V = sli.svd(Q, eps_or_k = self.config.dim_integrate, rand = False)
         try:
             U, s, V = linalg.svd(Q, full_matrices=False)
         except linalg.LinAlgError as e:
             U, s, V = linalg.svd(Q, full_matrices=False, lapack_driver="gesvd")
-        l = (-2 * np.square(s[: self.config.dim_integrate])) + (2 * self.num_institution)
-        v = R @ V.T[:, : self.config.dim_integrate]
+        l = (-2 * np.square(s[: self.config.dim_intermediate])) + (2 * self.config.num_institution)
+        v = R @ V.T[:, : self.config.dim_intermediate]
 
-        print(v.shape)
+        # 各機関の統合関数を求め、統合表現を生成
+        Xs_train_integrate, Xs_test_integrate = [], []
+        for (
+            i,
+            X_train_inter,
+            X_test_inter,
+        ) in zip(tqdm(range(self.config.num_institution)), self.Xs_train_inter, self.Xs_test_inter):
+            # 統合関数はvから取ってくる
+            integrate_function = v[self.config.dim_intermediate * i : self.config.dim_intermediate * (i + 1), :]
+
+            # 統合関数で各機関の中間表現を統合表現に変換
+            print("X_train_inter shape:", X_train_inter.shape)
+            X_train_integrate = np.dot(X_train_inter, integrate_function)
+            X_test_integrate = np.dot(X_test_inter, integrate_function)
+
+            # 統合表現をリストに格納
+            Xs_train_integrate.append(X_train_integrate)
+            Xs_test_integrate.append(X_test_integrate)
+
+        print("統合表現の次元数: ", Xs_train_integrate[0].shape[1])
+
+        # 全ての機関の統合表現をくっつけ、1つのarrayに変換
+        self.X_train_integ = np.vstack(Xs_train_integrate)
+        self.X_test_integ = np.vstack(Xs_test_integrate)
+
+        # yもくっつける
+        self.y_train_integ = np.hstack(self.ys_train)
+        self.y_test_integ = np.hstack(self.ys_test)
+
+        # logにも出力
+        self.logger.info(f"統合表現（訓練データ）の数と次元数: {self.X_train_integ.shape}")
+        self.logger.info(f"統合表現（テストデータ）の数と次元数: {self.X_test_integ.shape}")
+        self.logger.info(f"統合表現（訓練データの正解）の数と次元数: {self.y_train_integ.shape}")
+        self.logger.info(f"統合表現（テストデータの正解）の数と次元数: {self.y_test_integ.shape}")

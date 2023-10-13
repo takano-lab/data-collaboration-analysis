@@ -34,15 +34,30 @@ def load_data(config: Config) -> tuple[pd.DataFrame, pd.DataFrame]:
         # inputフォルダのsushiデータを読み込み
         df = pd.read_csv(config.input_path / "osushi.csv")
 
+        # uidを1から始める
+        df["uid"] = df["uid"] + 1
+
         # trainとtestに分割
         train_df, test_df = train_test_split(df, test_size=0.2, random_state=config.seed, stratify=df["uid"])
         # uidでソート
         train_df = train_df.sort_values(by="uid").reset_index(drop=True)
         test_df = test_df.sort_values(by="uid").reset_index(drop=True)
 
+    elif config.dataset == "yahoo":
+        # inputフォルダのyahooデータを読み込み
+        df = pd.read_csv(config.input_path / "yahoo_r3.csv")
+
+        # trainとtestに分割
+        train_df, test_df = train_test_split(df, test_size=0.2, random_state=config.seed, stratify=df["uid"])
+
+        # uidでソート
+        train_df = train_df.sort_values(by="uid").reset_index(drop=True)
+        test_df = test_df.sort_values(by="uid").reset_index(drop=True)
+
+        df.to_csv(config.input_path / "yahoo_r3.csv", index=False)
+
     # data保存
     save_data(
-        dataset=config.dataset,
         num_institution=config.num_institution,
         num_institution_user=config.num_institution_user,
         output_path=config.output_path,
@@ -55,8 +70,12 @@ def load_data(config: Config) -> tuple[pd.DataFrame, pd.DataFrame]:
     test_rating_ser = test_df["rating"]
 
     # rating削除
-    train_df = train_df.drop(["rating"], axis=1)
-    test_df = test_df.drop(["rating"], axis=1)
+    train_df.drop("rating", axis=1, inplace=True)
+    test_df.drop("rating", axis=1, inplace=True)
+
+    # user_idがnum_institution_user * num_institutionまでのものだけを抽出
+    train_df = train_df[train_df["uid"] <= config.num_institution_user * config.num_institution].reset_index(drop=True)
+    test_df = test_df[test_df["uid"] <= config.num_institution_user * config.num_institution].reset_index(drop=True)
 
     # onehotencoderを適用
     encoder = ce.OneHotEncoder(cols=["uid", "mid"])
@@ -70,11 +89,12 @@ def load_data(config: Config) -> tuple[pd.DataFrame, pd.DataFrame]:
     # 行数表示
     print("train test shape:", train_df.shape, test_df.shape)
 
+    print(train_df.head())
+
     return train_df, test_df
 
 
 def save_data(
-    dataset: str,
     num_institution: int,
     num_institution_user: int,
     output_path: Path,
@@ -82,11 +102,7 @@ def save_data(
     test_df: pd.DataFrame,
 ) -> None:
     # configのnum_institutionとnum_institution_userの積を計算
-    # (sushiはuidが0始まりなことに注意)
-    if dataset == "movielens":
-        max_uid = num_institution * num_institution_user
-    elif dataset == "sushi":
-        max_uid = num_institution * num_institution_user - 1
+    max_uid = num_institution * num_institution_user
 
     # train, testそれぞれでuidがmax_uid以下のものだけを抽出
     train_df = train_df[train_df["uid"] <= max_uid].reset_index(drop=True)
