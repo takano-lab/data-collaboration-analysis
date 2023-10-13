@@ -93,6 +93,8 @@ def run_surprise(dataset: str, train_df: pd.DataFrame, test_df: pd.DataFrame, ne
         reader = Reader(rating_scale=(1, 5))
     elif dataset == "sushi":
         reader = Reader(rating_scale=(0, 4))
+    elif dataset == "yahoo":
+        reader = Reader(rating_scale=(1, 5))
 
     # surpriseでデータを読み込む
     train_surprise_data = Dataset.load_from_df(train_df[rating_columns], reader)

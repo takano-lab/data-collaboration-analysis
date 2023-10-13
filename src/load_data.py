@@ -43,6 +43,19 @@ def load_data(config: Config) -> tuple[pd.DataFrame, pd.DataFrame]:
         train_df = train_df.sort_values(by="uid").reset_index(drop=True)
         test_df = test_df.sort_values(by="uid").reset_index(drop=True)
 
+    elif config.dataset == "yahoo":
+        # inputフォルダのyahooデータを読み込み
+        df = pd.read_csv(config.input_path / "yahoo_r3.csv")
+
+        # trainとtestに分割
+        train_df, test_df = train_test_split(df, test_size=0.2, random_state=config.seed, stratify=df["uid"])
+
+        # uidでソート
+        train_df = train_df.sort_values(by="uid").reset_index(drop=True)
+        test_df = test_df.sort_values(by="uid").reset_index(drop=True)
+
+        df.to_csv(config.input_path / "yahoo_r3.csv", index=False)
+
     # data保存
     save_data(
         num_institution=config.num_institution,
@@ -82,7 +95,6 @@ def load_data(config: Config) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def save_data(
-    dataset: str,
     num_institution: int,
     num_institution_user: int,
     output_path: Path,

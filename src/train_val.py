@@ -133,6 +133,7 @@ def dca_analysis(
     logger: logger,
     seed: int = 42,
 ):
+    print(X_train_integ.shape, X_test_integ.shape, y_train_integ.shape, y_test_integ.shape)
     """
     提案手法（データ統合解析）を行う関数
     """
