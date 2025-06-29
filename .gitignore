@@ -134,6 +134,10 @@ dmypy.json
 # images
 *.png
 
+# input data
+*input/UCI_HAR_Dataset/
+input/
+
 # csv
 *.csv
 

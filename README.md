@@ -22,16 +22,29 @@ num_institution_user: 10 # 機関ごとのユーザー数
 num_anchor_data: 1000 # アンカーデータの数
 dim_intermediate: 500 # 中間表現の次元数
 dim_integrate: 300 # 統合表現の次元数
-neighbors_centlize: 30 # 集中解析での協調フィルタリングの近傍数
-neighbors_individual: 5 # 個別解析での協調フィルタリングの近傍数
 ```
 
 3. 実験を実行
 ```
-make run exp001
+poetry run python main.py exp001
 ```
 
 以上でoutputフォルダに使用したtrain/testテストと実験結果が保存される。
+
+ノートブックにカーネルを反映させるには以下のコードを使用
+
+```
+poetry run python -m ipykernel install --user --name=dca-project --display-name "Python (dca project)"
+
+```
+
+HARデータを使用する場合、input に格納する
+例
+```
+wget https://archive.ics.uci.edu/ml/machine-learning-databases/00240/UCI%20HAR%20Dataset.zip
+unzip UCI\ HAR\ Dataset.zip
+```
+
 
 # コードフォーマット
 isort, black, autoflakeによる整形
