@@ -12,6 +12,7 @@ from config.config import Config
 from src.utils import reduce_dimensions_with_svd
 
 logger = TypeVar("logger")
+from config.timing import timed
 
 
 class DataCollaborationAnalysis:
@@ -43,8 +44,16 @@ class DataCollaborationAnalysis:
         self.X_test_integ: np.ndarray = np.array([])
         self.y_train_integ: np.ndarray = np.array([])
         self.y_test_integ: np.ndarray = np.array([])
+        
+        
+        self.make_integrate_expression_gen_eig = timed(config=self.config)(
+            self.make_integrate_expression_gen_eig
+        )
+        self.make_integrate_expression = timed(config=self.config)(
+            self.make_integrate_expression
+        )
 
-    def run(self, USE_KERNEL=False, G_type = "Imakura") -> None:
+    def run(self) -> None:
         """
         データ分割、中間表現の生成、統合表現の生成を一気に行う関数
         """
@@ -64,17 +73,17 @@ class DataCollaborationAnalysis:
         print("num_row", self.config.num_anchor_data, "num_col", self.Xs_train[0].shape[1])
         print("Xs_train[0].shape", self.Xs_train[0].shape, "Xs_test[0].shape", self.Xs_test[0].shape)
         # 中間表現の生成
-        self.make_intermediate_expression(USE_KERNEL)
+        self.make_intermediate_expression()
         #self.make_intermediate_expression(USE_KERNEL=True)
 
         # 統合表現の生成
-        if G_type == "Imakura":
+        if self.config.G_type == "Imakura":
             self.make_integrate_expression()
-        elif G_type  == "targetvec":
+        elif self.config.G_type  == "targetvec":
             self.make_integrate_expression_targetvec()
-        elif G_type  == "GEP":
+        elif self.config.G_type  == "GEP":
             self.make_integrate_expression_gen_eig(use_eigen_weighting=False)
-        elif G_type  == "GEP_weighted":
+        elif self.config.G_type  == "GEP_weighted":
             self.make_integrate_expression_gen_eig(use_eigen_weighting=True)
             
         self.logger.info(f"{self.config.dim_integrate}:次元")
@@ -132,7 +141,7 @@ class DataCollaborationAnalysis:
         anchor = np.random.rand(num_row, num_col)
         return anchor
 
-    def make_intermediate_expression(self, USE_KERNEL=False) -> None:
+    def make_intermediate_expression(self) -> None:
         print("********************中間表現の生成********************")
         """
         中間表現を生成する関数
@@ -147,7 +156,7 @@ class DataCollaborationAnalysis:
                X_test=X_test,
                n_components=self.config.dim_intermediate,
                anchor=self.anchor,
-               USE_KERNEL=USE_KERNEL
+               F_type=self.config.F_type
             )
             
             # そのままで実験  ##########################################
@@ -363,7 +372,6 @@ class DataCollaborationAnalysis:
     # 〈統合関数の最適化〉§3 一般化固有値問題 (8) ベース
     #   A_s̃ v = λ B_s̃ v ,  vᵀ B_s̃ v = 1
     # ============================================================
-
     def make_integrate_expression_gen_eig(self, use_eigen_weighting=False) -> None:
         """
         川上・高野 (2024) §3   一般化固有値問題による統合関数

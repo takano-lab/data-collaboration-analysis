@@ -1,7 +1,19 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+# いつか統一する
+class Config:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
 
+    def __getattr__(self, name):
+        # 未定義の属性にアクセスしたときは None を返す
+        return None
+
+    def __setattr__(self, name, value):
+        self.__dict__[name] = value
+
+"""
 @dataclass(frozen=False)
 class Config:
     name: str  # 実験名
@@ -16,3 +28,4 @@ class Config:
     output_path: Path  # 出力先のパス
     input_path: Path  # 入力先のパス
     seed: int = 10
+"""

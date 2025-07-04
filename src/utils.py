@@ -66,13 +66,13 @@ def reduce_dimensions_with_svd(
     X_test: np.ndarray,
     n_components: int,
     anchor: Optional[np.ndarray] = None,
-    USE_KERNEL: bool = False,
+    F_type = "svd",
 ) -> Tuple[np.ndarray, ...]:
 
     # --- SVD / KernelPCA の選択 ---
     # USE_KERNEL = n_components >= X_train.shape[1]
 
-    if USE_KERNEL:
+    if F_type == "kernel_pca":
     # --- スケーリング ---
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train)
@@ -97,10 +97,7 @@ def reduce_dimensions_with_svd(
         return X_train_svd, X_test_svd
     
     else:
-        model = TruncatedSVD(
-            n_components=n_components,
-            random_state=42,
-        )
+        model = SVDScratch(n_components=n_components, center=True)
         # --- フィッティングと変換 ---
         X_train_svd = model.fit_transform(X_train)
         X_test_svd = model.transform(X_test)
