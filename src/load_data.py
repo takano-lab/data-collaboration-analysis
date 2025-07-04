@@ -14,6 +14,45 @@ from config.config import Config
 # テーブル：データ名 → 読み込みロジック             #
 # -------------------------------------------------- #
 
+def _load_qsar() -> pd.DataFrame:
+    # カラム名（UCI 公式説明より）
+    columns = [
+        "SpMax_L", "J_Dz(e)", "nHM", "F01[N-N]", "F04[C-N]", "NssssC", "nCb-", "C%",
+        "nCp", "nO", "F03[C-N]", "SdssC", "HyWi_B(m)", "LOC", "SM6_L", "F03[C-O]",
+        "Me", "Mi", "nN-N", "nArNO2", "nCRX3", "SpPosA_B(p)", "nCIR", "B01[C-Br]",
+        "B03[C-Cl]", "N-073", "SpMax_A", "Psi_i_1d", "B04[C-Br]", "SdO", "TI2_L",
+        "nCrt", "C-026", "F02[C-N]", "nHDon", "SpMax_B(m)", "Psi_i_A", "nN",
+        "SM6_B(m)", "nArCOOR", "nX", "target"
+    ]
+
+    # データ読み込み（区切り文字は ';'）
+    df = pd.read_csv("input/qsar+biodegradation/biodeg.csv", header=None, sep=";")
+    df.columns = columns
+
+    # ターゲット変換：RB → 1（ready biodeg）、NRB → 0（not ready）
+    df["target"] = df["target"].map({"RB": 1, "NRB": 0})
+
+    return df
+
+def _load_breast_cancer() -> pd.DataFrame:
+    from sklearn.datasets import load_breast_cancer
+
+    # データ読み込み
+    cancer = load_breast_cancer()
+    df = pd.DataFrame(cancer.data, columns=cancer.feature_names)
+    df['target'] = cancer.target  # 目的変数を追加
+    return df
+
+def _load_diabetes() -> pd.DataFrame: 
+    from sklearn.datasets import load_diabetes
+
+    # データ読み込み
+    diabetes = load_diabetes()
+    df = pd.DataFrame(diabetes.data, columns=diabetes.feature_names)
+    df["target"] = diabetes.target  # 目的変数を追加
+    return df
+
+
 def _load_statlog() -> pd.DataFrame:
     colnames = [f"col{i}" for i in range(20)] + ["target"]
     df = pd.read_csv("input/statlog_german.data", delim_whitespace=True, header=None, names=colnames)
@@ -81,6 +120,9 @@ def _load_har() -> pd.DataFrame:
     return df
 
 LOADERS = {
+    "qsar":_load_qsar,
+    "breast_cancer":_load_breast_cancer,
+    "diabetes":_load_diabetes,
     "statlog": _load_statlog,
     "adult": _load_adult,
     "diabetes130": _load_diabetes130,
@@ -112,12 +154,40 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
     # ── 再結合
     df = pd.concat([X, y], axis=1)
     
-    feature_num = len(df.columns) - 1  # 特徴量の数（目的変数を除く）
-    config.dim_intermediate = feature_num # 中間表現の次元数
-    config.dim_integrate = feature_num # 統合表現の次元数
+    feature_num = min(len(df.columns) - 1, 100)  # 特徴量の数（目的変数を除く）
+    config.dim_intermediate = feature_num-1 # 中間表現の次元数
+    config.dim_integrate = feature_num-1 # 統合表現の次元数
     
-    config.num_institution_user = max(config.dim_integrate, 50) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
+    config.num_institution_user = max(config.dim_integrate + 1, 50) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
     config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
+    
+    if config.dataset == 'qsar':
+        config.dim_intermediate = feature_num-1 # 中間表現の次元数
+        config.dim_integrate = feature_num-1 # 統合表現の次元数
+        config.num_institution_user = 50
+        config.num_institution = 10
+
+    if config.dataset == 'breast_cancer':
+        feature_num = 15  # 特徴量の数（目的変数を除く）
+        config.dim_intermediate = feature_num-1 # 中間表現の次元数
+        config.dim_integrate = feature_num-1 # 統合表現の次元数
+        config.num_institution_user = 16
+        config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
+        
+    # 特徴量だけを取得（target を除外）
+    y_name = config.y_name
+    feature_columns = [col for col in df.columns if col != y_name]
+
+    # 最大 feature_num 個までに制限
+    limited_features = feature_columns[:feature_num]
+
+    # 最終的に残す列（順序は：特徴量 + target）
+    final_columns = limited_features + [y_name]
+
+    # 制限後のデータフレーム
+    df = df[final_columns]
+    df = df[:2*config.num_institution_user*config.num_institution]
+    
     
     # ── train/test split
     train_df, test_df = train_test_split(

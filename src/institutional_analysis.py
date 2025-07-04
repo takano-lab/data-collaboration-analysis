@@ -48,6 +48,8 @@ def centralize_analysis(config: Config, logger: logger, y_name) -> None:
         config=config,
     )
     logger.info(f"集中解析の評価値: {metrics:.4f}")
+    return metrics
+
 
 # ----------------------------------------------------------------------
 # 個別解析
@@ -70,6 +72,8 @@ def individual_analysis(
         break
         
     logger.info(f"個別解析の評価値: {np.mean(losses):.4f}")
+    return metrics
+
 
 
 # ----------------------------------------------------------------------
@@ -91,4 +95,5 @@ def dca_analysis(
         config,
     )
     logger.info(f"提案手法の評価値: {metrics:.4f}")
+    return metrics
 
