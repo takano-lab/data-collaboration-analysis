@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+
 # いつか統一する
 class Config:
     def __init__(self, **kwargs):
@@ -12,6 +13,14 @@ class Config:
 
     def __setattr__(self, name, value):
         self.__dict__[name] = value
+
+    def log(self, logger, exclude_keys=None):
+        exclude_keys = set(exclude_keys or [])
+        logger.info("==== Config Parameters ====")
+        for key, value in self.__dict__.items():
+            if key not in exclude_keys:
+                logger.info(f"{key}: {value}")
+        logger.info("==== End of Config ====")
 
 """
 @dataclass(frozen=False)

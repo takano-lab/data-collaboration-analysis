@@ -5,6 +5,8 @@ description = ""
 authors = ["tomos7231 <tomobake0023@icloud.com>"]
 
 [tool.poetry.dependencies]
+# gurobipy は PyPI にないため pip install を使って別途インストールしてください
+#gurobipy = "*"  # ← 実際には機能しない
 python = ">=3.9,<3.13"
 pandas = "^2.0.1"
 numpy = "^1.24.3"

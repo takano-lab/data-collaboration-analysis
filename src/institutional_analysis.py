@@ -7,8 +7,9 @@ import numpy as np
 import pandas as pd
 
 from config.config import Config
+from config.config_logger import record_config_to_cfg, record_value_to_cfg
 from src.model import h_models
-from src.utils import reduce_dimensions_with_svd
+from src.utils import reduce_dimensions
 
 logger = TypeVar("logger")
 
@@ -47,9 +48,35 @@ def centralize_analysis(config: Config, logger: logger, y_name) -> None:
         y_test=y_test,
         config=config,
     )
+    
     logger.info(f"集中解析の評価値: {metrics:.4f}")
+    record_value_to_cfg(config, "集中解析", metrics)
     return metrics
 
+def centralize_analysis_with_dimension_reduction(config: Config, logger: logger, y_name) -> None:
+    train_df = pd.read_csv(config.output_path / "train.csv")
+    test_df = pd.read_csv(config.output_path / "test.csv")
+
+    # 目的変数と特徴量を分離
+    y_train = train_df.pop(y_name).values
+    y_test = test_df.pop(y_name).values
+    
+    X_train = train_df.values
+    X_test = test_df.values
+
+    # SVD
+    X_tr_svd, X_te_svd = reduce_dimensions(X_train, X_test, n_components=config.dim_integrate)
+    metrics = h_ml_model(
+        X_train=X_tr_svd,
+        y_train=y_train,
+        X_test=X_te_svd,
+        y_test=y_test,
+        config=config,
+    )
+    
+    logger.info(f"集中解析の評価値: {metrics:.4f}")
+    record_value_to_cfg(config, "集中解析", metrics)
+    return metrics
 
 # ----------------------------------------------------------------------
 # 個別解析
@@ -72,9 +99,32 @@ def individual_analysis(
         break
         
     logger.info(f"個別解析の評価値: {np.mean(losses):.4f}")
+    record_value_to_cfg(config, "個別解析", np.mean(losses))
     return metrics
 
+# ----------------------------------------------------------------------
+# 個別解析
+# ----------------------------------------------------------------------
+def individual_analysis_with_dimension_reduction(
+    Xs_train: list[np.ndarray],
+    ys_train: list[np.ndarray],
+    Xs_test: list[np.ndarray],
+    ys_test: list[np.ndarray],
+    config: Config,
+    logger: logger,
+) -> None:
+    losses: list[float] = []
 
+    for X_tr, X_te, y_tr, y_te in zip(Xs_train, Xs_test, ys_train, ys_test):
+        print(y_te)
+        X_tr_svd, X_te_svd = reduce_dimensions(X_tr, X_te, n_components=config.dim_intermediate)
+        metrics = h_ml_model(X_tr_svd, y_tr, X_te_svd, y_te, config)
+        losses.append(metrics)
+        break
+        
+    logger.info(f"個別解析の評価値: {np.mean(losses):.4f}")
+    record_value_to_cfg(config, "個別解析（次元削減）", np.mean(losses))
+    return metrics
 
 # ----------------------------------------------------------------------
 # データ統合解析（DCA）
@@ -95,5 +145,6 @@ def dca_analysis(
         config,
     )
     logger.info(f"提案手法の評価値: {metrics:.4f}")
+    record_value_to_cfg(config, "提案手法", metrics)
     return metrics
 

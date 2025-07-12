@@ -9,6 +9,9 @@ git clone git@github.com:takano-lab/dca_yanagi.git
 cd DataCollaborationAnalysis
 poetry shell
 poetry install
+
+gurobipy を使用する場合
+pip install gurobipy
 ```
 
 2. configフォルダ内にyamlファイルを作成

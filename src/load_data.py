@@ -154,18 +154,18 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
     # ── 再結合
     df = pd.concat([X, y], axis=1)
     
-    feature_num = min(len(df.columns) - 1, 100)  # 特徴量の数（目的変数を除く）
+    feature_num = min(len(df.columns) - 1, 50)  # 特徴量の数（目的変数を除く）
     config.dim_intermediate = feature_num-1 # 中間表現の次元数
     config.dim_integrate = feature_num-1 # 統合表現の次元数
     
-    config.num_institution_user = max(config.dim_integrate + 1, 50) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
-    config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
+    config.num_institution_user = max(config.dim_integrate + 1, 20) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
+    config.num_institution = min(10, int(len(df) / (config.num_institution_user * 2)))
     
-    if config.dataset == 'qsar':
-        config.dim_intermediate = feature_num-1 # 中間表現の次元数
-        config.dim_integrate = feature_num-1 # 統合表現の次元数
-        config.num_institution_user = 50
-        config.num_institution = 10
+    # if config.dataset == 'qsar':
+    #     config.dim_intermediate = feature_num-1 # 中間表現の次元数
+    #     config.dim_integrate = feature_num-1 # 統合表現の次元数
+    #     config.num_institution_user = 50
+    #     config.num_institution = 10
 
     if config.dataset == 'breast_cancer':
         feature_num = 15  # 特徴量の数（目的変数を除く）

@@ -1,3 +1,4 @@
+import random
 from typing import Optional, Tuple, TypeVar
 
 import numpy as np
@@ -61,42 +62,19 @@ class SVDScratch:
         return self.fit(X).transform(X)
 
 
-def reduce_dimensions_with_svd(
+def reduce_dimensions(
     X_train: np.ndarray,
     X_test: np.ndarray,
     n_components: int,
     anchor: Optional[np.ndarray] = None,
-    F_type = "svd",
+    F_type = "kernel_pca",
+    seed= None,
+    param = None
 ) -> Tuple[np.ndarray, ...]:
-
     # --- SVD / KernelPCA の選択 ---
     # USE_KERNEL = n_components >= X_train.shape[1]
-
-    if F_type == "kernel_pca":
-    # --- スケーリング ---
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-        anchor_scaled = scaler.transform(anchor) if anchor is not None else None
-        gamma = 1.0 / X_train.shape[1]
-        model = KernelPCA(
-            n_components=n_components,
-            kernel="rbf",
-            gamma=gamma,
-            eigen_solver="auto",
-            n_jobs=-1,
-        )
-        # --- フィッティングと変換 ---
-        X_train_svd = model.fit_transform(X_train_scaled)
-        X_test_svd = model.transform(X_test_scaled)
-        
-        if anchor_scaled is not None:
-            X_anchor_svd = model.transform(anchor_scaled)
-            return X_train_svd, X_test_svd, X_anchor_svd
-
-        return X_train_svd, X_test_svd
     
-    else:
+    if F_type == "svd":
         model = SVDScratch(n_components=n_components, center=True)
         # --- フィッティングと変換 ---
         X_train_svd = model.fit_transform(X_train)
@@ -108,6 +86,30 @@ def reduce_dimensions_with_svd(
 
         return X_train_svd, X_test_svd
 
+    else:
+    # --- スケーリング ---
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        anchor_scaled = scaler.transform(anchor) if anchor is not None else None
+        gamma = 1.0 / X_train.shape[1] # har だと 0.001 が精度良い
+        # model = KernelPCA(
+        #     n_components=n_components,
+        #     kernel="rbf",
+        #     gamma=gamma,
+        #     eigen_solver="auto",
+        #     n_jobs=-1,
+        # )
+        model = make_random_kpca(n_components, seed=seed, param=param)
+        # --- フィッティングと変換 ---
+        X_train_svd = model.fit_transform(X_train_scaled)
+        X_test_svd = model.transform(X_test_scaled)
+        
+        if anchor_scaled is not None:
+            X_anchor_svd = model.transform(anchor_scaled)
+            return X_train_svd, X_test_svd, X_anchor_svd
+
+        return X_train_svd, X_test_svd
 
 def reduce_dimensions_with_svd_(
     X_train: np.ndarray,
@@ -136,3 +138,33 @@ def reduce_dimensions_with_svd_(
         return X_train_svd, X_test_svd, svd.transform(anchor)
     # print("X_train_svd.shape:", X_train_svd.shape, "X_test_svd.shape", X_test_svd.shape)
     return X_train_svd, X_test_svd
+
+def make_random_kpca(n_components, seed=None, param=None):
+    rng = np.random.default_rng(seed)
+
+    # カーネルをランダムに選ぶ
+    #kernel = rng.choice(["linear", "poly", "rbf"])
+    #print(kernel)
+    kernel = "rbf"  # 強制的に RBF カーネルを使用する場合
+    # パラメータ辞書
+    params = {
+        "n_components": n_components,
+        "kernel": kernel,
+        "eigen_solver": "auto",
+        "n_jobs": -1,
+    }
+
+    # カーネルごとのパラメータ設定
+    if kernel in ["rbf", "poly", "sigmoid"]:
+        params["gamma"] = 0.001#param #np.exp(rng.uniform(np.log(1e-4), np.log(1)))  # log-uniform などもOK
+        #print("Random KPCA parameters (gamma):", params["gamma"])
+    if kernel == "poly":
+        params["degree"] = 2 #rng.integers(2, 6)
+        params["coef0"] = 0.0 #rng.uniform(0, 1.0)
+    if kernel == "sigmoid":
+        params["coef0"] = rng.uniform(0, 1.0)
+    #print("Random KPCA parameters:--------------------------------")
+    #print(seed)
+    #print(params)
+    # KernelPCA インスタンスを返す
+    return KernelPCA(**params)

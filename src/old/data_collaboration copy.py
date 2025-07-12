@@ -12,26 +12,7 @@ from config.config import Config
 from src.utils import reduce_dimensions
 
 logger = TypeVar("logger")
-import csv
-from pathlib import Path
-
 from config.timing import timed
-from src.model import h_models
-from src.utils import reduce_dimensions
-
-logger = TypeVar("logger")
-
-def h_ml_model(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    config: Config,
-) -> float:
-    """機械学習モデルを実行し、評価値を返す"""
-    evaluate_model = h_models[config.h_model]
-    metrics = evaluate_model(X_train, y_train, X_test, y_test)
-    return metrics
 
 
 class DataCollaborationAnalysis:
@@ -72,54 +53,6 @@ class DataCollaborationAnalysis:
             self.make_integrate_expression
         )
 
-    def save_optimal_params(self) -> None:
-        """
-        データ分割、中間表現の生成、統合表現の生成を一気に行う関数。
-        各機関ごとに最適なparamをグリッドサーチし、CSVに保存する。
-        """
-        # データの分割
-        self.Xs_train, self.Xs_test, self.ys_train, self.ys_test = self.train_test_split(
-            train_df=self.train_df,
-            test_df=self.test_df,
-            num_institution=self.config.num_institution,
-            num_institution_user=self.config.num_institution_user,
-            y_name=self.config.y_name,
-        )
-
-        best_params = {}
-
-        # 各機関に対してグリッドサーチ
-        for i, (X_tr, X_te, y_tr, y_te) in enumerate(zip(self.Xs_train, self.Xs_test, self.ys_train, self.ys_test)):
-            best_score = -float("inf")
-            best_param = None
-
-            for param in [1, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0, 1000.0]:
-                X_tr_svd, X_te_svd = reduce_dimensions(X_tr, X_te, n_components=self.config.dim_intermediate, param=param)
-                score = h_ml_model(X_tr_svd, y_tr, X_te_svd, y_te, self.config)
-                print(score, param)
-                if score > best_score:  # 指標が大きいほど良い場合（例：ROC-AUC）
-                    best_score = score
-                    best_param = param
-
-            best_params[i] = best_param
-            print(f"Institution {i}: Best param = {best_param:.1e}, score = {best_score:.4f}")
-
-        # 保存パスの作成
-        out_path = Path(self.config.output_path)
-        out_path.mkdir(parents=True, exist_ok=True)
-
-        save_path = out_path / "best_param.csv"
-
-        # CSV形式で保存
-        with open(save_path, mode="w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["institution", "best_param"])
-            for k, v in best_params.items():
-                writer.writerow([k, v])
-
-        print(f"✅ 最適パラメータ saved to: {save_path}")
-            
-
     def run(self) -> None:
         """
         データ分割、中間表現の生成、統合表現の生成を一気に行う関数
@@ -152,8 +85,6 @@ class DataCollaborationAnalysis:
             self.make_integrate_expression_gen_eig(use_eigen_weighting=False)
         elif self.config.G_type  == "GEP_weighted":
             self.make_integrate_expression_gen_eig(use_eigen_weighting=True)
-        elif self.config.G_type  == "nonlinear":
-            self.make_integrate_nonliner_expression()
             
         self.logger.info(f"{self.config.dim_integrate}:次元")
         self.logger.info(f"{self.config.num_institution_user} 機関人数")
@@ -225,9 +156,8 @@ class DataCollaborationAnalysis:
                X_test=X_test,
                n_components=self.config.dim_intermediate,
                anchor=self.anchor,
-               F_type=self.config.F_type,
-               seed=self.config.f_seed)
-            self.config.f_seed += 1
+               F_type=self.config.F_type
+            )
             
             # そのままで実験  ##########################################
             #X_train_svd = X_train
@@ -294,6 +224,87 @@ class DataCollaborationAnalysis:
 
         # logにも出力
         self.logger.info(f"統合表現（訓練データ）の数と次元数: {self.X_train_integ.shape}")
+
+    def make_integrate_expression_2(self) -> None:
+        print("********************統合表現の生成********************")
+        """
+        統合表現を生成する関数
+        """
+        from scipy.linalg import pinv, qr, solve_triangular, svd
+        from sklearn.utils.extmath import randomized_svd
+        U, _, _ =  randomized_svd(np.hstack(self.anchors_inter), n_components=self.config.dim_intermediate)
+        # Compute Intermediate Representations of the anchor data
+
+        G_list_Imakura = [pinv(A) @ U for A in self.anchors_inter]
+        # アンカーデータを水平方向に開く（アンカーデータ数 × 各機関の中間表現次元の合計）
+        self.X_train_integ = np.hstack([self.Xs_train_inter @ G_list_Imakura[i] for i in range(self.config.num_institution)])
+        self.X_test_integ = np.hstack([self.Xs_test_inter @ G_list_Imakura[i] for i in range(self.config.num_institution)])
+
+        # yもくっつける
+        self.y_train_integ = np.hstack(self.ys_train)
+        self.y_test_integ = np.hstack(self.ys_test)
+
+        # logにも出力
+        self.logger.info(f"統合表現（訓練データ）の数と次元数: {self.X_train_integ.shape}")
+        self.logger.info(f"統合表現（テストデータ）の数と次元数: {self.X_test_integ.shape}")
+
+    def make_integrate_expression_kawakami_yanagi(self) -> None:
+        print("********************統合表現の生成********************")
+        # 解析対象の行列構築
+        N = self.config.dim_intermediate * (self.config.num_institution)
+        Q = np.zeros((self.config.num_anchor_data, N))
+        R = np.zeros((N, N))
+        for institution in tqdm(range(self.config.num_institution)):
+            # ある機関のアンカーデータを取得
+            anchor = self.anchors_inter[institution]
+            # QR分解
+            q, r = linalg.qr(anchor, mode="economic")
+            # 解析対象の行列に代入
+            base = self.config.dim_intermediate * institution
+            Q[:, base : base + self.config.dim_intermediate] = q
+            R[base : base + self.config.dim_intermediate, base : base + self.config.dim_intermediate] = linalg.inv(r)
+
+        # start = time.time()  # 測定開始
+        try:
+            U, s, V = linalg.svd(Q, full_matrices=False)
+        except linalg.LinAlgError as e:
+            U, s, V = linalg.svd(Q, full_matrices=False, lapack_driver="gesvd")
+        l = (-2 * np.square(s[: self.config.dim_intermediate])) + (2 * self.config.num_institution)
+        v = R @ V.T[:, : self.config.dim_intermediate]
+
+        # 各機関の統合関数を求め、統合表現を生成
+        Xs_train_integrate, Xs_test_integrate = [], []
+        for (
+            i,
+            X_train_inter,
+            X_test_inter,
+        ) in zip(tqdm(range(self.config.num_institution)), self.Xs_train_inter, self.Xs_test_inter):
+            # 統合関数はvから取ってくる
+            integrate_function = v[self.config.dim_intermediate * i : self.config.dim_intermediate * (i + 1), :]
+
+            # 統合関数で各機関の中間表現を統合表現に変換
+            print("X_train_inter shape:", X_train_inter.shape)
+            X_train_integrate = np.dot(X_train_inter, integrate_function)
+            X_test_integrate = np.dot(X_test_inter, integrate_function)
+
+            # 統合表現をリストに格納
+            Xs_train_integrate.append(X_train_integrate)
+            Xs_test_integrate.append(X_test_integrate)
+
+        print("統合表現の次元数: ", Xs_train_integrate[0].shape[1])
+
+        # 全ての機関の統合表現をくっつけ、1つのarrayに変換
+        self.X_train_integ = np.vstack(Xs_train_integrate)
+        self.X_test_integ = np.vstack(Xs_test_integrate)
+
+        # yもくっつける
+        self.y_train_integ = np.hstack(self.ys_train)
+        self.y_test_integ = np.hstack(self.ys_test)
+
+        # logにも出力
+        self.logger.info(f"統合表現（訓練データ）の数と次元数: {self.X_train_integ.shape}")
+        self.logger.info(f"統合表現（テストデータ）の数と次元数: {self.X_test_integ.shape}")
+
 
     def make_integrate_expression_targetvec(self) -> None:
         """
@@ -452,76 +463,3 @@ class DataCollaborationAnalysis:
         # 解析用に λ とウェイトも保持 ★
         self.lambda_selected  = lambdas
         self.weights_selected = weights
-
-    # ------------------------------------------------------------------
-    # 〈非線形統合〉　射影行列 P^(k) で Z を最適化する ２段階アルゴリズム
-    # ------------------------------------------------------------------
-    def make_integrate_nonliner_expression(self) -> None:
-        """
-        非線形（カーネル）版：アンカー同士の射影行列で共通ターゲット Z を導き，
-        各機関データを同じ次元 p̂ へ写像する。
-        """
-        import numpy as np
-        from numpy.linalg import eig, inv, norm
-        from sklearn.metrics.pairwise import rbf_kernel
-
-        m  = len(self.anchors_inter)              # 機関数
-        r  = self.anchors_inter[0].shape[0]       # アンカー行数
-        p̂  = self.config.dim_integrate           # 統合表現次元
-
-        Ks, Ps, gammas = [], [], []
-        I_r = np.eye(r)
-
-        if hasattr(self.config, "nl_lambda"):
-            lam = self.config.nl_lambda
-        else:
-            lam = 1e-2                
-            
-        # --- 1. Gram 行列と射影行列 ---
-        for S̃ in self.anchors_inter:             # S̃ : r×d̃_k
-            if hasattr(self.config, "nl_gamma"):
-                γ = self.config.nl_gamma
-            else:
-                γ = 1.0 / S̃.shape[1]                # γ = 1/d̃_k
-            gammas.append(γ)
-            K = rbf_kernel(S̃, S̃, gamma=γ)       # r×r
-            Ks.append(K)
-            Ps.append(K @ inv(K + lam * I_r))     # 射影
-
-        # --- 2. 固有値問題 → Z (r×p̂ , ‖Z‖_F=1) ---
-        M = sum((P - I_r).T @ (P - I_r) for P in Ps)
-
-        # ❶ ほんのわずかな非対称を切り落とす
-        M = (M + M.T) * 0.5           
-
-        # ❷ 実対称用の固有値分解を使う
-        eigvals, eigvecs = np.linalg.eigh(M)         
-
-        # ❸ 念のため負の丸め誤差を 0 に
-        eigvals[eigvals < 0] = 0.0        
-  
-        Z = eigvecs[:, eigvals.argsort()[:p̂]]
-        Z /= norm(Z, 'fro')
-
-        # --- 3. 各機関の係数 B^(k) とデータ射影 ---
-        Xs_train_intg, Xs_test_intg = [], []
-        for K, S̃, γ, X_tr, X_te in zip(Ks, self.anchors_inter, gammas,
-                                        self.Xs_train_inter, self.Xs_test_inter):
-            Bk  = inv(K + lam * I_r) @ Z          # r×p̂
-
-            K_tr = rbf_kernel(X_tr, S̃, gamma=γ)  # n_k×r
-            K_te = rbf_kernel(X_te, S̃, gamma=γ)  # t_k×r
-
-            Xs_train_intg.append(K_tr @ Bk)       # n_k×p̂
-            Xs_test_intg.append(K_te @ Bk)        # t_k×p̂
-
-        # --- 4. スタック & 保存 ---
-        self.X_train_integ = np.vstack(Xs_train_intg)
-        self.X_test_integ  = np.vstack(Xs_test_intg)
-        self.y_train_integ = np.hstack(self.ys_train)
-        self.y_test_integ  = np.hstack(self.ys_test)
-
-        self.logger.info(f"nonlinear integrate: X_train {self.X_train_integ.shape}")
-        print("統合表現の次元数:", self.X_train_integ.shape[1])
-        self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
-        self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
