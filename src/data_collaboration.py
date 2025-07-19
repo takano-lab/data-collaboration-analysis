@@ -16,22 +16,9 @@ import csv
 from pathlib import Path
 
 from config.timing import timed
-from src.model import h_models
 from src.utils import reduce_dimensions
 
 logger = TypeVar("logger")
-
-def h_ml_model(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    config: Config,
-) -> float:
-    """機械学習モデルを実行し、評価値を返す"""
-    evaluate_model = h_models[config.h_model]
-    metrics = evaluate_model(X_train, y_train, X_test, y_test)
-    return metrics
 
 
 class DataCollaborationAnalysis:
@@ -207,7 +194,7 @@ class DataCollaborationAnalysis:
         アンカーデータを生成する関数
         """
         np.random.seed(seed=seed)
-        anchor = np.random.rand(num_row, num_col)
+        anchor = np.random.randn(num_row, num_col) 
         return anchor
 
     def make_intermediate_expression(self) -> None:
@@ -220,13 +207,15 @@ class DataCollaborationAnalysis:
         print()
         for X_train, X_test in zip(tqdm(self.Xs_train), self.Xs_test):
             # 各機関の訓練データ, テストデータおよびアンカーデータを取得し、svdを適用
+            
             X_train_svd, X_test_svd, anchor_svd = reduce_dimensions(
                X_train=X_train,
                X_test=X_test,
                n_components=self.config.dim_intermediate,
                anchor=self.anchor,
                F_type=self.config.F_type,
-               seed=self.config.f_seed)
+               seed=self.config.f_seed,
+               config=self.config,)
             self.config.f_seed += 1
             
             # そのままで実験  ##########################################
@@ -384,8 +373,8 @@ class DataCollaborationAnalysis:
         m       = self.config.num_institution
         p_hat   = self.config.dim_integrate           # ← 共通表現次元
         r       = self.config.num_anchor_data
+        lambda_gen = getattr(self.config, 'lambda_gen_eigen', 0)
         #use_w   = getattr(self.config, "use_eigen_weighting", False)   # ★
-        use_w = use_eigen_weighting
         
 
         # --------------------------------------------------
@@ -398,7 +387,7 @@ class DataCollaborationAnalysis:
         # --------------------------------------------------
         # 2. Ã_s = 2m B̃_s - 2 WᵀW
         # --------------------------------------------------
-        A_s_tilde = 2 * m * B_s_tilde - 2 * (W_s_tilde.T @ W_s_tilde)
+        A_s_tilde = 2 * m * B_s_tilde - 2 * (W_s_tilde.T @ W_s_tilde) + lambda_gen* np.eye(W_s_tilde.shape[1])  # 正則化項を追加
 
         # --------------------------------------------------
         # 3. 一般化固有値問題  A v = λ B v
@@ -407,22 +396,20 @@ class DataCollaborationAnalysis:
         order   = np.argsort(eigvals)                                 # 昇順
         lambdas = eigvals[order][:p_hat]                              # ★ λ_1 … λ_p̂
         V_sel   = eigvecs[:, order[:p_hat]]                           # Σd_k × p̂
-
+        print(f"V_selの絶対値の総和: {np.sum(np.abs(V_sel))}")
         # --------------------------------------------------
         # 4.  λ に基づくウェイト計算（オプション）★
         # --------------------------------------------------
-        if use_w:
-            lam_min, lam_max = lambdas[0], lambdas[-1]
-            if np.isclose(lam_max, lam_min):
-                weights = np.ones_like(lambdas)
-                print(11111111111111111111111111111111)
-            else:
-                weights = np.exp(-(lambdas - lam_min) / (lam_max - lam_min))
-                print(2222222222222222222222222222222)
-            # 射影行列側に重みを掛けておく（後段の行列積で自動適用）
-            V_sel = V_sel * weights[np.newaxis, :]
-        else:
-            weights = np.ones_like(lambdas)   # dummy（あとで保存だけする）
+        # if use_w:
+        #     lam_min, lam_max = lambdas[0], lambdas[-1]
+        #     if np.isclose(lam_max, lam_min):
+        #         weights = np.ones_like(lambdas)
+        #     else:
+        #         weights = np.exp(-(lambdas - lam_min) / (lam_max - lam_min))
+        #     # 射影行列側に重みを掛けておく（後段の行列積で自動適用）
+        #     V_sel = V_sel * weights[np.newaxis, :]
+        # else:
+        #     weights = np.ones_like(lambdas)   # dummy（あとで保存だけする）
 
         # --------------------------------------------------
         # 5. 機関ごとの G^(k) 抽出と射影
@@ -450,8 +437,9 @@ class DataCollaborationAnalysis:
         self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
 
         # 解析用に λ とウェイトも保持 ★
-        self.lambda_selected  = lambdas
-        self.weights_selected = weights
+        if use_eigen_weighting:
+            
+            self.config.eigenvalues  = lambdas
 
     # ------------------------------------------------------------------
     # 〈非線形統合〉　射影行列 P^(k) で Z を最適化する ２段階アルゴリズム
@@ -476,9 +464,12 @@ class DataCollaborationAnalysis:
             lam = self.config.nl_lambda
         else:
             lam = 1e-2                
-            
+        #gammas = [11, 15.5, 1000]
+        #k = 1
         # --- 1. Gram 行列と射影行列 ---
         for S̃ in self.anchors_inter:             # S̃ : r×d̃_k
+            #γ = gammas[k-1]
+            #k += 1
             if hasattr(self.config, "nl_gamma"):
                 γ = self.config.nl_gamma
             else:
@@ -525,3 +516,232 @@ class DataCollaborationAnalysis:
         print("統合表現の次元数:", self.X_train_integ.shape[1])
         self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
         self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
+
+
+    def visualize_representations(self, save_dir: Optional[str] = None) -> None:
+        """
+        元データ、中間表現、統合表現（機関ごとと全体）を2次元散布図で可視化する関数。
+        訓練データとテストデータをそれぞれ別の図で出力する。
+        """
+        save_dir = save_dir or self.config.output_path
+
+        if not self.Xs_train or not self.Xs_train_inter or self.X_train_integ.size == 0:
+            print("可視化する表現が生成されていません。run()メソッドを実行してください。")
+            return
+
+        # 必要なライブラリのインポート
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+
+        num_institutions = self.config.num_institution
+
+        # 統合表現を機関ごとに再分割
+        train_sizes = [len(y) for y in self.ys_train]
+        test_sizes = [len(y) for y in self.ys_test]
+        train_indices = np.cumsum([0] + train_sizes)
+        test_indices = np.cumsum([0] + test_sizes)
+
+        Xs_train_integ_split = [self.X_train_integ[train_indices[i]:train_indices[i+1]] for i in range(num_institutions)]
+        Xs_test_integ_split = [self.X_test_integ[test_indices[i]:test_indices[i+1]] for i in range(num_institutions)]
+
+        # 統合表現プロットの軸スケールを統一するための範囲計算
+        # Train
+        x_min_train, x_max_train = self.X_train_integ[:, 0].min(), self.X_train_integ[:, 0].max()
+        y_min_train, y_max_train = self.X_train_integ[:, 1].min(), self.X_train_integ[:, 1].max()
+        x_pad_train = (x_max_train - x_min_train) * 0.05
+        y_pad_train = (y_max_train - y_min_train) * 0.05
+        xlim_train = (x_min_train - x_pad_train, x_max_train + x_pad_train)
+        ylim_train = (y_min_train - y_pad_train, y_max_train + y_pad_train)
+
+        # Test
+        x_min_test, x_max_test = self.X_test_integ[:, 0].min(), self.X_test_integ[:, 0].max()
+        y_min_test, y_max_test = self.X_test_integ[:, 1].min(), self.X_test_integ[:, 1].max()
+        x_pad_test = (x_max_test - x_min_test) * 0.05
+        y_pad_test = (y_max_test - y_min_test) * 0.05
+        xlim_test = (x_min_test - x_pad_test, x_max_test + x_pad_test)
+        ylim_test = (y_min_test - y_pad_test, y_max_test + y_pad_test)
+
+
+        # --- 訓練データの可視化 ---
+        fig_train, axes_train = plt.subplots(num_institutions, 4, figsize=(24, 5 * num_institutions), squeeze=False)
+        fig_train.suptitle("Representations (Train Data)", fontsize=16)
+
+        for i in range(num_institutions):
+            # 1. 元データ (Train)
+            sns.scatterplot(
+                x=self.Xs_train[i][:, 0], y=self.Xs_train[i][:, 1], hue=self.ys_train[i],
+                palette="viridis", ax=axes_train[i, 0], legend="full"
+            )
+            axes_train[i, 0].set_title(f"Institution {i+1} - Original Data")
+            axes_train[i, 0].set_xlabel("Dimension 1")
+            axes_train[i, 0].set_ylabel("Dimension 2")
+
+            # 2. 中間表現 (Train)
+            sns.scatterplot(
+                x=self.Xs_train_inter[i][:, 0], y=self.Xs_train_inter[i][:, 1], hue=self.ys_train[i],
+                palette="viridis", ax=axes_train[i, 1], legend="full"
+            )
+            axes_train[i, 1].set_title(f"Institution {i+1} - Intermediate Expression")
+            axes_train[i, 1].set_xlabel("Dimension 1")
+            axes_train[i, 1].set_ylabel("Dimension 2")
+
+            # 3. 統合表現 (Train) - 機関ごと
+            sns.scatterplot(
+                x=Xs_train_integ_split[i][:, 0], y=Xs_train_integ_split[i][:, 1], hue=self.ys_train[i],
+                palette="viridis", ax=axes_train[i, 2], legend="full"
+            )
+            axes_train[i, 2].set_title(f"Institution {i+1} - Integrated Expression")
+            axes_train[i, 2].set_xlabel("Dimension 1")
+            axes_train[i, 2].set_ylabel("Dimension 2")
+            axes_train[i, 2].set_xlim(xlim_train)
+            axes_train[i, 2].set_ylim(ylim_train)
+
+            # 4. 統合表現 (Train) - 全機関（強調表示付き）
+            other_institutions_indices = [j for j in range(num_institutions) if j != i]
+            if other_institutions_indices:
+                X_other = np.vstack([Xs_train_integ_split[j] for j in other_institutions_indices])
+                y_other = np.hstack([self.ys_train[j] for j in other_institutions_indices])
+                sns.scatterplot(
+                    x=X_other[:, 0], y=X_other[:, 1], hue=y_other,
+                    palette="viridis", ax=axes_train[i, 3], legend=False, alpha=1.0
+                )
+            sns.scatterplot(
+                x=Xs_train_integ_split[i][:, 0], y=Xs_train_integ_split[i][:, 1], hue=self.ys_train[i],
+                palette="viridis", ax=axes_train[i, 3], legend="full", alpha=1.0
+            )
+            axes_train[i, 3].set_title(f"All Institutions (Institution {i+1} Highlighted)")
+            axes_train[i, 3].set_xlabel("Dimension 1")
+            axes_train[i, 3].set_ylabel("Dimension 2")
+            axes_train[i, 3].set_xlim(xlim_train)
+            axes_train[i, 3].set_ylim(ylim_train)
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+        if save_dir:
+            Path(save_dir).mkdir(parents=True, exist_ok=True)
+            plt.savefig(Path(save_dir) / f"train_{self.config.G_type}_{self.config.nl_gamma}_{self.config.nl_lambda}.png")
+        """
+        # --- テストデータの可視化 ---
+        fig_test, axes_test = plt.subplots(num_institutions, 4, figsize=(24, 5 * num_institutions), squeeze=False)
+        fig_test.suptitle("Representations (Test Data)", fontsize=16)
+
+        for i in range(num_institutions):
+            # 1. 元データ (Test)
+            sns.scatterplot(
+                x=self.Xs_test[i][:, 0], y=self.Xs_test[i][:, 1], hue=self.ys_test[i],
+                palette="viridis", ax=axes_test[i, 0], legend="full"
+            )
+            axes_test[i, 0].set_title(f"Institution {i+1} - Original Data")
+            axes_test[i, 0].set_xlabel("Dimension 1")
+            axes_test[i, 0].set_ylabel("Dimension 2")
+
+            # 2. 中間表現 (Test)
+            sns.scatterplot(
+                x=self.Xs_test_inter[i][:, 0], y=self.Xs_test_inter[i][:, 1], hue=self.ys_test[i],
+                palette="viridis", ax=axes_test[i, 1], legend="full"
+            )
+            axes_test[i, 1].set_title(f"Institution {i+1} - Intermediate Expression")
+            axes_test[i, 1].set_xlabel("Dimension 1")
+            axes_test[i, 1].set_ylabel("Dimension 2")
+
+            # 3. 統合表現 (Test) - 機関ごと
+            sns.scatterplot(
+                x=Xs_test_integ_split[i][:, 0], y=Xs_test_integ_split[i][:, 1], hue=self.ys_test[i],
+                palette="viridis", ax=axes_test[i, 2], legend="full"
+            )
+            axes_test[i, 2].set_title(f"Institution {i+1} - Integrated Expression")
+            axes_test[i, 2].set_xlabel("Dimension 1")
+            axes_test[i, 2].set_ylabel("Dimension 2")
+            axes_test[i, 2].set_xlim(xlim_test)
+            axes_test[i, 2].set_ylim(ylim_test)
+
+            # 4. 統合表現 (Test) - 全機関（強調表示付き）
+            other_institutions_indices = [j for j in range(num_institutions) if j != i]
+            if other_institutions_indices:
+                X_other = np.vstack([Xs_test_integ_split[j] for j in other_institutions_indices])
+                y_other = np.hstack([self.ys_test[j] for j in other_institutions_indices])
+                sns.scatterplot(
+                    x=X_other[:, 0], y=X_other[:, 1], hue=y_other,
+                    palette="viridis", ax=axes_test[i, 3], legend=False, alpha=1.0
+                )
+            sns.scatterplot(
+                x=Xs_test_integ_split[i][:, 0], y=Xs_test_integ_split[i][:, 1], hue=self.ys_test[i],
+                palette="viridis", ax=axes_test[i, 3], legend="full", alpha=1.0
+            )
+            axes_test[i, 3].set_title(f"All Institutions (Institution {i+1} Highlighted)")
+            axes_test[i, 3].set_xlabel("Dimension 1")
+            axes_test[i, 3].set_ylabel("Dimension 2")
+            axes_test[i, 3].set_xlim(xlim_test)
+            axes_test[i, 3].set_ylim(ylim_test)
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+        if save_dir:
+            plt.savefig(Path(save_dir) / f"test_{self.config.G_type}_{self.config.nl_gamma}.png")
+        """
+
+    def save_representations_to_csv(self, save_dir: Optional[str] = None) -> None:
+        """
+        中間表現と統合表現をCSVファイルに保存する関数。
+        """
+        save_dir = Path(save_dir or self.config.output_path)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        if not self.Xs_train_inter or self.X_train_integ.size == 0:
+            self.logger.warning("保存する表現が生成されていません。run()メソッドを実行してください。")
+            return
+
+        num_institutions = self.config.num_institution
+
+        # --- 中間表現の保存 ---
+        intermediate_dfs = []
+        for i in range(num_institutions):
+            # Train
+            df_train_inter = pd.DataFrame(self.Xs_train_inter[i], columns=[f'dim_{j+1}' for j in range(self.Xs_train_inter[i].shape[1])])
+            df_train_inter['y'] = self.ys_train[i]
+            df_train_inter['data_type'] = 'train'
+            df_train_inter['institution'] = i
+            intermediate_dfs.append(df_train_inter)
+
+            # Test
+            df_test_inter = pd.DataFrame(self.Xs_test_inter[i], columns=[f'dim_{j+1}' for j in range(self.Xs_test_inter[i].shape[1])])
+            df_test_inter['y'] = self.ys_test[i]
+            df_test_inter['data_type'] = 'test'
+            df_test_inter['institution'] = i
+            intermediate_dfs.append(df_test_inter)
+
+        df_intermediate_all = pd.concat(intermediate_dfs, ignore_index=True)
+        intermediate_save_path = save_dir / "intermediate_representations.csv"
+        df_intermediate_all.to_csv(intermediate_save_path, index=False)
+        self.logger.info(f"✅ 中間表現をCSVに保存しました: {intermediate_save_path}")
+
+
+        # --- 統合表現の保存 ---
+        # 統合表現を機関ごとに再分割
+        train_sizes = [len(y) for y in self.ys_train]
+        test_sizes = [len(y) for y in self.ys_test]
+        train_indices = np.cumsum([0] + train_sizes)
+        test_indices = np.cumsum([0] + test_sizes)
+
+        Xs_train_integ_split = [self.X_train_integ[train_indices[i]:train_indices[i+1]] for i in range(num_institutions)]
+        Xs_test_integ_split = [self.X_test_integ[test_indices[i]:test_indices[i+1]] for i in range(num_institutions)]
+
+        integrated_dfs = []
+        for i in range(num_institutions):
+            # Train
+            df_train_integ = pd.DataFrame(Xs_train_integ_split[i], columns=[f'dim_{j+1}' for j in range(Xs_train_integ_split[i].shape[1])])
+            df_train_integ['y'] = self.ys_train[i]
+            df_train_integ['data_type'] = 'train'
+            df_train_integ['institution'] = i
+            integrated_dfs.append(df_train_integ)
+
+            # Test
+            df_test_integ = pd.DataFrame(Xs_test_integ_split[i], columns=[f'dim_{j+1}' for j in range(Xs_test_integ_split[i].shape[1])])
+            df_test_integ['y'] = self.ys_test[i]
+            df_test_integ['data_type'] = 'test'
+            df_test_integ['institution'] = i
+            integrated_dfs.append(df_test_integ)
+
+        df_integrated_all = pd.concat(integrated_dfs, ignore_index=True)
+        integrated_save_path = save_dir / "integrated_representations.csv"
+        df_integrated_all.to_csv(integrated_save_path, index=False)
+        self.logger.info(f"✅ 統合表現をCSVに保存しました: {integrated_save_path}")
+

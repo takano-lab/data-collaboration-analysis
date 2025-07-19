@@ -1,171 +1,148 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Any, Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import roc_auc_score, roc_curve
-from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import accuracy_score, mean_squared_error, roc_auc_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.svm import SVC
 
+# --- 前処理用カスタム変換器 ---
+class EigenWeightingTransformer(BaseEstimator, TransformerMixin):
+    def __init__(self, eigenvalues):
+        self.eigenvalues = np.array(eigenvalues)
+        self.weights_ = None
 
-# ----------------------------------------------------------------------
-# 線形回帰 
-# ----------------------------------------------------------------------
-def run_linear_regression(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-) -> float:
-    """線形回帰で RMSE を返す"""
-    model = LinearRegression()
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
-    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-    return rmse
+    def fit(self, X, y=None):
+        lam = self.eigenvalues
+        lam1 = lam[0]
+        lamm = lam[-1]
+        denom = lamm - lam1 if lamm != lam1 else 1e-8
+        self.weights_ = np.exp(-(lam - lam1) / denom)
+        return self
 
-# ----------------------------------------------------------------------
-# ランダムフォレスト
-# ----------------------------------------------------------------------
-def run_random_forest_classifier(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    random_state: int = 42,
-) -> float:
-    """線形回帰で RMSE を返す"""
-    model = RandomForestClassifier(random_state=random_state)
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
-    auc = roc_auc_score(y_test, y_pred, multi_class='ovr')
-    return auc
+    def transform(self, X):
+        if self.weights_ is None:
+            raise RuntimeError("fit() must be called before transform()")
+        print(self.weights_)
+        return X * self.weights_
 
-# ----------------------------------------------------------------------
-# SVM（RBF カーネル）分類器
-#   - 特徴量スケーリング：StandardScaler
-#   - y が文字列でも自動で数値化
-#   - バイナリ／多クラスは SVC が勝手に One-Vs-One で処理
-# ----------------------------------------------------------------------
-def run_svm_classifier(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    *,
-    C: float = 1.0,
-    random_state: int = 42,
-) -> float:
+
+# --- 機械学習モデル実行クラス ---
+
+class ModelRunner:
     """
-    線形SVM による分類（カーネルなし）を行い、accuracy を返す。
-
-    前処理:
-      1. 特徴量を StandardScaler で平均 0・分散 1 にスケーリング
-      2. ラベルが非数値の場合は LabelEncoder で数値化
+    configに基づいて機械学習モデルの学習と評価を行うクラス。
     """
-    label_encoder: Optional[LabelEncoder] = None
-    if not np.issubdtype(y_train.dtype, np.number):
-        label_encoder = LabelEncoder().fit(y_train)
-        y_train_enc = label_encoder.transform(y_train)
-        y_test_enc = label_encoder.transform(y_test)
-    else:
-        y_train_enc = y_train
-        y_test_enc = y_test
+    def __init__(self, config: Any):
+        self.config = config
+        # config.h_model の値と実行するメソッドをマッピング
+        self._model_map = {
+            "linear_regression": self._run_linear_regression,
+            "random_forest": self._run_random_forest,
+            "svm_classifier": self._run_svm,
+            "svm_linear_classifier": self._run_svm_linear,
+        }
+
+    def run(self, X_train: np.ndarray, y_train: np.ndarray, X_test: np.ndarray, y_test: np.ndarray) -> float:
+        """
+        configで指定されたモデルを実行し、評価値を返す。
+        """
+        model_func = self._model_map.get(self.config.h_model)
+        if model_func is None:
+            raise ValueError(f"Unknown model name in config: {self.config.h_model}")
+
+        # configにeigenvaluesがあれば、キーワード引数として渡す
+        kwargs = {}
+        if hasattr(self.config, 'eigenvalues'):
+            kwargs['eigenvalues'] = self.config.eigenvalues
         
-    model = make_pipeline(
-        StandardScaler(),
-        #SVC(kernel="linear", C=C, random_state=random_state)
-        SVC(kernel="rbf", C=C, gamma="scale", random_state=random_state)
-    )
-    # if config.G_type == "GEP_weighted"
-        # model = make_pipeline(
-        #     SVC(kernel="rbf", C=C, gamma="scale", random_state=random_state)
-        # )    
+        return model_func(X_train, y_train, X_test, y_test, **kwargs)
 
-    model.fit(X_train, y_train_enc)
-    y_pred = model.predict(X_test)
-    auc = roc_auc_score(y_test_enc, y_pred, multi_class='ovr')
-    return auc
+    def _evaluate(self, y_true: np.ndarray, y_pred: np.ndarray, y_score: np.ndarray, n_classes: int) -> float:
+        """
+        config.metricsに基づいて評価指標を計算する。
+        """
+        metric = getattr(self.config, 'metrics', 'auc').lower()  # デフォルトはauc
 
-def run_svm_linear_classifier(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    *,
-    C: float = 1.0,
-    random_state: int = 42,
-) -> float:
-    """
-    線形SVM による分類（カーネルなし）を行い、accuracy を返す。
-
-    前処理:
-      1. 特徴量を StandardScaler で平均 0・分散 1 にスケーリング
-      2. ラベルが非数値の場合は LabelEncoder で数値化
-    """
-    label_encoder: Optional[LabelEncoder] = None
-    if not np.issubdtype(y_train.dtype, np.number):
-        label_encoder = LabelEncoder().fit(y_train)
-        y_train_enc = label_encoder.transform(y_train)
-        y_test_enc = label_encoder.transform(y_test)
-    else:
-        y_train_enc = y_train
-        y_test_enc = y_test
+        if metric == 'auc':
+            if y_score is None:
+                raise ValueError("AUCを計算するには予測確率(y_score)が必要です。")
+            if n_classes == 2:
+                return roc_auc_score(y_true, y_score[:, 1])
+            else:
+                return roc_auc_score(y_true, y_score, multi_class="ovr", average="macro")
         
-    model = make_pipeline(
-        StandardScaler(),
-        SVC(kernel="linear", C=C, probability=True, random_state=random_state)
-    )  
-    
-    y_train=y_train_enc
-    y_test=y_test_enc
-    # 学習
-    model.fit(X_train, y_train)
-
-    y_score = model.predict_proba(X_test)
-    n_classes = len(np.unique(y_train))
-    print(f"Number of classes: {n_classes}")
-    if n_classes == 2:
-        print("二値分類のため、ROC曲線とAUCを計算・表示します")
+        elif metric == 'accuracy':
+            return accuracy_score(y_true, y_pred)
         
-        # AUCスコアを計算
-        auc = roc_auc_score(y_test, y_score[:, 1])
-        # print(f"ROC AUC: {auc:.4f}")
+        else:
+            raise ValueError(f"未対応の評価指標です: {self.config.metrics}")
 
-        # # ROC曲線のプロットデータを計算
-        # # y_score[:, 1] は陽性クラス（クラス1）の確率です
-        # print(y_test)
-        # print(y_score[:, 1])
-        # fpr, tpr, thresholds = roc_curve(y_test, y_score[:, 1])
+    def _run_linear_regression(self, X_train, y_train, X_test, y_test, **kwargs) -> float:
+        """線形回帰で RMSE を返す"""
+        # 注意: linear_regressionは回帰モデルのため、accuracy/aucは適用されません。
+        model = LinearRegression()
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        return np.sqrt(mean_squared_error(y_test, y_pred))
 
-        # # グラフの作成
-        # plt.figure(figsize=(8, 8))
-        # plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {auc:.2f})')
-        # plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--') # ランダムレベルを示す対角線
+    def _run_random_forest(self, X_train, y_train, X_test, y_test, **kwargs) -> float:
+        """ランダムフォレストで評価指標を計算する"""
+        model = RandomForestClassifier(random_state=self.config.seed)
+        model.fit(X_train, y_train)
         
-        # # グラフの装飾
-        # plt.xlim([0.0, 1.0])
-        # plt.ylim([0.0, 1.05])
-        # plt.xlabel('False Positive Rate (偽陽性率)')
-        # plt.ylabel('True Positive Rate (真陽性率)')
-        # plt.title('Receiver Operating Characteristic (ROC) Curve')
-        # plt.legend(loc="lower right")
-        # plt.grid(True)
-        # plt.show()
-    else:
-        auc = roc_auc_score(y_test, y_score, multi_class="ovr", average="macro")
+        y_pred = model.predict(X_test)
+        y_score = model.predict_proba(X_test)
+        n_classes = len(model.classes_)
+        
+        return self._evaluate(y_test, y_pred, y_score, n_classes)
 
-    return auc
+    def _run_svm(self, X_train, y_train, X_test, y_test, **kwargs) -> float:
+        """RBFカーネルSVMで評価指標を計算する"""
+        return self._execute_svm(X_train, y_train, X_test, y_test, kernel="rbf", **kwargs)
 
-# モデル関数を辞書として定義
-h_models = {
-    "linear_regression": run_linear_regression,
-    "random_forest": run_random_forest_classifier,
-    "svm_classifier": run_svm_classifier,
-    "svm_linear_classifier": run_svm_linear_classifier,
-}
+    def _run_svm_linear(self, X_train, y_train, X_test, y_test, **kwargs) -> float:
+        """線形カーネルSVMで評価指標を計算する"""
+        return self._execute_svm(X_train, y_train, X_test, y_test, kernel="linear", **kwargs)
+
+    def _execute_svm(self, X_train, y_train, X_test, y_test, kernel: str, eigenvalues: Optional[list] = None) -> float:
+        """SVMの共通処理"""
+        # ラベルのエンコード
+        if not np.issubdtype(y_train.dtype, np.number):
+            encoder = LabelEncoder().fit(y_train)
+            y_train = encoder.transform(y_train)
+            y_test = encoder.transform(y_test)
+
+        # パイプラインの構築
+        steps = [StandardScaler()]
+        if eigenvalues is not None:
+            steps.append(EigenWeightingTransformer(eigenvalues=eigenvalues))
+        
+        c_param = getattr(self.config, 'h_C', 1.0)
+        if c_param is None:
+            c_param = 1.0
+
+        svc_params = {
+            "kernel": kernel,
+            "C": c_param,
+            "probability": True,
+            "random_state": self.config.seed,
+        }
+        if kernel == "rbf":
+            svc_params["gamma"] = "scale"
+        
+        steps.append(SVC(**svc_params))
+        model = make_pipeline(*steps)
+
+        # 学習と評価
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        y_score = model.predict_proba(X_test)
+        n_classes = len(model.classes_)
+        
+        return self._evaluate(y_test, y_pred, y_score, n_classes)

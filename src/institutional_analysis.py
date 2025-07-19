@@ -8,7 +8,8 @@ import pandas as pd
 
 from config.config import Config
 from config.config_logger import record_config_to_cfg, record_value_to_cfg
-from src.model import h_models
+from src.model import ModelRunner
+#from src.model import h_ml_model, h_models
 from src.utils import reduce_dimensions
 
 logger = TypeVar("logger")
@@ -39,15 +40,15 @@ def centralize_analysis(config: Config, logger: logger, y_name) -> None:
     X_test = test_df.values
 
     # SVD
-    # X_tr_svd, X_te_svd = reduce_dimensions_with_svd(X_train, X_test, n_components=config.dim_integrate)
     X_tr_svd, X_te_svd = X_train, X_test
-    metrics = h_ml_model(
-        X_train=X_tr_svd,
-        y_train=y_train,
-        X_test=X_te_svd,
-        y_test=y_test,
-        config=config,
-    )
+    model_runner = ModelRunner(config)
+    metrics = model_runner.run(
+                    X_train=X_tr_svd,
+                    y_train=y_train,
+                    X_test=X_te_svd,
+                    y_test=y_test
+                )
+    
     
     logger.info(f"集中解析の評価値: {metrics:.4f}")
     record_value_to_cfg(config, "集中解析", metrics)
@@ -65,7 +66,8 @@ def centralize_analysis_with_dimension_reduction(config: Config, logger: logger,
     X_test = test_df.values
 
     # SVD
-    X_tr_svd, X_te_svd = reduce_dimensions(X_train, X_test, n_components=config.dim_integrate)
+    #X_tr_svd, X_te_svd = reduce_dimensions(X_train, X_test, n_components=config.dim_integrate)
+    X_tr_svd, X_te_svd = X_train, X_test
     metrics = h_ml_model(
         X_train=X_tr_svd,
         y_train=y_train,
@@ -91,10 +93,12 @@ def individual_analysis(
 ) -> None:
     losses: list[float] = []
 
+    model_runner = ModelRunner(config)
+
     for X_tr, X_te, y_tr, y_te in zip(Xs_train, Xs_test, ys_train, ys_test):
         #X_tr_svd, X_te_svd = reduce_dimensions_with_svd(X_tr, X_te, n_components=config.dim_intermediate)
         X_tr_svd, X_te_svd = X_tr, X_te
-        metrics = h_ml_model(X_tr_svd, y_tr, X_te_svd, y_te, config)
+        metrics = model_runner.run(X_tr_svd, y_tr, X_te_svd, y_te)
         losses.append(metrics)
         break
         
@@ -114,11 +118,13 @@ def individual_analysis_with_dimension_reduction(
     logger: logger,
 ) -> None:
     losses: list[float] = []
+    
+    model_runner = ModelRunner(config)
 
     for X_tr, X_te, y_tr, y_te in zip(Xs_train, Xs_test, ys_train, ys_test):
         print(y_te)
         X_tr_svd, X_te_svd = reduce_dimensions(X_tr, X_te, n_components=config.dim_intermediate)
-        metrics = h_ml_model(X_tr_svd, y_tr, X_te_svd, y_te, config)
+        metrics = model_runner.run(X_tr_svd, y_tr, X_te_svd, y_te)
         losses.append(metrics)
         break
         
@@ -137,12 +143,12 @@ def dca_analysis(
     config: Config,
     logger: logger,
 ) -> None:
-    metrics = h_ml_model(
-        X_train_integ,
-        y_train_integ,
-        X_test_integ,
-        y_test_integ,
-        config,
+    model_runner = ModelRunner(config)
+    metrics = model_runner.run(
+        X_train=X_train_integ,
+        y_train=y_train_integ,
+        X_test=X_test_integ,
+        y_test=y_test_integ,
     )
     logger.info(f"提案手法の評価値: {metrics:.4f}")
     record_value_to_cfg(config, "提案手法", metrics)

@@ -6,6 +6,68 @@ from sklearn.decomposition import PCA, KernelPCA, TruncatedSVD
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
+import numpy as np
+from sklearn.neighbors import NearestNeighbors
+from scipy.linalg import eigh
+
+class LPPScratch:
+    def __init__(self, n_components=2, t=0.01, k_neighbors=5):
+        self.n_components = n_components
+        self.t = t
+        self.k_neighbors = k_neighbors
+        self.A = None  # 射影行列
+
+    def _construct_weight_matrix(self, X):
+        n_samples = X.shape[0]
+        knn = NearestNeighbors(n_neighbors=self.k_neighbors)
+        knn.fit(X)
+        W = np.zeros((n_samples, n_samples))
+
+        for i in range(n_samples):
+            neighbors = knn.kneighbors([X[i]], return_distance=False)[0]
+            for j in neighbors:
+                if i != j:
+                    diff = X[i] - X[j]
+                    W[i, j] = W[j, i] = np.exp(-np.dot(diff, diff) / self.t)
+        return W
+
+    def fit(self, X):
+        X = X.astype(np.float64)
+        W = self._construct_weight_matrix(X)
+        D = np.diag(W.sum(axis=1))
+        L = D - W
+
+        # 一般化固有値問題を解く: X^T L X a = λ X^T D X a
+        XT_D_X = X.T @ D @ X
+        XT_L_X = X.T @ L @ X
+
+        # 正則化を追加して XT_D_X が正定値になるようにする
+        # これにより "not positive definite" エラーを回避する
+        reg = 1e-9 * np.eye(XT_D_X.shape[0])
+        
+        # 対称な一般化固有値問題を解く
+        try:
+            eigvals, eigvecs = eigh(XT_L_X, XT_D_X + reg)
+        except np.linalg.LinAlgError as e:
+            print(f"LPPで固有値計算エラーが発生しました: {e}")
+            # エラー発生時は、PCAにフォールバックするなどの代替処理も検討可能
+            # ここでは、エラーを伝播させる代わりに、射影行列を単位行列として処理を続行させる
+            self.A = np.eye(X.shape[1])[:, :self.n_components]
+            return
+
+
+        # 小さい固有値に対応するベクトルを選択
+        sorted_indices = np.argsort(eigvals)
+        self.A = eigvecs[:, sorted_indices[:self.n_components]]
+
+    def transform(self, X):
+        return X @ self.A
+
+    def fit_transform(self, X):
+        self.fit(X)
+        return self.transform(X)
+
+
 
 class SVDScratch:
     """フル SVD を計算し、上位 *k* 成分を保持する。
@@ -69,7 +131,8 @@ def reduce_dimensions(
     anchor: Optional[np.ndarray] = None,
     F_type = "kernel_pca",
     seed= None,
-    param = None
+    param = None,
+    config =  None
 ) -> Tuple[np.ndarray, ...]:
     # --- SVD / KernelPCA の選択 ---
     # USE_KERNEL = n_components >= X_train.shape[1]
@@ -85,6 +148,20 @@ def reduce_dimensions(
             return X_train_svd, X_test_svd, X_anchor_svd
 
         return X_train_svd, X_test_svd
+    
+    elif F_type == "lpp":
+        k = int(config.num_institution_user * 0.2)
+        model = LPPScratch(n_components=n_components, t=0.01, k_neighbors=k)
+
+        X_train_lpp = model.fit_transform(X_train)
+        X_test_lpp = model.transform(X_test)
+
+        if anchor is not None:
+            X_anchor_lpp = model.transform(anchor)
+            return X_train_lpp, X_test_lpp, X_anchor_lpp
+
+        return X_train_lpp, X_test_lpp
+
 
     else:
     # --- スケーリング ---
@@ -93,6 +170,7 @@ def reduce_dimensions(
         X_test_scaled = scaler.transform(X_test)
         anchor_scaled = scaler.transform(anchor) if anchor is not None else None
         gamma = 1.0 / X_train.shape[1] # har だと 0.001 が精度良い
+        gamma = 0.007
         # model = KernelPCA(
         #     n_components=n_components,
         #     kernel="rbf",
@@ -153,10 +231,15 @@ def make_random_kpca(n_components, seed=None, param=None):
         "eigen_solver": "auto",
         "n_jobs": -1,
     }
-
     # カーネルごとのパラメータ設定
     if kernel in ["rbf", "poly", "sigmoid"]:
-        params["gamma"] = 0.001#param #np.exp(rng.uniform(np.log(1e-4), np.log(1)))  # log-uniform などもOK
+        if seed % 3 == 0:
+            params["gamma"] = 0.1
+        elif seed % 3 == 1:
+            params["gamma"] = 1
+        else:
+            params["gamma"] = 15
+        #params["gamma"] = 0.1
         #print("Random KPCA parameters (gamma):", params["gamma"])
     if kernel == "poly":
         params["degree"] = 2 #rng.integers(2, 6)

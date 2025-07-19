@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Tuple
 
 import pandas as pd
+from sklearn.datasets import fetch_olivetti_faces, fetch_openml, load_digits, make_moons, make_swiss_roll
 from sklearn.model_selection import train_test_split
 
 from config.config import Config
@@ -80,6 +81,33 @@ def _load_bank_marketing() -> pd.DataFrame:
     df = df.rename(columns={"y": "target"})
     return df
 
+def load_digits_df() -> pd.DataFrame:
+    """8×8 手書き数字 (n=1 797) を DataFrame 化。"""
+    bunch = load_digits(as_frame=True)
+    # `bunch.frame` には data と target が入り済み
+    df = bunch.frame.copy()
+    df = df.rename(columns={"target": "target"})
+    df = df.drop(columns=["org"])
+    return df
+
+def load_leukemia_df() -> pd.DataFrame:
+    """
+    Golub の白血病 Microarray (7 129 特徴 × 72 サンプル)  
+    - UCI ML Repo: https://archive.ics.uci.edu/ml/datasets/Leukemia
+    CSV をあらかじめ `input/leukemia.csv` に配置して読み込む想定。
+    """
+    path = Path("input/leukemia.csv")
+    df = pd.read_csv(path)
+    df = df.rename(columns={"Class": "target"})
+    return df
+
+def load_concentric_circles_df() -> pd.DataFrame:
+    path = Path("input/Three_Organization_Dataset.csv")
+    df = pd.read_csv(path)
+    df = df.rename(columns={"y": "target"})
+    #df["y"] = df["target"]
+    return df
+
 def _load_har() -> pd.DataFrame:
     # HAR データセットのルートパス
     root = Path("input/UCI_HAR_Dataset")  # WindowsでもOKな相対パス
@@ -129,6 +157,8 @@ LOADERS = {
     "credit_default": _load_credit_default,
     "bank_marketing": _load_bank_marketing,
     "har": _load_har,
+    "digits": load_digits_df,
+    "concentric_circles": load_concentric_circles_df,
 }
 
 # -------------------------------------------------- #
@@ -153,33 +183,51 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
     # ── 再結合
     df = pd.concat([X, y], axis=1)
-    
-    feature_num = min(len(df.columns) - 1, 50)  # 特徴量の数（目的変数を除く）
-    config.dim_intermediate = feature_num-1 # 中間表現の次元数
-    config.dim_integrate = feature_num-1 # 統合表現の次元数
-    
-    config.num_institution_user = max(config.dim_integrate + 1, 20) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
-    config.num_institution = min(10, int(len(df) / (config.num_institution_user * 2)))
-    
-    # if config.dataset == 'qsar':
-    #     config.dim_intermediate = feature_num-1 # 中間表現の次元数
-    #     config.dim_integrate = feature_num-1 # 統合表現の次元数
-    #     config.num_institution_user = 50
-    #     config.num_institution = 10
 
-    if config.dataset == 'breast_cancer':
-        feature_num = 15  # 特徴量の数（目的変数を除く）
-        config.dim_intermediate = feature_num-1 # 中間表現の次元数
-        config.dim_integrate = feature_num-1 # 統合表現の次元数
+    if config.dataset == 'qsar':
+        config.feature_num = 41
+        config.dim_intermediate = 37 # 中間表現の次元数
+        config.dim_integrate = 37 # 統合表現の次元数
+        config.num_institution_user = 25
+        config.num_institution = 20
+
+    elif config.dataset == 'breast_cancer':
+        config.feature_num = 15  # 特徴量の数（目的変数を除く）
+        config.dim_intermediate = config.feature_num-1 # 中間表現の次元数
+        config.dim_integrate = config.feature_num-1 # 統合表現の次元数
         config.num_institution_user = 16
         config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
         
+    elif config.dataset == 'digits':
+        #feature_num = 15  # 特徴量の数（目的変数を除く）
+        #config.dim_intermediate = 5 # 中間表現の次元数
+        #config.dim_integrate = 5 # 統合表現の次元数
+        config.feature_num = min(len(df.columns) - 1, 51)
+        config.num_institution_user = 30
+        config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
+
+    elif config.dataset == 'concentric_circles':
+        config.feature_num = 2  # 特徴量の数（目的変数を除く）
+        config.dim_intermediate = 2 # 中間表現の次元数
+        config.dim_integrate = 2 # 統合表現の次元数
+        config.num_institution = 3
+        config.num_institution_user = int(len(df) / (config.num_institution * 2))
+        
+    else:
+        #config.feature_num = min(len(df.columns) - 1)#, 50)  # 特徴量の数（目的変数を除く）
+        #config.dim_intermediate = config.feature_num-1 # 中間表現の次元数
+        #config.dim_integrate = config.feature_num-1 # 統合表現の次元数
+        config.feature_num = 51#len(df.columns) - 1
+        config.num_institution_user = 42# max(config.dim_integrate + 1, 20) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
+        config.num_institution = 12#int(len(df) / (config.num_institution_user * 2))
+    
+    
     # 特徴量だけを取得（target を除外）
     y_name = config.y_name
     feature_columns = [col for col in df.columns if col != y_name]
 
     # 最大 feature_num 個までに制限
-    limited_features = feature_columns[:feature_num]
+    limited_features = feature_columns[:config.feature_num]
 
     # 最終的に残す列（順序は：特徴量 + target）
     final_columns = limited_features + [y_name]

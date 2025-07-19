@@ -11,6 +11,7 @@ from config.config_logger import record_config_to_cfg, record_value_to_cfg
 from src.data_collaboration import DataCollaborationAnalysis
 from src.institutional_analysis import (
     centralize_analysis,
+    centralize_analysis_with_dimension_reduction,
     dca_analysis,
     individual_analysis,
     individual_analysis_with_dimension_reduction,
@@ -56,54 +57,58 @@ def main():
     if config.F_type == "kernel_pca" and config.G_type == "GEP_weighted":
         # GEP_weightedはUSE_KERNELがTrueのときのみ実行
         return
-    if config.F_type == "kernel_pca" and config.G_type == "GEP":
+    #if config.F_type == "kernel_pca" and config.G_type == "GEP":
         # GEP_weightedはUSE_KERNELがTrueのときのみ実行
-        return
+    #    return
     config.log(logger, exclude_keys=["output_path", "input_path", "name", "seed", "y_name"])
     # インスタンスの生成
     data_collaboration = DataCollaborationAnalysis(config=config, logger=logger, train_df=train_df, test_df=test_df)
     # データ分割 -> 統合表現の獲得まで一気に実行
     #data_collaboration.save_optimal_params()
     data_collaboration.run()
-
+    #data_collaboration.visualize_representations()
+    #data_collaboration.save_representations_to_csv()
         # 提案手法
     record_config_to_cfg(config)
-    metrics = dca_analysis(
-                    X_train_integ=data_collaboration.X_train_integ,
-                    X_test_integ=data_collaboration.X_test_integ,
-                    y_train_integ=data_collaboration.y_train_integ,
-                    y_test_integ=data_collaboration.y_test_integ,
-                    config=config,
-                    logger=logger,
-                )
-    metrics_dict[f'{config.F_type}_{config.G_type}'] = metrics
+    if config.G_type == 'centralize':
+                # 集中解析
+        metrics_cen = centralize_analysis(config, logger, y_name=config.y_name)
+        metrics_dict['centralize'] = metrics_cen
+        return metrics_cen
+    elif config.G_type == 'individual':
+        # 個別解析
+        metrics_ind = individual_analysis(
+            config=config,
+            logger=logger,
+            Xs_train=data_collaboration.Xs_train,
+            ys_train=data_collaboration.ys_train,
+            Xs_test=data_collaboration.Xs_test,
+            ys_test=data_collaboration.ys_test,
+        )
+        #metrics_dict['individual'] = metrics_ind
+        return metrics_ind
+    else:
+        metrics = dca_analysis(
+                        X_train_integ=data_collaboration.X_train_integ,
+                        X_test_integ=data_collaboration.X_test_integ,
+                        y_train_integ=data_collaboration.y_train_integ,
+                        y_test_integ=data_collaboration.y_test_integ,
+                        config=config,
+                        logger=logger,
+                    )
+        #metrics_dict[f'{config.F_type}_{config.G_type}'] = 
+        return metrics
     
-    # 集中解析
-    metrics_cen = centralize_analysis(config, logger, y_name=config.y_name)
-    
-    metrics_dict['centralize'] = metrics_cen
-
     # 個別解析
-    metrics_ind = individual_analysis(
-        config=config,
-        logger=logger,
-        Xs_train=data_collaboration.Xs_train,
-        ys_train=data_collaboration.ys_train,
-        Xs_test=data_collaboration.Xs_test,
-        ys_test=data_collaboration.ys_test,
-    )
-    metrics_dict['individual'] = metrics_ind
-    
-    # 個別解析
-    metrics_ind = individual_analysis_with_dimension_reduction(
-        config=config,
-        logger=logger,
-        Xs_train=data_collaboration.Xs_train,
-        ys_train=data_collaboration.ys_train,
-        Xs_test=data_collaboration.Xs_test,
-        ys_test=data_collaboration.ys_test,
-    )
-    metrics_dict['individual_dim'] = metrics_ind
+    # metrics_ind = individual_analysis_with_dimension_reduction(
+    #     config=config,
+    #     logger=logger,
+    #     Xs_train=data_collaboration.Xs_train,
+    #     ys_train=data_collaboration.ys_train,
+    #     Xs_test=data_collaboration.Xs_test,
+    #     ys_test=data_collaboration.ys_test,
+    # )
+    #metrics_dict['individual_dim'] = metrics_ind
     
         # 個別解析 2 
     # individual_analysis(
@@ -118,52 +123,50 @@ def main():
 
 def main_loop():
     LOADERS = [
-    #    "statlog",
+    #   "statlog",
         'qsar',
     #   "breast_cancer",
     #    "har",
     #    "adult",
     #    "diabetes130",
     #    "bank_marketing", # 性能に変化でない
+    #"digits",
+    #"concentric_circles"
     ]
-    MODELS = ["svm_linear_classifier"]#"random_forest"]#, "svm_classifier"]
+    MODELS = ["svm_classifier"]#"random_forest"]#, _linear_
     
     F_types =["kernel_pca"]#["svd", "kernel_pca"]
-    G_types = ["Imakura"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]
+    G_types = ["Imakura"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]
+    config.metrics = "auc"
     #G_types = ["nonlinear"]
     config.F_type = F_types[0]
     config.G_type = G_types[0]
     
     data = {}
+    config.nl_gamma = 0.001
+    config.nl_lambda = 1e-7
+    config.h_model = MODELS[0]
+    #for dim_m in [2]:
+    #for dim_m in [36, 37, 38, 39]:
     for dataset in LOADERS:
-        config.G_type = "Imakura"
-        for model in MODELS:
-            config.dataset = dataset
-            config.h_model = model
-            data[f'{dataset}_{model}'] = main()
-            
-        config.G_type = "nonlinear"
-    
-        for model in MODELS:
-            for nl_lambda in [0.0000001]:
-            #for nl_lambda in [0.0001, 0.01]:
-                config.nl_lambda = nl_lambda
-                config.dataset = dataset
-                config.h_model = model
-            #    data[f'{dataset}_{model}_{nl_lambda}'] = main()
-                
-                #for nl_gamma in [0.00001, 0.0001, 0.001, 0.01, 0.1]:
-                #for nl_gamma in [0.0001, 0.005, 0.05, 0.5]:
-                for r in [10, 100, 1000, 3000]:
-                    config.nl_gamma = 0.001# nl_gamma
-                    config.num_anchor_data = r
-                    #     config.dataset = dataset
-                    #     config.h_model = model
-                    data[f'{dataset}_{model}'] = main()
+        for G_type in G_types:
+            config.G_type = G_type
+            for i in range(10+1, 21):
+                config.seed = i
+                #for lambda_ in [0,  0.1, 1, 10, 100, 1000]:
+                for lambda_ in [0]:
+                    config.dataset = dataset
+                    config.lambda_gen_eigen = lambda_
+                    metrics = []
+                    config.dataset = dataset
+                    metrics.append(main())
+                # 平均値を計算
+                metrics_mean = sum(metrics) / len(metrics)
+                data[f'{dataset}_{G_type}_{lambda_}'] = metrics_mean
 
     # DataFrameに変換
-    #df_all = pd.DataFrame.from_dict(data, orient="index")
-    #df_all.to_csv(output_path / "result.csv", index=True, encoding="utf-8-sig")
+    df_all = pd.DataFrame.from_dict(data, orient="index")
+    df_all.to_csv(output_path / "result.csv", index=True, encoding="utf-8-sig")
     
 def partial_run():
     logger.info(f"データセット: {config.dataset}")
@@ -175,6 +178,7 @@ def partial_run():
     # dim_intermediate,dim_integrate
     F_types =["kernel_pca"]#["svd", "kernel_pca"]
     G_types = ["Imakura", "nonlinear"]#, "targetvec", "GEP", "GEP_weighted"]
+
     #for F_type in F_types:
     dim_intermediate = config.dim_intermediate
     for dim_intermediate in range(1, dim_intermediate + 1, 5):
