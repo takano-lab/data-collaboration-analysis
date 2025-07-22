@@ -28,7 +28,6 @@ class EigenWeightingTransformer(BaseEstimator, TransformerMixin):
     def transform(self, X):
         if self.weights_ is None:
             raise RuntimeError("fit() must be called before transform()")
-        print(self.weights_)
         return X * self.weights_
 
 

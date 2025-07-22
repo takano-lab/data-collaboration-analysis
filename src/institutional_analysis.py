@@ -122,7 +122,6 @@ def individual_analysis_with_dimension_reduction(
     model_runner = ModelRunner(config)
 
     for X_tr, X_te, y_tr, y_te in zip(Xs_train, Xs_test, ys_train, ys_test):
-        print(y_te)
         X_tr_svd, X_te_svd = reduce_dimensions(X_tr, X_te, n_components=config.dim_intermediate)
         metrics = model_runner.run(X_tr_svd, y_tr, X_te_svd, y_te)
         losses.append(metrics)

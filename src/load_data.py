@@ -5,8 +5,10 @@ import zipfile
 from pathlib import Path
 from typing import Tuple
 
+import numpy as np
 import pandas as pd
 from sklearn.datasets import fetch_olivetti_faces, fetch_openml, load_digits, make_moons, make_swiss_roll
+from sklearn.impute import KNNImputer
 from sklearn.model_selection import train_test_split
 
 from config.config import Config
@@ -81,7 +83,7 @@ def _load_bank_marketing() -> pd.DataFrame:
     df = df.rename(columns={"y": "target"})
     return df
 
-def load_digits_df() -> pd.DataFrame:
+def _load_digits_df() -> pd.DataFrame:
     """8×8 手書き数字 (n=1 797) を DataFrame 化。"""
     bunch = load_digits(as_frame=True)
     # `bunch.frame` には data と target が入り済み
@@ -90,23 +92,45 @@ def load_digits_df() -> pd.DataFrame:
     df = df.drop(columns=["org"])
     return df
 
-def load_leukemia_df() -> pd.DataFrame:
-    """
-    Golub の白血病 Microarray (7 129 特徴 × 72 サンプル)  
-    - UCI ML Repo: https://archive.ics.uci.edu/ml/datasets/Leukemia
-    CSV をあらかじめ `input/leukemia.csv` に配置して読み込む想定。
-    """
-    path = Path("input/leukemia.csv")
-    df = pd.read_csv(path)
-    df = df.rename(columns={"Class": "target"})
-    return df
 
-def load_concentric_circles_df() -> pd.DataFrame:
+def _load_concentric_circles_df() -> pd.DataFrame:
     path = Path("input/Three_Organization_Dataset.csv")
     df = pd.read_csv(path)
     df = df.rename(columns={"y": "target"})
     #df["y"] = df["target"]
     return df
+
+def _load_mice_df() -> pd.DataFrame:
+    """
+    Mice Protein Expression (n=1080, 77 特徴量)  
+    - UCI ML Repo: https://archive.ics.uci.edu/ml/datasets/Mice+Protein+Expression
+    CSV をあらかじめ `input/mice_protein_expression.csv` に配置して読み込む想定。
+    """
+    path = Path(r"input\mice+protein+expression\Data_Cortex_Nuclear.xls")
+    df = pd.read_excel(path)
+    df = df.rename(columns={"class": "target"})
+    
+       # 'MouseID' は代入に不要なため一時的に除外
+    mouse_ids = df['MouseID']
+    df_features = df.drop(columns=['MouseID'])
+    
+    # 数値データのみを対象にK近傍法を適用
+    numeric_cols = df_features.select_dtypes(include=np.number).columns
+    
+    # KNNImputerのインスタンスを作成 (n_neighbors=5がデフォルト)
+    imputer = KNNImputer(n_neighbors=5)
+    
+    # 代入を実行し、結果をDataFrameに戻す
+    imputed_data = imputer.fit_transform(df_features[numeric_cols])
+    df_imputed = pd.DataFrame(imputed_data, columns=numeric_cols, index=df_features.index)
+    
+    # 元のDataFrameに代入された値を反映
+    df_features[numeric_cols] = df_imputed
+    
+    # 除外していた 'MouseID' を元に戻す
+    df_final = pd.concat([mouse_ids, df_features], axis=1)
+
+    return df_final
 
 def _load_har() -> pd.DataFrame:
     # HAR データセットのルートパス
@@ -157,19 +181,32 @@ LOADERS = {
     "credit_default": _load_credit_default,
     "bank_marketing": _load_bank_marketing,
     "har": _load_har,
-    "digits": load_digits_df,
-    "concentric_circles": load_concentric_circles_df,
+    "digits": _load_digits_df,
+    "concentric_circles": _load_concentric_circles_df,
+    "mice": _load_mice_df,
 }
+
+def drop_rare_labels(df, ycol="target", min_count=2):
+    """min_count 未満しか無いクラスは丸ごと捨てる"""
+    vc = df[ycol].value_counts()
+    ok_labels = vc[vc >= min_count].index
+    return df[df[ycol].isin(ok_labels)].copy()
 
 # -------------------------------------------------- #
 # メイン関数                                         #
 # -------------------------------------------------- #
+from sklearn.preprocessing import LabelEncoder
+
 
 def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
     if config.dataset not in LOADERS:
         raise ValueError(f"unknown dataset: {config.dataset}")
 
     df = LOADERS[config.dataset]()
+    df = drop_rare_labels(df, "target", min_count=2)
+
+    le = LabelEncoder()
+    df["target"] = le.fit_transform(df["target"])
 
     # ── 目的変数と特徴量を分離
     y = df["target"]
@@ -190,6 +227,17 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.dim_integrate = 37 # 統合表現の次元数
         config.num_institution_user = 25
         config.num_institution = 20
+        config.num_anchor_data = 396
+        config.metrics = "accuracy"
+    
+    elif config.dataset == 'mice':
+        config.feature_num = 77
+        config.dim_intermediate = 46 # 中間表現の次元数
+        config.dim_integrate = 46 # 統合表現の次元数
+        config.num_institution_user = 25
+        config.num_institution = 20
+        config.num_anchor_data = 693
+        config.metrics = "accuracy"        
 
     elif config.dataset == 'breast_cancer':
         config.feature_num = 15  # 特徴量の数（目的変数を除く）
@@ -243,7 +291,7 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         test_size=0.5,
         random_state=config.seed,
         shuffle=True,
-        stratify=None
+        stratify=df["target"]
     )
 
     # ── 行数制約でカット（デモ用）

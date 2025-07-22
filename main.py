@@ -124,7 +124,7 @@ def main():
 def main_loop():
     LOADERS = [
     #   "statlog",
-        'qsar',
+    #    'qsar',
     #   "breast_cancer",
     #    "har",
     #    "adult",
@@ -132,26 +132,27 @@ def main_loop():
     #    "bank_marketing", # 性能に変化でない
     #"digits",
     #"concentric_circles"
+    "mice"
     ]
     MODELS = ["svm_classifier"]#"random_forest"]#, _linear_
     
-    F_types =["kernel_pca"]#["svd", "kernel_pca"]
-    G_types = ["Imakura"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]
-    config.metrics = "auc"
+    F_types =["svd"]#["svd", "kernel_pca"]
+    G_types = [ 'centralize', 'individual',"Imakura", "GEP", "GEP_weighted", "nonlinear"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]'centralize', 'individual',
+    #config.metrics = "auc"
     #G_types = ["nonlinear"]
     config.F_type = F_types[0]
     config.G_type = G_types[0]
     
     data = {}
-    config.nl_gamma = 0.001
-    config.nl_lambda = 1e-7
+    config.nl_gamma = 0.002
+    config.nl_lambda = 100
     config.h_model = MODELS[0]
     #for dim_m in [2]:
     #for dim_m in [36, 37, 38, 39]:
     for dataset in LOADERS:
         for G_type in G_types:
             config.G_type = G_type
-            for i in range(10+1, 21):
+            for i in range(15, 16):
                 config.seed = i
                 #for lambda_ in [0,  0.1, 1, 10, 100, 1000]:
                 for lambda_ in [0]:
@@ -162,7 +163,7 @@ def main_loop():
                     metrics.append(main())
                 # 平均値を計算
                 metrics_mean = sum(metrics) / len(metrics)
-                data[f'{dataset}_{G_type}_{lambda_}'] = metrics_mean
+                data[f'{dataset}_{G_type}'] = metrics_mean
 
     # DataFrameに変換
     df_all = pd.DataFrame.from_dict(data, orient="index")
