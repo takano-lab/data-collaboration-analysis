@@ -1090,6 +1090,21 @@ files = [
 ]
 
 [[package]]
+name = "fuzzywuzzy"
+version = "0.18.0"
+description = "Fuzzy string matching in python"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "fuzzywuzzy-0.18.0-py2.py3-none-any.whl", hash = "sha256:928244b28db720d1e0ee7587acf660ea49d7e4c632569cad4f1cd7e68a5f0993"},
+    {file = "fuzzywuzzy-0.18.0.tar.gz", hash = "sha256:45016e92264780e58972dca1b3d939ac864b78437422beecebb3095f8efd00e8"},
+]
+
+[package.extras]
+speedup = ["python-levenshtein (>=0.12)"]
+
+[[package]]
 name = "graphviz"
 version = "0.20.3"
 description = "Simple Python interface for Graphviz"
@@ -3023,6 +3038,25 @@ files = [
 diagrams = ["jinja2", "railroad-diagrams"]
 
 [[package]]
+name = "pytdc"
+version = "0.3.6"
+description = "Therapeutics Data Commons"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "PyTDC-0.3.6.tar.gz", hash = "sha256:3ff3c032cd9081f278a2beb6fe9bc5983b373aa45ea2d16aadb674b7b42e66b1"},
+]
+
+[package.dependencies]
+fuzzywuzzy = "*"
+numpy = "*"
+pandas = "*"
+scikit-learn = "*"
+seaborn = "*"
+tqdm = "*"
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 description = "Extensions to the standard Python datetime module"
@@ -4264,4 +4298,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.9,<3.13"
-content-hash = "3417473cbf583571b30a714dbdb5a42ad9f7deddcc99d35afecb5a027c51f781"
+content-hash = "4eb821daeed6b1748b5de03b1b0f4c58f1791a96ebe3316a30e840d4e321bec0"

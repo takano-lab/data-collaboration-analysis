@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from logging import INFO, FileHandler, getLogger
-
+import statistics
 import pandas as pd
 import yaml
 
@@ -132,41 +132,55 @@ def main_loop():
     #    "bank_marketing", # 性能に変化でない
     #"digits",
     #"concentric_circles"
-    "mice"
+    "two_gaussian_distributions",
+    #"mice",
+    #"ames",
+    #"tox21_sr_are",
+    #"hiv",
+    #"cyp3a4",
+    #"cyp2d6",
+    #"cyp1a2",
+    #"mnist",
+    #"fashion_mnist",
     ]
-    MODELS = ["svm_classifier"]#"random_forest"]#, _linear_
+    MODELS = ["mlp"] #"svm_classifier"]#"random_forest"]#, _linear_
     
-    F_types =["svd"]#["svd", "kernel_pca"]
-    G_types = [ 'centralize', 'individual',"Imakura", "GEP", "GEP_weighted", "nonlinear"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]'centralize', 'individual',
-    #config.metrics = "auc"
+    F_types =["svd"]#["svd", "kernel_pca"]diffspan
+    G_types = ['GEP']#'centralize', 'individual', "Imakura", "ODC", "GEP"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]#, 'individual',"Imakura", "GEP"]#'centralize', 'individual', "Imakura", "ODC", "GEP", "GEP_weighted"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]#, 'individual',"Imakura", "GEP", "GEP_weighted", "nonlinear"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]'centralize', 'individual',
+    config.metrics = "accuracy"
     #G_types = ["nonlinear"]
     config.F_type = F_types[0]
     config.G_type = G_types[0]
     
     data = {}
     config.nl_gamma = 0.002
-    config.nl_lambda = 100
+    config.nl_lambda = 0.1
     config.h_model = MODELS[0]
     #for dim_m in [2]:
     #for dim_m in [36, 37, 38, 39]:
     for dataset in LOADERS:
+        config.dataset = dataset
+        #for num_inst in [5, 10]:#:, 15, 20]:
         for G_type in G_types:
             config.G_type = G_type
-            for i in range(15, 16):
+            #config.num_institution = num_inst
+                #for lambda_ in [0, 0.0001, 0.001, 0.002, 0.004, 0.006, 0.008, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.2, 0.4, 0.6, 0.8, 1, 2, 4, 6, 8, 20, 40, 60, 80, 100, 1000]:
+                #for lambda_ in [0.2, 0.4, 0.6, 0.8, 2, 4, 6, 8, 20, 40, 60, 80]:
+                #for lambda_ in [1000, 100000]:
+            #for lambda_ in [0, 0.0001, 0.001, 0.01, 0.1, 1, 10, 100, 1000]:
+            metrics = []
+            #config.lambda_gen_eigen = lambda_
+            for i in range(1, 2):
                 config.seed = i
-                #for lambda_ in [0,  0.1, 1, 10, 100, 1000]:
-                for lambda_ in [0]:
-                    config.dataset = dataset
-                    config.lambda_gen_eigen = lambda_
-                    metrics = []
-                    config.dataset = dataset
-                    metrics.append(main())
-                # 平均値を計算
-                metrics_mean = sum(metrics) / len(metrics)
-                data[f'{dataset}_{G_type}'] = metrics_mean
+                #config.nl_gamma = (lambda_+0.01) ** -1 
+                metrics.append(main())
+            # 平均値を計算
+            metrics_mean = sum(metrics) / len(metrics)
+            metrics_stdev = statistics.stdev(metrics) if len(metrics) > 1 else 0.0
+            data[f'{dataset}_{G_type}'] = [dataset, G_type, metrics_mean, metrics_stdev]
 
     # DataFrameに変換
-    df_all = pd.DataFrame.from_dict(data, orient="index")
+    df_all = pd.DataFrame.from_dict(data, orient="index", columns=["dataset", "G_type", "metrics_mean", "metrics_stdev"])
     df_all.to_csv(output_path / "result.csv", index=True, encoding="utf-8-sig")
     
 def partial_run():

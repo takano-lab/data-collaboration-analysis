@@ -139,6 +139,8 @@ class DataCollaborationAnalysis:
             self.make_integrate_expression_gen_eig(use_eigen_weighting=False)
         elif self.config.G_type  == "GEP_weighted":
             self.make_integrate_expression_gen_eig(use_eigen_weighting=True)
+        elif self.config.G_type == "ODC": # この分岐を追加
+            self.make_integrate_expression_odc()
         elif self.config.G_type  == "nonlinear":
             self.make_integrate_nonliner_expression()
             
@@ -250,14 +252,21 @@ class DataCollaborationAnalysis:
 
         # 各機関の統合関数を求め、統合表現を生成
         Xs_train_integrate, Xs_test_integrate = [], []
+        # 擬似逆行列の絶対値総和を計算するための変数を初期化
+        total_g_abs_sum = 0.0
+        
         for X_train_inter, X_test_inter, anchor_inter in zip(
             tqdm(self.Xs_train_inter), self.Xs_test_inter, self.anchors_inter
         ):
             # 各機関のアンカーデータの中間表現を転置して、擬似逆行列を求める
             pseudo_inverse = np.linalg.pinv(anchor_inter.T)  # \hat{X}^{anc}+
 
+
             # 各機関の統合関数を求める
             integrate_function = np.dot(Z, pseudo_inverse)  # G^{(i)}
+            
+            # 擬似逆行列の絶対値の総和を計算して加算
+            total_g_abs_sum += np.sum(np.abs(integrate_function))
 
             # 統合関数で各機関の中間表現を統合表現に変換
             X_train_integrate = np.dot(integrate_function, X_train_inter.T)
@@ -270,6 +279,10 @@ class DataCollaborationAnalysis:
             # 統合表現をリストに格納
             Xs_train_integrate.append(X_train_integrate.T)
             Xs_test_integrate.append(X_test_integrate.T)
+
+        # 計算した総和をconfigに保存
+        self.config.g_abs_sum = total_g_abs_sum
+        print(f"擬似逆行列の絶対値の総和: {self.config.g_abs_sum}")
 
         print("統合表現の次元数: ", Xs_train_integrate[0].shape[1])
 
@@ -387,6 +400,8 @@ class DataCollaborationAnalysis:
         # --------------------------------------------------
         # 2. Ã_s = 2m B̃_s - 2 WᵀW
         # --------------------------------------------------
+        print("W_s_tilde.shape", W_s_tilde.shape, "B_s_tilde.shape", B_s_tilde.shape)
+        print("lambda_gen", lambda_gen)
         A_s_tilde = 2 * m * B_s_tilde - 2 * (W_s_tilde.T @ W_s_tilde) + lambda_gen* np.eye(W_s_tilde.shape[1])  # 正則化項を追加
 
         # --------------------------------------------------
@@ -395,8 +410,32 @@ class DataCollaborationAnalysis:
         eigvals, eigvecs = eigh(A_s_tilde, B_s_tilde)                 # SciPy の一般化固有分解
         order   = np.argsort(eigvals)                                 # 昇順
         lambdas = eigvals[order][:p_hat]                              # ★ λ_1 … λ_p̂
-        V_sel   = eigvecs[:, order[:p_hat]]                           # Σd_k × p̂
-        print(f"V_selの絶対値の総和: {np.sum(np.abs(V_sel))}")
+        V_sel   = eigvecs[:, order[:p_hat]]  
+        cum_dims = np.cumsum([0] + [S.shape[1] for S in self.anchors_inter])
+
+        # λ の総和を計算して記録
+        self.config.sum_objective_function = f"{np.sum(lambdas):.4g}"
+        print(f"λ の総和 (sum_objective_function): {self.config.sum_objective_function}")
+
+        self.config.g_abs_sum = f"{np.sum(np.abs(V_sel)):.4g}"  # Σd_k × p̂
+        print(f"V_selの絶対値の総和: {self.config.g_abs_sum}")
+        
+        mean_vars = []
+        for k in range(len(self.anchors_inter)):
+            V_k = V_sel[cum_dims[k]:cum_dims[k + 1], :]               # 機関 k の部分
+            var_k = np.var(V_k, axis=0)                               # 列ごとの分散
+            mean_vars.append(np.mean(var_k))                         # 分散の平均を計算
+        self.config.g_mean_var = f"{np.mean(mean_vars):.4g}"         # 全機関の平均を格納
+        print(f"機関ごとのベクトル分散の平均: {self.config.g_mean_var}")
+
+        # 条件数を計算
+        lambda_min, lambda_max = lambdas[0], lambdas[-1]
+        print(lambda_min, lambda_max)
+        print(lambda_min, lambda_max)
+        print(lambda_max / lambda_min)
+        self.config.g_condition_number = f"{lambda_max / lambda_min:.4g}" if lambda_min > 0 else "inf"
+        print(f"条件数: {self.config.g_condition_number}")
+
         # --------------------------------------------------
         # 4.  λ に基づくウェイト計算（オプション）★
         # --------------------------------------------------
@@ -414,7 +453,7 @@ class DataCollaborationAnalysis:
         # --------------------------------------------------
         # 5. 機関ごとの G^(k) 抽出と射影
         # --------------------------------------------------
-        cum_dims = np.cumsum([0] + [S.shape[1] for S in self.anchors_inter])
+        # ベクトル vj の分散を計算し、機関ごとに平均を取る
         Xs_train_integrate, Xs_test_integrate = [], []
 
         for k, (d_k, X_tr_k, X_te_k) in enumerate(
@@ -440,6 +479,53 @@ class DataCollaborationAnalysis:
         if use_eigen_weighting:
             
             self.config.eigenvalues  = lambdas
+            
+    def make_integrate_expression_odc(self) -> None:
+        """
+        Orthogonal Procrustes Problem (OPP) に基づく統合表現を生成する。
+        G_k = U_k V_k^T  where  anchor_k^T @ anchor_1 = U_k S_k V_k^T
+        """
+        print("********************統合表現の生成 (Orthogonal Procrustes) ********************")
+
+        if not self.anchors_inter:
+            self.logger.error("アンカーの中間表現が生成されていません。")
+            return
+
+        # 1. 基準となるアンカー (A_1) を設定
+        anchor_1 = self.anchors_inter[0]
+
+        Xs_train_integrate = []
+        Xs_test_integrate = []
+
+        # 2. 各機関 k についてループ
+        for anchor_k, X_tr_k, X_te_k in zip(
+            self.anchors_inter, self.Xs_train_inter, self.Xs_test_inter
+        ):
+            # 3. M_k = A_k^T @ A_1 を計算
+            M_k = anchor_k.T @ anchor_1
+
+            # 4. M_k を特異値分解(SVD)
+            # full_matrices=False にして、計算結果の行列サイズを揃える
+            U_k, _, Vh_k = np.linalg.svd(M_k, full_matrices=False)
+
+            # 5. 変換行列 G_k = U_k @ Vh_k を計算 (Vh_k は V_k^T)
+            G_k = U_k @ Vh_k
+
+            # 6. G_k を用いて中間表現を射影
+            # これにより、全機関の表現が anchor_1 と同じ次元数に変換される
+            Xs_train_integrate.append(X_tr_k @ G_k)
+            Xs_test_integrate.append(X_te_k @ G_k)
+
+        # 7. スタックして最終データを保持
+        self.X_train_integ = np.vstack(Xs_train_integrate)
+        self.X_test_integ = np.vstack(Xs_test_integrate)
+        self.y_train_integ = np.hstack(self.ys_train)
+        self.y_test_integ = np.hstack(self.ys_test)
+
+        print("統合表現の次元数:", self.X_train_integ.shape[1])
+        self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
+        self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
+
 
     # ------------------------------------------------------------------
     # 〈非線形統合〉　射影行列 P^(k) で Z を最適化する ２段階アルゴリズム

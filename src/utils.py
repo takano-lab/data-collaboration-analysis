@@ -67,9 +67,85 @@ class LPPScratch:
         self.fit(X)
         return self.transform(X)
 
-
-
 class SVDScratch:
+    """フル SVD を計算し、上位 *k* 成分を保持する。
+
+    Parameters
+    ----------
+    n_components : int | None
+        残す成分数。``None`` は全成分。
+    center : bool, default=False
+        ``True`` なら列平均でセンタリング（PCA 相当）。
+    full_matrices : bool, default=False
+        ``np.linalg.svd`` の `full_matrices` にそのまま渡す。
+    """
+
+    def __init__(self, n_components=None, *, center=False, full_matrices=False):
+        self.n_components = n_components
+        self.center = center
+        self.full_matrices = full_matrices
+        # 学習後にセット
+        self.mean_ = None          # 列平均
+        self.components_ = None    # (k, d)
+        self.singular_values_ = None  # (k,)
+
+    # ------------------------------------------------------------
+    def fit(self, X):
+        X = np.asarray(X, dtype=float)
+        n_samples, n_features = X.shape
+
+        if self.center:
+            self.mean_ = X.mean(axis=0)
+            X = X - self.mean_
+            
+        U, S, Vt = np.linalg.svd(X, full_matrices=self.full_matrices)
+        
+        k = self.n_components
+        if k is None:
+            k = len(S)
+
+        actual_k = len(S) # SVDで得られた実際の成分数
+
+        # 指定された成分数が実際の成分数より大きい場合、ゼロでパディングする
+        if k > actual_k:
+            # 特異値ベクトルのパディング
+            padded_S = np.zeros(k)
+            padded_S[:actual_k] = S
+            self.singular_values_ = padded_S
+            
+            # 射影行列(Vt)のパディング
+            padded_Vt = np.zeros((k, n_features))
+            padded_Vt[:actual_k, :] = Vt[:actual_k, :]
+            self.components_ = padded_Vt
+        else:
+            # 通常の処理
+            self.singular_values_ = S[:k]
+            self.components_ = Vt[:k]
+            
+        return self
+    
+    # ------------------------------------------------------------
+    def transform(self, X):
+        if self.components_ is None:
+            raise RuntimeError("まず fit を呼んでください")
+        X = np.asarray(X, dtype=float)
+        if self.center and self.mean_ is not None:
+            X = X - self.mean_
+        return X @ self.components_.T  # (n_samples, k)
+
+    # ------------------------------------------------------------
+    def inverse_transform(self, X_proj):
+        X_rec = X_proj @ self.components_
+        if self.center and self.mean_ is not None:
+            X_rec += self.mean_
+        return X_rec
+
+    # ------------------------------------------------------------
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)
+
+# ゼロパディングなしのため、サンプル数 > 特徴量で性能悪化
+class SVDScratch_:
     """フル SVD を計算し、上位 *k* 成分を保持する。
 
     Parameters
@@ -149,6 +225,97 @@ def reduce_dimensions(
 
         return X_train_svd, X_test_svd
     
+    elif F_type == "diffspan":
+        # 1. SVDScratchで次元削減 (F' に相当する処理)
+        svd = SVDScratch(n_components=n_components, center=True)
+        X_train_F_prime = svd.fit_transform(X_train)
+        X_test_F_prime = svd.transform(X_test)
+
+        # 2. 直交性を崩すためのランダム行列 E を作成
+        # 再現性のためにseedを使用
+        rng = np.random.default_rng(config.seed)
+                # 各値が1から2までの一様分布に従うランダム行列を生成
+        E = rng.uniform(size=(n_components, n_components))
+        # 3. F = F'E を計算
+        X_train_F = X_train_F_prime @ E
+        X_test_F = X_test_F_prime @ E
+
+        if anchor is not None:
+            X_anchor_F_prime = svd.transform(anchor)
+            X_anchor_F = X_anchor_F_prime @ E
+            return X_train_F, X_test_F, X_anchor_F
+
+        return X_train_F, X_test_F
+    
+    elif F_type == "samespan_orth":
+        # 入力データの次元
+        m = X_train.shape[1]
+        l = n_components
+
+        # l > m の場合はエラーを発生させる
+        if l > m:
+            raise ValueError("列直交行列を作るには l <= m が必要です。")
+
+        # 1) F' を生成 (列直交行列)
+        rng = np.random.default_rng(seed=config.seed)
+        A = rng.standard_normal(size=(m, l))  # 乱数行列
+        Q, R = np.linalg.qr(A, mode="reduced")  # QR 分解
+        signs = np.sign(np.diag(R))
+        Q *= signs  # 列の符号を統一
+        F_prime = Q  # F'
+
+        # 2) ランダムな直交行列 E を生成 (seed 指定なし)
+        random_matrix = np.random.standard_normal(size=(l, l))
+        Q_E, _ = np.linalg.qr(random_matrix)  # QR 分解で直交行列を生成
+        E = Q_E  # 直交行列 E
+
+        # 3) F = F' * E を計算
+        F = F_prime @ E
+
+        # 4) 次元削減を適用
+        X_train_reduced = X_train @ F
+        X_test_reduced = X_test @ F
+
+        if anchor is not None:
+            X_anchor_reduced = anchor @ F
+            return X_train_reduced, X_test_reduced, X_anchor_reduced
+
+        return X_train_reduced, X_test_reduced
+
+    elif F_type == "samespan":
+        # 入力データの次元
+        m = X_train.shape[1]
+        l = n_components
+
+        # l > m の場合はエラーを発生させる
+        if l > m:
+            raise ValueError("列直交行列を作るには l <= m が必要です。")
+
+        # 1) F' を生成 (列直交行列)
+        rng = np.random.default_rng(seed=config.seed)
+        A = rng.standard_normal(size=(m, l))  # 乱数行列
+        Q, R = np.linalg.qr(A, mode="reduced")  # QR 分解
+        signs = np.sign(np.diag(R))
+        Q *= signs  # 列の符号を統一
+        F_prime = Q  # F'
+
+        # 2) ランダムな直交行列 E を生成 (seed 指定なし)
+        random_matrix = np.random.standard_normal(size=(l, l))
+        E = random_matrix  # 行列 E
+
+        # 3) F = F' * E を計算
+        F = F_prime @ E
+
+        # 4) 次元削減を適用
+        X_train_reduced = X_train @ F
+        X_test_reduced = X_test @ F
+
+        if anchor is not None:
+            X_anchor_reduced = anchor @ F
+            return X_train_reduced, X_test_reduced, X_anchor_reduced
+
+        return X_train_reduced, X_test_reduced
+    
     elif F_type == "lpp":
         k = int(config.num_institution_user * 0.2)
         model = LPPScratch(n_components=n_components, t=0.01, k_neighbors=k)
@@ -170,7 +337,7 @@ def reduce_dimensions(
         X_test_scaled = scaler.transform(X_test)
         anchor_scaled = scaler.transform(anchor) if anchor is not None else None
         gamma = 1.0 / X_train.shape[1] # har だと 0.001 が精度良い
-        gamma = 0.007
+        #gamma = 0.007
         # model = KernelPCA(
         #     n_components=n_components,
         #     kernel="rbf",

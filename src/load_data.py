@@ -10,6 +10,7 @@ import pandas as pd
 from sklearn.datasets import fetch_olivetti_faces, fetch_openml, load_digits, make_moons, make_swiss_roll
 from sklearn.impute import KNNImputer
 from sklearn.model_selection import train_test_split
+from tdc.single_pred import ADME, HTS, Tox
 
 from config.config import Config
 
@@ -100,6 +101,75 @@ def _load_concentric_circles_df() -> pd.DataFrame:
     #df["y"] = df["target"]
     return df
 
+def _load_two_gaussian_distributions_df() -> pd.DataFrame:
+    path = Path("input/Two_Gaussian_Distributions.csv")
+    df = pd.read_csv(path)
+    return df
+
+def load_tdc_dataset(name: str, **kwargs) -> pd.DataFrame:
+    """
+    指定した TDC データセットを DataFrame で返す。
+    返却 DataFrame の教師列を `target` にリネームして統一。
+
+    Parameters
+    ----------
+    name : str
+        データセット名（大文字小文字は公式表記に合わせる）
+        - 'AMES'
+        - 'Tox21_SR-ARE'
+        - 'HIV'
+        - 'CYP3A4_Veith'
+        - 'CYP2D6_Veith'
+        - 'CYP1A2_Veith'
+    **kwargs :
+        TDC のデータローダにそのまま渡す追加引数
+        （例：split を変えたいときに `path='./data2'` など）
+
+    Returns
+    -------
+    pd.DataFrame
+        SMILES などの特徴列と `target` 列を含む表
+    """
+    # --- データローダの振り分け --------------------------
+    if name == "AMES":
+        loader = Tox(name="AMES", **kwargs)                          # :contentReference[oaicite:0]{index=0}
+    elif name.startswith("Tox21"):
+        # name="Tox21_SR-ARE" のように label を一緒に与える
+        _, label = name.split("_", 1)
+        loader = Tox(name="Tox21", label_name=label, **kwargs)       # :contentReference[oaicite:1]{index=1}
+    elif name == "HIV":
+        loader = HTS(name="HIV", **kwargs)                           # :contentReference[oaicite:2]{index=2}
+    elif name.endswith("_Veith"):
+        loader = ADME(name=name, **kwargs)                           # :contentReference[oaicite:3]{index=3}
+    else:
+        raise ValueError(f"Unsupported dataset name: {name}")
+
+    # --- DataFrame を取得し、教師列を統一 -----------------
+    df = loader.get_data()                 # （列例：['Drug', 'Y']）
+    df = df.rename(columns={"Y": "target"})
+
+    return df
+
+def _load_mnist_df() -> pd.DataFrame:
+    """
+    OpenML 経由で MNIST データセットを読み込んで DataFrame で返す。
+    ピクセル列 + 'target' ラベル列。
+    """
+    data = fetch_openml("mnist_784", version=1, as_frame=True)
+    df = data.frame
+    df = df.rename(columns={"class": "target"})  # ラベル列名を 'target' に統一
+    return df
+
+def _load_fashion_mnist_df() -> pd.DataFrame:
+    """
+    OpenML から Fashion-MNIST を読み込み、pandas.DataFrame で返す。
+    'target' 列を含み、ピクセル列は 784 次元。
+    """
+    data = fetch_openml("Fashion-MNIST", version=1, as_frame=True)
+    df = data.frame
+    df = df.rename(columns={"class": "target"})  # ラベル列を統一
+    return df
+
 def _load_mice_df() -> pd.DataFrame:
     """
     Mice Protein Expression (n=1080, 77 特徴量)  
@@ -183,7 +253,19 @@ LOADERS = {
     "har": _load_har,
     "digits": _load_digits_df,
     "concentric_circles": _load_concentric_circles_df,
+    "two_gaussian_distributions": _load_two_gaussian_distributions_df,
     "mice": _load_mice_df,
+
+    # === TDC datasets ===
+    "ames": lambda: load_tdc_dataset("AMES"),
+    "tox21_sr_are": lambda: load_tdc_dataset("Tox21_SR-ARE"),
+    "hiv": lambda: load_tdc_dataset("HIV"),
+    "cyp3a4": lambda: load_tdc_dataset("CYP3A4_Veith"),
+    "cyp2d6": lambda: load_tdc_dataset("CYP2D6_Veith"),
+    "cyp1a2": lambda: load_tdc_dataset("CYP1A2_Veith"),
+    
+    "mnist": _load_mnist_df,
+    "fashion_mnist": _load_fashion_mnist_df,
 }
 
 def drop_rare_labels(df, ycol="target", min_count=2):
@@ -234,8 +316,8 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.feature_num = 77
         config.dim_intermediate = 46 # 中間表現の次元数
         config.dim_integrate = 46 # 統合表現の次元数
-        config.num_institution_user = 25
-        config.num_institution = 20
+        config.num_institution_user = 50
+        #config.num_institution = 10
         config.num_anchor_data = 693
         config.metrics = "accuracy"        
 
@@ -254,18 +336,18 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.num_institution_user = 30
         config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
 
-    elif config.dataset == 'concentric_circles':
-        config.feature_num = 2  # 特徴量の数（目的変数を除く）
-        config.dim_intermediate = 2 # 中間表現の次元数
-        config.dim_integrate = 2 # 統合表現の次元数
-        config.num_institution = 3
-        config.num_institution_user = int(len(df) / (config.num_institution * 2))
+    elif config.dataset == 'mnist' or config.dataset == 'fashion_mnist':
+        config.feature_num = len(df.columns) - 1  # 特徴量の数（目的変数を除く）
+        config.dim_intermediate = 50 # 中間表現の次元数
+        config.dim_integrate = 50 # 統合表現の次元数
+        config.num_institution = 50
+        config.num_institution_user = 50
         
     else:
         #config.feature_num = min(len(df.columns) - 1)#, 50)  # 特徴量の数（目的変数を除く）
         #config.dim_intermediate = config.feature_num-1 # 中間表現の次元数
         #config.dim_integrate = config.feature_num-1 # 統合表現の次元数
-        config.feature_num = 51#len(df.columns) - 1
+        config.feature_num = len(df.columns) - 1
         config.num_institution_user = 42# max(config.dim_integrate + 1, 20) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
         config.num_institution = 12#int(len(df) / (config.num_institution_user * 2))
     
