@@ -106,6 +106,11 @@ def _load_two_gaussian_distributions_df() -> pd.DataFrame:
     df = pd.read_csv(path)
     return df
 
+def _load_3D_gaussian_clusters_df() -> pd.DataFrame:
+    path = Path("input/3D_8_Gaussian_Clusters.csv")
+    df = pd.read_csv(path)
+    return df
+
 def load_tdc_dataset(name: str, **kwargs) -> pd.DataFrame:
     """
     指定した TDC データセットを DataFrame で返す。
@@ -254,6 +259,7 @@ LOADERS = {
     "digits": _load_digits_df,
     "concentric_circles": _load_concentric_circles_df,
     "two_gaussian_distributions": _load_two_gaussian_distributions_df,
+    "3D_gaussian_clusters": _load_3D_gaussian_clusters_df,
     "mice": _load_mice_df,
 
     # === TDC datasets ===
@@ -343,13 +349,36 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.num_institution = 50
         config.num_institution_user = 50
         
+    elif config.dataset == 'concentric_circles':
+        config.feature_num = 2
+        config.dim_intermediate = 2  # 中間表現の次元数
+        config.dim_integrate = 2  # 統合表現の次元数
+        config.num_institution = 3
+        config.num_institution_user = int(len(df) / (config.num_institution * 2))
+    
+    elif config.dataset == 'two_gaussian_distributions':
+        config.feature_num = 2
+        config.dim_intermediate = 2
+        config.dim_integrate = 2
+        config.num_institution_user = 50
+        config.num_institution = 5
+    
+    elif config.dataset == '3D_gaussian_clusters':
+        config.feature_num = 3
+        config.dim_intermediate = 2
+        config.dim_integrate = 2
+        config.num_institution = 3
+        config.num_institution_user = int(len(df) / (config.num_institution * 2))       
+        
     else:
         #config.feature_num = min(len(df.columns) - 1)#, 50)  # 特徴量の数（目的変数を除く）
         #config.dim_intermediate = config.feature_num-1 # 中間表現の次元数
         #config.dim_integrate = config.feature_num-1 # 統合表現の次元数
         config.feature_num = len(df.columns) - 1
-        config.num_institution_user = 42# max(config.dim_integrate + 1, 20) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
-        config.num_institution = 12#int(len(df) / (config.num_institution_user * 2))
+        config.dim_intermediate = config.feature_num - 1
+        config.dim_integrate = config.feature_num - 1
+        config.num_institution_user = max(config.dim_integrate + 1, 50) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
+        config.num_institution = int(len(df) / (config.num_institution_user * 2))
     
     
     # 特徴量だけを取得（target を除外）

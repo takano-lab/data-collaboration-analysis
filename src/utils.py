@@ -405,7 +405,7 @@ def make_random_kpca(n_components, seed=None, param=None):
         elif seed % 3 == 1:
             params["gamma"] = 1
         else:
-            params["gamma"] = 15
+            params["gamma"] = 5
         #params["gamma"] = 0.1
         #print("Random KPCA parameters (gamma):", params["gamma"])
     if kernel == "poly":

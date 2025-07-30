@@ -66,7 +66,7 @@ def main():
     # データ分割 -> 統合表現の獲得まで一気に実行
     #data_collaboration.save_optimal_params()
     data_collaboration.run()
-    #data_collaboration.visualize_representations()
+    data_collaboration.visualize_representations()
     #data_collaboration.save_representations_to_csv()
         # 提案手法
     record_config_to_cfg(config)
@@ -75,6 +75,11 @@ def main():
         metrics_cen = centralize_analysis(config, logger, y_name=config.y_name)
         metrics_dict['centralize'] = metrics_cen
         return metrics_cen
+    elif config.G_type == 'centralize_dim':
+        # 集中解析 with 次元削減
+        metrics_cen_dim = centralize_analysis_with_dimension_reduction(config, logger, y_name=config.y_name)
+        metrics_dict['centralize_dim'] = metrics_cen_dim
+        return metrics_cen_dim
     elif config.G_type == 'individual':
         # 個別解析
         metrics_ind = individual_analysis(
@@ -131,8 +136,9 @@ def main_loop():
     #    "diabetes130",
     #    "bank_marketing", # 性能に変化でない
     #"digits",
-    #"concentric_circles"
-    "two_gaussian_distributions",
+    "concentric_circles",
+    #"two_gaussian_distributions",
+    #'3D_gaussian_clusters',
     #"mice",
     #"ames",
     #"tox21_sr_are",
@@ -140,48 +146,52 @@ def main_loop():
     #"cyp3a4",
     #"cyp2d6",
     #"cyp1a2",
-    #"mnist",
+    "mnist",
     #"fashion_mnist",
     ]
-    MODELS = ["mlp"] #"svm_classifier"]#"random_forest"]#, _linear_
+    MODELS = ["random_forest"] #"svm_classifier"]#"random_forest"]#, _linear_
     
-    F_types =["svd"]#["svd", "kernel_pca"]diffspan
-    G_types = ['GEP']#'centralize', 'individual', "Imakura", "ODC", "GEP"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]#, 'individual',"Imakura", "GEP"]#'centralize', 'individual', "Imakura", "ODC", "GEP", "GEP_weighted"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]#, 'individual',"Imakura", "GEP", "GEP_weighted", "nonlinear"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]'centralize', 'individual',
-    config.metrics = "accuracy"
+    F_types =["diffspan", "diffspan", "svd", "kernel_pca", "lpp"]
+    G_types = ["nonlinear"]# 'centralize_dim', "Imakura", #'centralize', 'individual', "Imakura", "ODC", "GEP"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]#, 'individual',"Imakura", "GEP"]#'centralize', 'individual', "Imakura", "ODC", "GEP", "GEP_weighted"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]#, 'individual',"Imakura", "GEP", "GEP_weighted", "nonlinear"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]'centralize', 'individual',
+    config.metrics = "auc"
     #G_types = ["nonlinear"]
     config.F_type = F_types[0]
     config.G_type = G_types[0]
     
     data = {}
-    config.nl_gamma = 0.002
+    config.nl_gamma = 1
     config.nl_lambda = 0.1
     config.h_model = MODELS[0]
     #for dim_m in [2]:
     #for dim_m in [36, 37, 38, 39]:
     for dataset in LOADERS:
+        print(dataset)
         config.dataset = dataset
         #for num_inst in [5, 10]:#:, 15, 20]:
         for G_type in G_types:
-            config.G_type = G_type
+                config.G_type = G_type
             #config.num_institution = num_inst
                 #for lambda_ in [0, 0.0001, 0.001, 0.002, 0.004, 0.006, 0.008, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.2, 0.4, 0.6, 0.8, 1, 2, 4, 6, 8, 20, 40, 60, 80, 100, 1000]:
                 #for lambda_ in [0.2, 0.4, 0.6, 0.8, 2, 4, 6, 8, 20, 40, 60, 80]:
-                #for lambda_ in [1000, 100000]:
-            #for lambda_ in [0, 0.0001, 0.001, 0.01, 0.1, 1, 10, 100, 1000]:
-            metrics = []
-            #config.lambda_gen_eigen = lambda_
-            for i in range(1, 2):
-                config.seed = i
-                #config.nl_gamma = (lambda_+0.01) ** -1 
-                metrics.append(main())
-            # 平均値を計算
-            metrics_mean = sum(metrics) / len(metrics)
-            metrics_stdev = statistics.stdev(metrics) if len(metrics) > 1 else 0.0
-            data[f'{dataset}_{G_type}'] = [dataset, G_type, metrics_mean, metrics_stdev]
+            #for lambda_ in [20000, 40000, 60000, 80000]:
+            #for lambda_ in [1e-9, 0.1,  1, 10, 100, 1000, 10000]: # 0, 0.0001, 0.001, 0.01, 0.1,
+                #for lambda_ in [300]:
+                metrics = []
+                #config.lambda_gen_eigen = lambda_
+                config.nl_lambda = 1e14#lambda_
+                
+                for i in range(1, 2):
+                    config.seed = i
+                    #config.nl_gamma = (lambda_+0.01) ** -1 
+                    metrics.append(main())
+                # 平均値を計算
+                metrics_mean = sum(metrics) / len(metrics)
+                metrics_stdev = statistics.stdev(metrics) if len(metrics) > 1 else 0.0
+        #data[f'{dataset}_{G_type}_{lambda_}'] = [dataset, G_type, lambda_, metrics_mean, metrics_stdev]
 
     # DataFrameに変換
-    df_all = pd.DataFrame.from_dict(data, orient="index", columns=["dataset", "G_type", "metrics_mean", "metrics_stdev"])
-    df_all.to_csv(output_path / "result.csv", index=True, encoding="utf-8-sig")
+    #df_all = pd.DataFrame.from_dict(data, orient="index", columns=["dataset", "G_type", "lambda", "metrics_mean", "metrics_stdev"])
+    #df_all.to_csv(output_path / "result.csv", index=True, encoding="utf-8-sig")
     
 def partial_run():
     logger.info(f"データセット: {config.dataset}")
@@ -192,8 +202,8 @@ def partial_run():
     metrics_dict = {}
     # dim_intermediate,dim_integrate
     F_types =["kernel_pca"]#["svd", "kernel_pca"]
-    G_types = ["Imakura", "nonlinear"]#, "targetvec", "GEP", "GEP_weighted"]
-
+    G_types = []#, "targetvec", "GEP", "GEP_weighted"]
+    config.lambda_gen_eigen = 0.00001
     #for F_type in F_types:
     dim_intermediate = config.dim_intermediate
     for dim_intermediate in range(1, dim_intermediate + 1, 5):

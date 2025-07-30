@@ -66,18 +66,17 @@ def centralize_analysis_with_dimension_reduction(config: Config, logger: logger,
     X_test = test_df.values
 
     # SVD
-    #X_tr_svd, X_te_svd = reduce_dimensions(X_train, X_test, n_components=config.dim_integrate)
-    X_tr_svd, X_te_svd = X_train, X_test
-    metrics = h_ml_model(
-        X_train=X_tr_svd,
-        y_train=y_train,
-        X_test=X_te_svd,
-        y_test=y_test,
-        config=config,
-    )
-    
-    logger.info(f"集中解析の評価値: {metrics:.4f}")
-    record_value_to_cfg(config, "集中解析", metrics)
+    X_tr_svd, X_te_svd = reduce_dimensions(X_train, X_test, n_components=config.dim_integrate, seed=config.f_seed)
+    model_runner = ModelRunner(config)
+    metrics = model_runner.run(
+                    X_train=X_tr_svd,
+                    y_train=y_train,
+                    X_test=X_te_svd,
+                    y_test=y_test
+                )
+
+    logger.info(f"集中解析（次元削減）の評価値: {metrics:.4f}")
+    record_value_to_cfg(config, "集中解析（次元削減）", metrics)
     return metrics
 
 # ----------------------------------------------------------------------

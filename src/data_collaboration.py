@@ -31,7 +31,7 @@ class DataCollaborationAnalysis:
         self.train_df: pd.DataFrame = train_df
         self.test_df: pd.DataFrame = test_df
         self.anchor: np.ndarray = np.array([])
-        
+
         # 機関ごとの分割データ
         self.Xs_train: list[np.ndarray] = []
         self.Xs_test: list[np.ndarray] = []
@@ -50,8 +50,8 @@ class DataCollaborationAnalysis:
         self.X_test_integ: np.ndarray = np.array([])
         self.y_train_integ: np.ndarray = np.array([])
         self.y_test_integ: np.ndarray = np.array([])
-        
-        
+
+
         self.make_integrate_expression_gen_eig = timed(config=self.config)(
             self.make_integrate_expression_gen_eig
         )
@@ -105,7 +105,7 @@ class DataCollaborationAnalysis:
                 writer.writerow([k, v])
 
         print(f"✅ 最適パラメータ saved to: {save_path}")
-            
+
 
     def run(self) -> None:
         """
@@ -143,7 +143,9 @@ class DataCollaborationAnalysis:
             self.make_integrate_expression_odc()
         elif self.config.G_type  == "nonlinear":
             self.make_integrate_nonliner_expression()
-            
+        else:
+            print(f"Unknown G_type: {self.config.G_type}")
+
         self.logger.info(f"{self.config.dim_integrate}:次元")
         self.logger.info(f"{self.config.num_institution_user} 機関人数")
         self.logger.info(f"{self.config.num_institution} 機関数")
@@ -158,7 +160,7 @@ class DataCollaborationAnalysis:
         """
         複数機関を想定してデータセットを分割する関数
         """
-        
+
         train_df = train_df.copy()
         test_df = test_df.copy()
         y_train_ser = train_df[y_name]
@@ -169,9 +171,9 @@ class DataCollaborationAnalysis:
         # 格納しておくリスト
         Xs_train, Xs_test = [], []
         ys_train, ys_test = [], []
-        
-        
-        
+
+
+
         # データセットを分割する
         for institute_start in tqdm(
             range(
@@ -187,7 +189,7 @@ class DataCollaborationAnalysis:
             # yはtemp_train_xに対応するratingを格納
             ys_train.append(y_train_ser[institute_start:institute_start + num_institution_user].values)
             ys_test.append(y_test_ser[institute_start:institute_start + num_institution_user].values)
-            
+
         return Xs_train, Xs_test, ys_train, ys_test
 
     @staticmethod
@@ -196,7 +198,7 @@ class DataCollaborationAnalysis:
         アンカーデータを生成する関数
         """
         np.random.seed(seed=seed)
-        anchor = np.random.randn(num_row, num_col) 
+        anchor = np.random.randn(num_row, num_col)
         return anchor
 
     def make_intermediate_expression(self) -> None:
@@ -209,7 +211,7 @@ class DataCollaborationAnalysis:
         print()
         for X_train, X_test in zip(tqdm(self.Xs_train), self.Xs_test):
             # 各機関の訓練データ, テストデータおよびアンカーデータを取得し、svdを適用
-            
+
             X_train_svd, X_test_svd, anchor_svd = reduce_dimensions(
                X_train=X_train,
                X_test=X_test,
@@ -219,19 +221,19 @@ class DataCollaborationAnalysis:
                seed=self.config.f_seed,
                config=self.config,)
             self.config.f_seed += 1
-            
+
             # そのままで実験  ##########################################
             #X_train_svd = X_train
             #X_test_svd = X_test
             #anchor_svd = self.anchor
-            
+
             # svdを適用したデータをリストに格納
             self.Xs_train_inter.append(X_train_svd)
             self.Xs_test_inter.append(X_test_svd)
             self.anchors_inter.append(anchor_svd)
 
         print("中間表現の次元数: ", self.Xs_train_inter[0].shape[1])
-        
+
         self.logger.info(f"中間表現（訓練データ）の数と次元数: {self.Xs_train_inter[0].shape}")
 
 
@@ -254,7 +256,7 @@ class DataCollaborationAnalysis:
         Xs_train_integrate, Xs_test_integrate = [], []
         # 擬似逆行列の絶対値総和を計算するための変数を初期化
         total_g_abs_sum = 0.0
-        
+
         for X_train_inter, X_test_inter, anchor_inter in zip(
             tqdm(self.Xs_train_inter), self.Xs_test_inter, self.anchors_inter
         ):
@@ -264,14 +266,14 @@ class DataCollaborationAnalysis:
 
             # 各機関の統合関数を求める
             integrate_function = np.dot(Z, pseudo_inverse)  # G^{(i)}
-            
+
             # 擬似逆行列の絶対値の総和を計算して加算
             total_g_abs_sum += np.sum(np.abs(integrate_function))
 
             # 統合関数で各機関の中間表現を統合表現に変換
             X_train_integrate = np.dot(integrate_function, X_train_inter.T)
             X_test_integrate = np.dot(integrate_function, X_test_inter.T)
-            
+
             # そのままで実験 ##########################################
             # X_train_integrate = X_train_inter.T
             # X_test_integrate = X_test_inter.T
@@ -388,14 +390,15 @@ class DataCollaborationAnalysis:
         r       = self.config.num_anchor_data
         lambda_gen = getattr(self.config, 'lambda_gen_eigen', 0)
         #use_w   = getattr(self.config, "use_eigen_weighting", False)   # ★
-        
+
 
         # --------------------------------------------------
         # 1. W̃_s  と  B̃_s  を構築
         # --------------------------------------------------
         W_s_tilde = np.hstack(self.anchors_inter)                     # r × Σd_k
         blocks    = [S.T @ S for S in self.anchors_inter]             # 各 d_k × d_k
-        B_s_tilde = reduce(lambda a, b: block_diag(a, b), blocks)
+        epsilon = 1e-6
+        B_s_tilde = reduce(lambda a, b: block_diag(a, b), blocks) + epsilon * np.eye(sum(S.shape[1] for S in self.anchors_inter))
 
         # --------------------------------------------------
         # 2. Ã_s = 2m B̃_s - 2 WᵀW
@@ -410,7 +413,7 @@ class DataCollaborationAnalysis:
         eigvals, eigvecs = eigh(A_s_tilde, B_s_tilde)                 # SciPy の一般化固有分解
         order   = np.argsort(eigvals)                                 # 昇順
         lambdas = eigvals[order][:p_hat]                              # ★ λ_1 … λ_p̂
-        V_sel   = eigvecs[:, order[:p_hat]]  
+        V_sel   = eigvecs[:, order[:p_hat]]
         cum_dims = np.cumsum([0] + [S.shape[1] for S in self.anchors_inter])
 
         # λ の総和を計算して記録
@@ -419,7 +422,7 @@ class DataCollaborationAnalysis:
 
         self.config.g_abs_sum = f"{np.sum(np.abs(V_sel)):.4g}"  # Σd_k × p̂
         print(f"V_selの絶対値の総和: {self.config.g_abs_sum}")
-        
+
         mean_vars = []
         for k in range(len(self.anchors_inter)):
             V_k = V_sel[cum_dims[k]:cum_dims[k + 1], :]               # 機関 k の部分
@@ -477,9 +480,9 @@ class DataCollaborationAnalysis:
 
         # 解析用に λ とウェイトも保持 ★
         if use_eigen_weighting:
-            
+
             self.config.eigenvalues  = lambdas
-            
+
     def make_integrate_expression_odc(self) -> None:
         """
         Orthogonal Procrustes Problem (OPP) に基づく統合表現を生成する。
@@ -549,34 +552,81 @@ class DataCollaborationAnalysis:
         if hasattr(self.config, "nl_lambda"):
             lam = self.config.nl_lambda
         else:
-            lam = 1e-2                
+            lam = 1e-2
         #gammas = [11, 15.5, 1000]
         #k = 1
         # --- 1. Gram 行列と射影行列 ---
         for S̃ in self.anchors_inter:             # S̃ : r×d̃_k
             #γ = gammas[k-1]
             #k += 1
-            if hasattr(self.config, "nl_gamma"):
-                γ = self.config.nl_gamma
-            else:
+            if True:
+                # ==============================================================
+                # ★ RBF → 薄板スプライン (2 次導関数ペナルティ) 版に書き換え ★
+                # ==============================================================
+
+                # -- (1) 薄板スプライン・カーネル ------------------------------------------
+                def tps_kernel(X, Y):
+                    """Thin‑plate spline φ(||x−y||)  (次数 m=2)."""
+                    d = X.shape[1]
+                    r = np.linalg.norm(X[:, None, :] - Y[None, :, :], axis=-1)
+
+                    if d == 1:                       # 立方スプライン
+                        return 0.5 * r**3
+                    elif d == 2:
+                        eps = 1e-12                  # log(0) 回避
+                        return r**2 * np.log(r + eps)
+                    else:                            # d > 2
+                        r[r == 0] = 1                # 0^0 回避
+                        return r**(3 - d)
+
+                # -- (2) 行列を構築 ---------------------------------------------------------
+                r, d = S̃.shape                           # アンカー数 r, 元特徴次元 d
+                K   = tps_kernel(S̃, S̃)                  # (r×r)
+                P   = np.hstack((np.ones((r, 1)), S̃))    # (r×(d+1))  多項式基底 [1, x]
+
+                # -- (3) A⁻¹,  (PᵀA⁻¹P)⁻¹ を安全に求める -----------------------------------
+                A_inv = np.linalg.inv(K + lam * np.eye(r))      # λ>0 を想定
+                S_mat = P.T @ A_inv @ P                         # (d+1)×(d+1)
+
+                try:
+                    M = np.linalg.inv(S_mat)                    # フルランクなら
+                except np.linalg.LinAlgError:
+                    M = np.linalg.pinv(S_mat)                   # 低ランクなら疑似逆
+
+                # -- (4) g(S̃) = P_λ z  に対応する「射影」行列 P_λ ---------------------------
+                P_lambda = (
+                    K @ A_inv
+                    + (P - K @ A_inv @ P)       # = (I - K A⁻¹) P
+                    @ M
+                    @ (P.T @ A_inv)
+                )
+                # ------------- 既存リストに格納（従来の Ks / Ps と同じインターフェース）
+                Ks.append(K)
+                Ps.append(P_lambda)
                 γ = 1.0 / S̃.shape[1]                # γ = 1/d̃_k
-            gammas.append(γ)
-            K = rbf_kernel(S̃, S̃, gamma=γ)       # r×r
-            Ks.append(K)
-            Ps.append(K @ inv(K + lam * I_r))     # 射影
+                gammas.append(γ)
+            else:
+                if hasattr(self.config, "nl_gamma"):
+                    γ = self.config.nl_gamma
+                else:
+                    γ = 1.0 / S̃.shape[1]                # γ = 1/d̃_k
+                gammas.append(γ)
+                K = rbf_kernel(S̃, S̃, gamma=γ)       # r×r
+                Ks.append(K)
+                Ps.append(K @ inv(K + lam * I_r))     # 射影
 
         # --- 2. 固有値問題 → Z (r×p̂ , ‖Z‖_F=1) ---
         M = sum((P - I_r).T @ (P - I_r) for P in Ps)
 
         # ❶ ほんのわずかな非対称を切り落とす
-        M = (M + M.T) * 0.5           
+        M = (M + M.T) * 0.5
 
         # ❷ 実対称用の固有値分解を使う
-        eigvals, eigvecs = np.linalg.eigh(M)         
+        eigvals, eigvecs = np.linalg.eigh(M)
 
         # ❸ 念のため負の丸め誤差を 0 に
-        eigvals[eigvals < 0] = 0.0        
-  
+        eigvals[eigvals < 0] = 0.0
+
         Z = eigvecs[:, eigvals.argsort()[:p̂]]
         Z /= norm(Z, 'fro')
 
@@ -584,13 +634,52 @@ class DataCollaborationAnalysis:
         Xs_train_intg, Xs_test_intg = [], []
         for K, S̃, γ, X_tr, X_te in zip(Ks, self.anchors_inter, gammas,
                                         self.Xs_train_inter, self.Xs_test_inter):
-            Bk  = inv(K + lam * I_r) @ Z          # r×p̂
+            if True:
+                S_tilde = S̃
+                # ------------------------------------------------------------
+                # 立方 / 薄板スプライン用のカーネル
+                def tps_kernel(X, Y):
+                    d = X.shape[1]
+                    r = np.linalg.norm(X[:, None] - Y[None, :], axis=-1)
+                    if d == 1:
+                        return 0.5 * r**3
+                    elif d == 2:
+                        eps = 1e-12
+                        return r**2 * np.log(r + eps)
+                    else:
+                        return r**(3 - d)               # d > 2
+                # ------------------------------------------------------------
 
-            K_tr = rbf_kernel(X_tr, S̃, gamma=γ)  # n_k×r
-            K_te = rbf_kernel(X_te, S̃, gamma=γ)  # t_k×r
+                K   = tps_kernel(S_tilde, S_tilde)        # (r, r)
+                P   = np.hstack((np.ones((r, 1)), S_tilde))  # (r, d+1)
 
-            Xs_train_intg.append(K_tr @ Bk)       # n_k×p̂
-            Xs_test_intg.append(K_te @ Bk)        # t_k×p̂
+                A_inv = np.linalg.inv(K + lam * np.eye(r))   # r×r, λ>0 前提
+                S_mat = P.T @ A_inv @ P                      # (d+1)×(d+1)
+
+                # ---- 低ランクなら疑似逆行列 ----------------------------------------------
+                try:
+                    S_inv = np.linalg.inv(S_mat)
+                except np.linalg.LinAlgError:
+                    S_inv = np.linalg.pinv(S_mat)
+
+                beta  = S_inv @ (P.T @ A_inv @ Z)            # (d+1)×p̂
+                alpha = A_inv @ (Z - P @ beta)               # r×p̂
+                # ---------------------------------------------------------------------------
+                def features(X):
+                    return tps_kernel(X, S_tilde) @ alpha + \
+                        np.hstack((np.ones((len(X), 1)), X)) @ beta
+                Xs_train_intg.append(features(X_tr))
+                Xs_test_intg .append(features(X_te))
+
+
+            else:
+                Bk  = inv(K + lam * I_r) @ Z          # r×p̂
+
+                K_tr = rbf_kernel(X_tr, S̃, gamma=γ)  # n_k×r
+                K_te = rbf_kernel(X_te, S̃, gamma=γ)  # t_k×r
+
+                Xs_train_intg.append(K_tr @ Bk)       # n_k×p̂
+                Xs_test_intg.append(K_te @ Bk)        # t_k×p̂
 
         # --- 4. スタック & 保存 ---
         self.X_train_integ = np.vstack(Xs_train_intg)
@@ -610,7 +699,6 @@ class DataCollaborationAnalysis:
         訓練データとテストデータをそれぞれ別の図で出力する。
         """
         save_dir = save_dir or self.config.output_path
-
         if not self.Xs_train or not self.Xs_train_inter or self.X_train_integ.size == 0:
             print("可視化する表現が生成されていません。run()メソッドを実行してください。")
             return
@@ -704,7 +792,7 @@ class DataCollaborationAnalysis:
         plt.tight_layout(rect=[0, 0.03, 1, 0.97])
         if save_dir:
             Path(save_dir).mkdir(parents=True, exist_ok=True)
-            plt.savefig(Path(save_dir) / f"train_{self.config.G_type}_{self.config.nl_gamma}_{self.config.nl_lambda}.png")
+            plt.savefig(Path(save_dir) / f"train_{self.config.G_type}_{self.config.nl_lambda}.png")
         """
         # --- テストデータの可視化 ---
         fig_test, axes_test = plt.subplots(num_institutions, 4, figsize=(24, 5 * num_institutions), squeeze=False)
