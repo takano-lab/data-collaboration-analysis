@@ -318,6 +318,23 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.num_anchor_data = 396
         config.metrics = "accuracy"
     
+    elif config.dataset == "adult":
+        config.feature_num = 51
+        config.dim_intermediate = 50 # 中間表現の次元数
+        config.dim_integrate = 50 # 統合表現の次元数
+        config.num_institution_user = 50
+        config.num_institution = 10
+        config.num_anchor_data = 693          
+
+    elif config.dataset == "diabetes130":
+        config.feature_num = 200
+        config.dim_intermediate = 100 # 中間表現の次元数
+        config.dim_integrate = 100 # 統合表現の次元数
+        config.num_institution_user = 500
+        config.num_institution = 10
+        config.num_anchor_data = 693  
+    
+    
     elif config.dataset == 'mice':
         config.feature_num = 77
         config.dim_intermediate = 46 # 中間表現の次元数

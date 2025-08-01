@@ -67,7 +67,7 @@ def main():
     #data_collaboration.save_optimal_params()
     data_collaboration.run()
     data_collaboration.visualize_representations()
-    #data_collaboration.save_representations_to_csv()
+    data_collaboration.save_representations_to_csv()
         # 提案手法
     record_config_to_cfg(config)
     if config.G_type == 'centralize':
@@ -137,9 +137,9 @@ def main_loop():
     #    "bank_marketing", # 性能に変化でない
     #"digits",
     "concentric_circles",
-    #"two_gaussian_distributions",
-    #'3D_gaussian_clusters',
-    #"mice",
+    "two_gaussian_distributions",
+    '3D_gaussian_clusters',
+    "mice",
     #"ames",
     #"tox21_sr_are",
     #"hiv",
@@ -147,20 +147,20 @@ def main_loop():
     #"cyp2d6",
     #"cyp1a2",
     "mnist",
-    #"fashion_mnist",
+    "fashion_mnist",
     ]
     MODELS = ["random_forest"] #"svm_classifier"]#"random_forest"]#, _linear_
     
-    F_types =["diffspan", "diffspan", "svd", "kernel_pca", "lpp"]
-    G_types = ["nonlinear"]# 'centralize_dim', "Imakura", #'centralize', 'individual', "Imakura", "ODC", "GEP"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]#, 'individual',"Imakura", "GEP"]#'centralize', 'individual', "Imakura", "ODC", "GEP", "GEP_weighted"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]#, 'individual',"Imakura", "GEP", "GEP_weighted", "nonlinear"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]'centralize', 'individual',
+    F_types =["kernel_pca", "diffspan", "svd", "kernel_pca", "lpp"]
+    G_types = ['centralize_dim', "nonlinear_linear", "Imakura"]# 'centralize_dim', "Imakura", #'centralize', 'individual', "Imakura", "ODC", "GEP"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]#, 'individual',"Imakura", "GEP"]#'centralize', 'individual', "Imakura", "ODC", "GEP", "GEP_weighted"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]#, 'individual',"Imakura", "GEP", "GEP_weighted", "nonlinear"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]'centralize', 'individual',
     config.metrics = "auc"
     #G_types = ["nonlinear"]
     config.F_type = F_types[0]
     config.G_type = G_types[0]
     
     data = {}
-    config.nl_gamma = 1
-    config.nl_lambda = 0.1
+    config.nl_gamma = 0.01
+    config.nl_lambda = 1
     config.h_model = MODELS[0]
     #for dim_m in [2]:
     #for dim_m in [36, 37, 38, 39]:
@@ -178,7 +178,7 @@ def main_loop():
                 #for lambda_ in [300]:
                 metrics = []
                 #config.lambda_gen_eigen = lambda_
-                config.nl_lambda = 1e14#lambda_
+                config.nl_lambda = 1#lambda_
                 
                 for i in range(1, 2):
                     config.seed = i

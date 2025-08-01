@@ -9,13 +9,14 @@ from sklearn.decomposition import TruncatedSVD
 from tqdm import tqdm
 
 from config.config import Config
-from src.utils import reduce_dimensions, self_tuning_gamma
+from src.utils import reduce_dimensions
 
 logger = TypeVar("logger")
 import csv
 from pathlib import Path
 
 from config.timing import timed
+from src.utils import reduce_dimensions
 
 logger = TypeVar("logger")
 
@@ -141,9 +142,7 @@ class DataCollaborationAnalysis:
         elif self.config.G_type == "ODC": # この分岐を追加
             self.make_integrate_expression_odc()
         elif self.config.G_type  == "nonlinear":
-            self.make_integrate_nonlinear_expression()
-        elif self.config.G_type == "nonlinear_linear":
-            self.make_integrate_nonlinear_linear()
+            self.make_integrate_nonliner_expression()
         else:
             print(f"Unknown G_type: {self.config.G_type}")
 
@@ -534,7 +533,7 @@ class DataCollaborationAnalysis:
     # ------------------------------------------------------------------
     # 〈非線形統合〉　射影行列 P^(k) で Z を最適化する ２段階アルゴリズム
     # ------------------------------------------------------------------
-    def make_integrate_nonlinear_expression(self) -> None:
+    def make_integrate_nonliner_expression(self) -> None:
         """
         非線形（カーネル）版：アンカー同士の射影行列で共通ターゲット Z を導き，
         各機関データを同じ次元 p̂ へ写像する。
@@ -560,14 +559,61 @@ class DataCollaborationAnalysis:
         for S̃ in self.anchors_inter:             # S̃ : r×d̃_k
             #γ = gammas[k-1]
             #k += 1
-            if hasattr(self.config, "nl_gamma"):
-                γ = self.config.nl_gamma
-            else:
+            if True:
+                # ==============================================================
+                # ★ RBF → 薄板スプライン (2 次導関数ペナルティ) 版に書き換え ★
+                # ==============================================================
+
+                # -- (1) 薄板スプライン・カーネル ------------------------------------------
+                def tps_kernel(X, Y):
+                    """Thin‑plate spline φ(||x−y||)  (次数 m=2)."""
+                    d = X.shape[1]
+                    r = np.linalg.norm(X[:, None, :] - Y[None, :, :], axis=-1)
+
+                    if d == 1:                       # 立方スプライン
+                        return 0.5 * r**3
+                    elif d == 2:
+                        eps = 1e-12                  # log(0) 回避
+                        return r**2 * np.log(r + eps)
+                    else:                            # d > 2
+                        r[r == 0] = 1                # 0^0 回避
+                        return r**(3 - d)
+
+                # -- (2) 行列を構築 ---------------------------------------------------------
+                r, d = S̃.shape                           # アンカー数 r, 元特徴次元 d
+                K   = tps_kernel(S̃, S̃)                  # (r×r)
+                P   = np.hstack((np.ones((r, 1)), S̃))    # (r×(d+1))  多項式基底 [1, x]
+
+                # -- (3) A⁻¹,  (PᵀA⁻¹P)⁻¹ を安全に求める -----------------------------------
+                A_inv = np.linalg.inv(K + lam * np.eye(r))      # λ>0 を想定
+                S_mat = P.T @ A_inv @ P                         # (d+1)×(d+1)
+
+                try:
+                    M = np.linalg.inv(S_mat)                    # フルランクなら
+                except np.linalg.LinAlgError:
+                    M = np.linalg.pinv(S_mat)                   # 低ランクなら疑似逆
+
+                # -- (4) g(S̃) = P_λ z  に対応する「射影」行列 P_λ ---------------------------
+                P_lambda = (
+                    K @ A_inv
+                    + (P - K @ A_inv @ P)       # = (I - K A⁻¹) P
+                    @ M
+                    @ (P.T @ A_inv)
+                )
+                # ------------- 既存リストに格納（従来の Ks / Ps と同じインターフェース）
+                Ks.append(K)
+                Ps.append(P_lambda)
                 γ = 1.0 / S̃.shape[1]                # γ = 1/d̃_k
-            gammas.append(γ)
-            K = rbf_kernel(S̃, S̃, gamma=γ)       # r×r
-            Ks.append(K)
-            Ps.append(K @ inv(K + lam * I_r))     # 射影
+                gammas.append(γ)
+            else:
+                if hasattr(self.config, "nl_gamma"):
+                    γ = self.config.nl_gamma
+                else:
+                    γ = 1.0 / S̃.shape[1]                # γ = 1/d̃_k
+                gammas.append(γ)
+                K = rbf_kernel(S̃, S̃, gamma=γ)       # r×r
+                Ks.append(K)
+                Ps.append(K @ inv(K + lam * I_r))     # 射影
 
         # --- 2. 固有値問題 → Z (r×p̂ , ‖Z‖_F=1) ---
         M = sum((P - I_r).T @ (P - I_r) for P in Ps)
@@ -588,14 +634,52 @@ class DataCollaborationAnalysis:
         Xs_train_intg, Xs_test_intg = [], []
         for K, S̃, γ, X_tr, X_te in zip(Ks, self.anchors_inter, gammas,
                                         self.Xs_train_inter, self.Xs_test_inter):
-            
-            Bk  = inv(K + lam * I_r) @ Z          # r×p̂
+            if True:
+                S_tilde = S̃
+                # ------------------------------------------------------------
+                # 立方 / 薄板スプライン用のカーネル
+                def tps_kernel(X, Y):
+                    d = X.shape[1]
+                    r = np.linalg.norm(X[:, None] - Y[None, :], axis=-1)
+                    if d == 1:
+                        return 0.5 * r**3
+                    elif d == 2:
+                        eps = 1e-12
+                        return r**2 * np.log(r + eps)
+                    else:
+                        return r**(3 - d)               # d > 2
+                # ------------------------------------------------------------
 
-            K_tr = rbf_kernel(X_tr, S̃, gamma=γ)  # n_k×r
-            K_te = rbf_kernel(X_te, S̃, gamma=γ)  # t_k×r
+                K   = tps_kernel(S_tilde, S_tilde)        # (r, r)
+                P   = np.hstack((np.ones((r, 1)), S_tilde))  # (r, d+1)
 
-            Xs_train_intg.append(K_tr @ Bk)       # n_k×p̂
-            Xs_test_intg.append(K_te @ Bk)        # t_k×p̂
+                A_inv = np.linalg.inv(K + lam * np.eye(r))   # r×r, λ>0 前提
+                S_mat = P.T @ A_inv @ P                      # (d+1)×(d+1)
+
+                # ---- 低ランクなら疑似逆行列 ----------------------------------------------
+                try:
+                    S_inv = np.linalg.inv(S_mat)
+                except np.linalg.LinAlgError:
+                    S_inv = np.linalg.pinv(S_mat)
+
+                beta  = S_inv @ (P.T @ A_inv @ Z)            # (d+1)×p̂
+                alpha = A_inv @ (Z - P @ beta)               # r×p̂
+                # ---------------------------------------------------------------------------
+                def features(X):
+                    return tps_kernel(X, S_tilde) @ alpha + \
+                        np.hstack((np.ones((len(X), 1)), X)) @ beta
+                Xs_train_intg.append(features(X_tr))
+                Xs_test_intg .append(features(X_te))
+
+
+            else:
+                Bk  = inv(K + lam * I_r) @ Z          # r×p̂
+
+                K_tr = rbf_kernel(X_tr, S̃, gamma=γ)  # n_k×r
+                K_te = rbf_kernel(X_te, S̃, gamma=γ)  # t_k×r
+
+                Xs_train_intg.append(K_tr @ Bk)       # n_k×p̂
+                Xs_test_intg.append(K_te @ Bk)        # t_k×p̂
 
         # --- 4. スタック & 保存 ---
         self.X_train_integ = np.vstack(Xs_train_intg)
@@ -607,137 +691,6 @@ class DataCollaborationAnalysis:
         print("統合表現の次元数:", self.X_train_integ.shape[1])
         self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
         self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
-    
-    # ---------------------------------------------------------------
-    # 〈非線形統合〉  RBF ⊕ Linear  ―  λ は RBF 部分だけを罰する
-    #     g(x)=αᵀ k_rbf(x,·) + β₀ + βᵀx
-    #     ───────────────────────────────
-    #     零空間   = { β₀+βᵀx }     ← 無罰則
-    #     有罰則   = α             ← λ‖α‖²
-    # ---------------------------------------------------------------
-    def make_integrate_nonlinear_linear(self) -> None:
-        import numpy as np
-        from numpy.linalg import inv, norm, pinv
-        from sklearn.metrics.pairwise import rbf_kernel
-
-        # ---------- ハイパーパラメータ／メタ情報  --------------------
-        m   = len(self.anchors_inter)               # 機関数
-        r   = self.anchors_inter[0].shape[0]        # アンカー行数
-        p_hat = self.config.dim_integrate           # 統合表現次元
-        lam = getattr(self.config, "nl_lambda", 1e-2)
-
-        Ks, Ps, gammas, Ps_lambda = [], [], [], []
-        I_r = np.eye(r)
-        
-        from sklearn.preprocessing import StandardScaler
-
-        # 各機関のデータを標準化して上書き
-        scaler = StandardScaler()
-
-        # 訓練データの標準化
-        self.Xs_train_inter = [
-            scaler.fit_transform(X_train_inter) for X_train_inter in self.Xs_train_inter
-        ]
-
-        # テストデータの標準化
-        self.Xs_test_inter = [
-            scaler.transform(X_test_inter) for X_test_inter in self.Xs_test_inter
-        ]
-        # gamma を計算
-        #X_train_inter_1 = 0
-        #gamma_1 = 0
-        for X_train_inter in self.Xs_train_inter:
-            # gamma を計算
-            gamma = self_tuning_gamma(X_train_inter, standardize=False, k=3, summary='median')
-            #print(X_train_inter == X_train_inter_1 )
-            #print(gamma == gamma_1)
-            #X_train_inter_1 = X_train_inter
-            #gamma_1 = gamma
-            # gamma をリストに追加
-            gammas.append(gamma)
-
-            # gammas を config に格納
-            #if not hasattr(self.config, 'gammas') or self.config.gammas is None:
-            #    self.config.gammas = []  # gammas が存在しない場合、新しいリストを作成
-            #self.config.gammas.extend(gammas)  # gammas を config に追加
-        #if hasattr(self.config, 'nl_gammas') and self.config.nl_gammas is not None:
-        #    gammas = self.config.nl_gammas
-        print(gammas)
-        
-        # ---------- 1.  Gram 行列 K , 射影 P_λ  ----------------------
-        for i, S_tilde in enumerate(self.anchors_inter):          # (r, d̃_k)
-            d_k = S_tilde.shape[1]
-            #if not hasattr(self.config, 'nl_gammas') or self.config.nl_gammas is None:
-            #    gamma = getattr(self.config, "nl_gamma", 1.0 / d_k)
-            #    gammas.append(gamma)
-            #else:
-            gamma = gammas[i]
-
-            # (a) カーネル行列 (RBF のみ＝罰則対象)
-            K_rbf = rbf_kernel(S_tilde, S_tilde, gamma=gamma)  # (r,r)
-
-            # (b) 線形基底   P = [1,  x]               （罰則ゼロ）
-            P_lin = np.hstack((np.ones((r, 1)), S_tilde))      # (r, d_k+1)
-
-            # (c) A⁻¹ = (K_rbf + λI)⁻¹
-            A_inv = inv(K_rbf + lam * I_r)
-
-            # (d) M   = (Pᵀ A⁻¹ P)⁻¹   （低ランク時は疑似逆行列）
-            try:
-                M = inv(P_lin.T @ A_inv @ P_lin)
-            except np.linalg.LinAlgError:
-                M = pinv(P_lin.T @ A_inv @ P_lin)
-
-            # (e) 射影 P_λ = K_rbf A⁻¹
-            #                 + (P - K_rbf A⁻¹ P) M Pᵀ A⁻¹
-            P_lambda = (K_rbf @ A_inv
-                        + (P_lin - K_rbf @ A_inv @ P_lin)
-                        @ M @ (P_lin.T @ A_inv))
-
-            Ks.append((K_rbf, P_lin, A_inv, M))     # 後続で再利用
-            Ps_lambda.append(P_lambda)              # r×r
-            
-    
-
-        # ---------- 2. 共通ターゲット Z (r×p̂,  ‖Z‖_F = 1) ------------
-        M_tot = sum((P_l - I_r).T @ (P_l - I_r) for P_l in Ps_lambda)
-        M_sym = 0.5 * (M_tot + M_tot.T)            # 数値的対称化
-        eigvals, eigvecs = np.linalg.eigh(M_sym)
-
-        Z = eigvecs[:, eigvals.argsort()[:p_hat]]
-        Z /= norm(Z, 'fro')
-
-        # ---------- 3. 各機関データを写像 ------------------------------
-        Xs_train_intg, Xs_test_intg = [], []
-
-        for (K_rbf, P_lin, A_inv, M), S_tilde, gamma, X_tr, X_te in zip(
-                Ks, self.anchors_inter, gammas,
-                self.Xs_train_inter, self.Xs_test_inter):
-
-            # --- 3-1. 係数 β, α （列ベクトルをまとめて行列で）
-            beta  = M @ (P_lin.T @ A_inv @ Z)       # (d_k+1, p̂)
-            alpha = A_inv @ (Z - P_lin @ beta)      # (r, p̂)
-
-            # --- 3-2. 新データ → 表現 -------------------------------
-            def embed(X):
-                # features:  [K_rbf(X,S̃)  ,  1  X]
-                Kx  = rbf_kernel(X, S_tilde, gamma=gamma)       # (n,r)
-                Px  = np.hstack((np.ones((len(X), 1)), X))      # (n,d_k+1)
-                return Kx @ alpha + Px @ beta                   # (n, p̂)
-            Xs_train_intg.append(embed(X_tr))
-            Xs_test_intg.append(embed(X_te))
-
-        # ---------- 4. スタック & 保存 -------------------------------
-        self.X_train_integ = np.vstack(Xs_train_intg)
-        self.X_test_integ  = np.vstack(Xs_test_intg)
-        self.y_train_integ = np.hstack(self.ys_train)
-        self.y_test_integ  = np.hstack(self.ys_test)
-
-        self.logger.info(f"nonlinear integrate (RBF+Linear): "
-                        f"X_train {self.X_train_integ.shape}, "
-                        f"X_test {self.X_test_integ.shape}")
-        print("統合表現の次元数:", self.X_train_integ.shape[1])
-
 
 
     def visualize_representations(self, save_dir: Optional[str] = None) -> None:

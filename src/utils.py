@@ -2,13 +2,15 @@ import random
 from typing import Optional, Tuple, TypeVar
 
 import numpy as np
+from scipy.linalg import eigh
 from sklearn.decomposition import PCA, KernelPCA, TruncatedSVD
+from sklearn.neighbors import NearestNeighbors
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
-from scipy.linalg import eigh
+from sklearn.preprocessing import StandardScaler
+
 
 class LPPScratch:
     def __init__(self, n_components=2, t=0.01, k_neighbors=5):
@@ -199,6 +201,59 @@ class SVDScratch_:
     def fit_transform(self, X):
         return self.fit(X).transform(X)
 
+def self_tuning_gamma(
+        X, *,
+        k: int = 7,
+        standardize: bool = True,
+        summary: str = "median"):
+    """
+    Parameters
+    ----------
+    X : array-like, shape (n_samples, n_features)
+        入力データ行列。欠損値は事前に処理しておくこと。
+    k : int, default 7
+        σᵢ を決める最近傍の順位 (k-th NN)。
+    standardize : bool, default True
+        True の場合、内部で Z スコア標準化してから距離を計算。
+    summary : {'median', 'mean', None}, default 'median'
+        - 'median' → 全 γᵢ の中央値を返す  
+        - 'mean'   → 平均値を返す  
+        - None     → 集約せず (γᵢ, σᵢ) ベクトルをそのまま返す
+
+    Returns
+    -------
+    gamma : float
+        summary が 'median' or 'mean' のとき: 代表 γ
+    gamma_i : ndarray
+        summary == None のとき: 各サンプルの γᵢ
+    sigma_i : ndarray
+        summary == None のとき: 各サンプルの σᵢ
+    """
+
+    X = np.asarray(X, dtype=float)
+    if standardize:
+        X = (X - X.mean(axis=0)) / X.std(axis=0, ddof=0)
+
+    # k+1 近傍 (0番目は自分自身 → 距離0)
+    nbrs = NearestNeighbors(n_neighbors=k + 1,
+                            algorithm="auto",
+                            metric="euclidean").fit(X)
+    dists, _ = nbrs.kneighbors(X, return_distance=True)
+    sigma_i = dists[:, k]
+    sigma_i[sigma_i == 0] = np.finfo(float).eps  # 発散防止
+    gamma_i = 1.0 / sigma_i
+    gamma_i = gamma_i / 3 # 恣意的調整
+
+    if summary is None:
+        return gamma_i, sigma_i
+
+    if summary == "median":
+        return float(np.median(gamma_i))
+    elif summary == "mean":
+        return float(np.mean(gamma_i))
+    else:
+        raise ValueError("summary must be 'median', 'mean', or None")
+
 
 def reduce_dimensions(
     X_train: np.ndarray,
@@ -337,15 +392,20 @@ def reduce_dimensions(
         X_test_scaled = scaler.transform(X_test)
         anchor_scaled = scaler.transform(anchor) if anchor is not None else None
         gamma = 1.0 / X_train.shape[1] # har だと 0.001 が精度良い
-        #gamma = 0.007
-        # model = KernelPCA(
-        #     n_components=n_components,
-        #     kernel="rbf",
-        #     gamma=gamma,
-        #     eigen_solver="auto",
-        #     n_jobs=-1,
-        # )
-        model = make_random_kpca(n_components, seed=seed, param=param)
+        gamma = self_tuning_gamma(X_train_scaled, standardize=False, k=7, summary='median')
+        if config is not None:
+            # config.gammas に追加
+            if not hasattr(config, 'nl_gammas') or config.nl_gammas is None:
+                config.nl_gammas = []  # gammas が存在しない場合、新しいリストを作成
+            config.nl_gammas.append(gamma)  # gamma をリストに追加
+        model = KernelPCA(
+             n_components=n_components,
+             kernel="rbf",
+             gamma=gamma,
+             eigen_solver="auto",
+             n_jobs=-1,
+        )
+        #model = make_random_kpca(n_components, seed=seed, param=param)
         # --- フィッティングと変換 ---
         X_train_svd = model.fit_transform(X_train_scaled)
         X_test_svd = model.transform(X_test_scaled)
