@@ -7,7 +7,7 @@ authors = ["tomos7231 <tomobake0023@icloud.com>"]
 [tool.poetry.dependencies]
 # gurobipy は PyPI にないため pip install を使って別途インストールしてください
 #gurobipy = "*"  # ← 実際には機能しない
-python = ">=3.9,<3.13"
+python = ">=3.9.2,<3.13"
 pandas = "^2.0.1"
 numpy = "^1.24.3"
 seaborn = "^0.12.2"
@@ -29,7 +29,6 @@ notebook = "^7.4.3"
 ipykernel = "^6.29.5"
 xlrd = "^2.0.2"
 pytdc = "0.3.6"
-
 
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^6.22.0"

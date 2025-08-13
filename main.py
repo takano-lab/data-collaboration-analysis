@@ -5,7 +5,7 @@ from logging import INFO, FileHandler, getLogger
 import statistics
 import pandas as pd
 import yaml
-
+from tqdm import tqdm 
 from config.config import Config
 from config.config_logger import record_config_to_cfg, record_value_to_cfg
 from src.data_collaboration import DataCollaborationAnalysis
@@ -14,6 +14,7 @@ from src.institutional_analysis import (
     centralize_analysis_with_dimension_reduction,
     dca_analysis,
     individual_analysis,
+    fl_analysis,
     individual_analysis_with_dimension_reduction,
 )
 from src.load_data import load_data
@@ -47,6 +48,7 @@ logger.addHandler(handler)
 
 def main():
     logger.info(f"データセット: {config.dataset}")
+    print(f"データセット:{config.dataset}")
     config.f_seed = 0
     
     # datasetの読み込み
@@ -67,7 +69,7 @@ def main():
     #data_collaboration.save_optimal_params()
     data_collaboration.run()
     data_collaboration.visualize_representations()
-    data_collaboration.save_representations_to_csv()
+    #data_collaboration.save_representations_to_csv()
         # 提案手法
     record_config_to_cfg(config)
     if config.G_type == 'centralize':
@@ -92,6 +94,17 @@ def main():
         )
         #metrics_dict['individual'] = metrics_ind
         return metrics_ind
+    elif config.G_type == 'fl':
+        metrics_fl = fl_analysis(
+            config=config,
+            logger=logger,
+            Xs_train=data_collaboration.Xs_train,
+            ys_train=data_collaboration.ys_train,
+            Xs_test=data_collaboration.Xs_test,
+            ys_test=data_collaboration.ys_test,
+        )
+        metrics_dict['fl'] = metrics_fl
+        return metrics_fl
     else:
         metrics = dca_analysis(
                         X_train_integ=data_collaboration.X_train_integ,
@@ -128,70 +141,73 @@ def main():
 
 def main_loop():
     LOADERS = [
+        "concentric_circles",
+    #    "two_gaussian_distributions",
+    #    '3D_gaussian_clusters',
+    #    "mice",
     #   "statlog",
     #    'qsar',
     #   "breast_cancer",
-    #    "har",
+    #   "har",
     #    "adult",
     #    "diabetes130",
     #    "bank_marketing", # 性能に変化でない
     #"digits",
-    "concentric_circles",
-    "two_gaussian_distributions",
-    '3D_gaussian_clusters',
-    "mice",
     #"ames",
     #"tox21_sr_are",
     #"hiv",
     #"cyp3a4",
     #"cyp2d6",
     #"cyp1a2",
-    "mnist",
-    "fashion_mnist",
+    #"mnist",
+    #"fashion_mnist",
     ]
-    MODELS = ["random_forest"] #"svm_classifier"]#"random_forest"]#, _linear_
-    
-    F_types =["kernel_pca", "diffspan", "svd", "kernel_pca", "lpp"]
-    G_types = ['centralize_dim', "nonlinear_linear", "Imakura"]# 'centralize_dim', "Imakura", #'centralize', 'individual', "Imakura", "ODC", "GEP"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]#, 'individual',"Imakura", "GEP"]#'centralize', 'individual', "Imakura", "ODC", "GEP", "GEP_weighted"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]#, 'individual',"Imakura", "GEP", "GEP_weighted", "nonlinear"]#"]#"Imakura"]#, "targetvec", "GEP", "GEP_weighted"]'centralize', 'individual',
+    MODELS = ["random_forest", "svm_linear_classifier", "mlp"]#"mlp"]#, "svm_linear_classifier"] #"svm_classifier"]#"random_forest"]#, _linear_
+    gamma_types = ["auto", "X_tuning"]
+    F_types =["kernel_pca_svd_mixed"]#"svd", "kernel_pca", "kernel_pca_self_tuning", ] # , "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
+    G_types = ["GEP"]#["fl", 'centralize', 'individual', "Imakura", "ODC", "GEP", "targetvec", "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#'centralize_dim', "nonlinear", "Imakura"]#"nonlinear_tuning"]#, "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#["fl", 'centralize', 'individual', "Imakura", "ODC", "GEP", "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#'centralize_dim', "nonlinear", "Imakura"]#
     config.metrics = "auc"
     #G_types = ["nonlinear"]
     config.F_type = F_types[0]
     config.G_type = G_types[0]
     
     data = {}
-    config.nl_gamma = 0.01
-    config.nl_lambda = 1
+    #config.nl_gamma = 1
+    config.nl_lambda = 10
     config.h_model = MODELS[0]
-    #for dim_m in [2]:
-    #for dim_m in [36, 37, 38, 39]:
-    for dataset in LOADERS:
-        print(dataset)
-        config.dataset = dataset
-        #for num_inst in [5, 10]:#:, 15, 20]:
-        for G_type in G_types:
-                config.G_type = G_type
-            #config.num_institution = num_inst
-                #for lambda_ in [0, 0.0001, 0.001, 0.002, 0.004, 0.006, 0.008, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.2, 0.4, 0.6, 0.8, 1, 2, 4, 6, 8, 20, 40, 60, 80, 100, 1000]:
-                #for lambda_ in [0.2, 0.4, 0.6, 0.8, 2, 4, 6, 8, 20, 40, 60, 80]:
-            #for lambda_ in [20000, 40000, 60000, 80000]:
-            #for lambda_ in [1e-9, 0.1,  1, 10, 100, 1000, 10000]: # 0, 0.0001, 0.001, 0.01, 0.1,
-                #for lambda_ in [300]:
-                metrics = []
-                #config.lambda_gen_eigen = lambda_
-                config.nl_lambda = 1#lambda_
-                
-                for i in range(1, 2):
-                    config.seed = i
-                    #config.nl_gamma = (lambda_+0.01) ** -1 
-                    metrics.append(main())
-                # 平均値を計算
-                metrics_mean = sum(metrics) / len(metrics)
-                metrics_stdev = statistics.stdev(metrics) if len(metrics) > 1 else 0.0
-        #data[f'{dataset}_{G_type}_{lambda_}'] = [dataset, G_type, lambda_, metrics_mean, metrics_stdev]
+
+    for dataset in tqdm(LOADERS):
+        #for model in MODELS:
+        for nl_lambda in [1]:
+            config.nl_lambda = nl_lambda
+            #config.h_model = model
+            print(dataset)
+            model = MODELS[0]
+            config.dataset = dataset
+            #for num_inst in [5, 10]:#:, 15, 20]:
+            for F_type in F_types:
+                config.F_type = F_type
+                config.True_F_type = F_type
+                for G_type in G_types:
+                        config.G_type = G_type
+                        for gamma_type in gamma_types:
+                            config.gamma_type = gamma_type
+                            if (G_type != "nonlinear_linear" and G_type != "nonlinear") and gamma_type == "X_tuning":
+                                continue
+                            metrics = []
+                            for i in range(1, 2):
+                                config.seed = i
+                                metrics.append(main())
+                                config.F_type = config.True_F_type
+                            # 平均値を計算
+                            metrics_mean = sum(metrics) / len(metrics)
+                            metrics_stdev = statistics.stdev(metrics) if len(metrics) > 1 else 0.0
+                            data[f'{dataset}_{model}_{F_type}_{G_type}_{gamma_type}'] = [dataset, model, F_type, G_type, gamma_type, metrics_mean, metrics_stdev]
+
 
     # DataFrameに変換
-    #df_all = pd.DataFrame.from_dict(data, orient="index", columns=["dataset", "G_type", "lambda", "metrics_mean", "metrics_stdev"])
-    #df_all.to_csv(output_path / "result.csv", index=True, encoding="utf-8-sig")
+    df_all = pd.DataFrame.from_dict(data, orient="index", columns=["dataset", "model", "F_type", "G_type", "gamma_type", "metrics_mean", "metrics_stdev"])
+    df_all.to_csv(output_path / "result.csv", index=True, encoding="utf-8-sig")
     
 def partial_run():
     logger.info(f"データセット: {config.dataset}")

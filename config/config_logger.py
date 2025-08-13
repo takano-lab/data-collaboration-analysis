@@ -23,7 +23,7 @@ def record_config(cfg: "Config", csv_path: CsvPath) -> None:
     csv_path : str | Path
         CSV ファイルの保存先（存在しなければ自動作成）
     """
-    exclude = set(["output_path", "input_path", "name", "seed", "y_name", "eigenvalues", "nl_gammas", "g_abs_sum"])
+    exclude = set(["output_path", "input_path", "name", "seed", "y_name", "eigenvalues", "nl_gammas", "g_abs_sum", "nl_lambda_opt", "nl_gamma_opt"])
     row = {k: v for k, v in cfg.__dict__.items() if k not in exclude}
     _append_row(row, csv_path)
 

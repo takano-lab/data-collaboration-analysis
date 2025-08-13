@@ -693,6 +693,7 @@ class DataCollaborationAnalysis:
         self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
 
 
+
     def visualize_representations(self, save_dir: Optional[str] = None) -> None:
         """
         元データ、中間表現、統合表現（機関ごとと全体）を2次元散布図で可視化する関数。

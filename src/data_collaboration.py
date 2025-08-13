@@ -4,8 +4,12 @@ from typing import Optional, TypeVar
 
 import numpy as np
 import pandas as pd
+from numpy.linalg import eigvalsh, inv, norm, pinv
 from scipy import linalg
 from sklearn.decomposition import TruncatedSVD
+
+# ------ 修正後 ---------------------
+from sklearn.metrics.pairwise import pairwise_distances, rbf_kernel
 from tqdm import tqdm
 
 from config.config import Config
@@ -30,6 +34,7 @@ class DataCollaborationAnalysis:
         self.train_df: pd.DataFrame = train_df
         self.test_df: pd.DataFrame = test_df
         self.anchor: np.ndarray = np.array([])
+        self.anchor_test: np.ndarray = np.array([])
 
         # 機関ごとの分割データ
         self.Xs_train: list[np.ndarray] = []
@@ -39,12 +44,14 @@ class DataCollaborationAnalysis:
 
         # 中間表現
         self.anchors_inter: list[np.ndarray] = []
+        self.anchors_test_inter: list[np.ndarray] = []
         self.Xs_train_inter: list[np.ndarray] = []
         self.Xs_test_inter: list[np.ndarray] = []
         #self.ys_train_inter: list[np.ndarray] = []
         #self.ys_test_inter: list[np.ndarray] = []
 
         # 統合表現
+        self.anchors_test_integ: list[np.ndarray] = []
         self.X_train_integ: np.ndarray = np.array([])
         self.X_test_integ: np.ndarray = np.array([])
         self.y_train_integ: np.ndarray = np.array([])
@@ -123,6 +130,10 @@ class DataCollaborationAnalysis:
         self.anchor = self.produce_anchor(
             num_row=self.config.num_anchor_data, num_col=self.Xs_train[0].shape[1], seed=self.config.seed
         )
+        # アンカーデータの生成
+        self.anchor_test = self.produce_anchor(
+            num_row=self.config.num_anchor_data, num_col=self.Xs_train[0].shape[1], seed=self.config.seed+1
+        )
         print("num_row", self.config.num_anchor_data, "num_col", self.Xs_train[0].shape[1])
         print("Xs_train[0].shape", self.Xs_train[0].shape, "Xs_test[0].shape", self.Xs_test[0].shape)
         # 中間表現の生成
@@ -142,6 +153,8 @@ class DataCollaborationAnalysis:
             self.make_integrate_expression_odc()
         elif self.config.G_type  == "nonlinear":
             self.make_integrate_nonlinear_expression()
+        elif self.config.G_type  == "nonlinear_tuning":
+            self.make_integrate_nonlinear_expression_tuning()
         elif self.config.G_type == "nonlinear_linear":
             self.make_integrate_nonlinear_linear()
         else:
@@ -210,14 +223,25 @@ class DataCollaborationAnalysis:
         print(self.config)
         print("self.config.dim_intermediate", self.config.dim_intermediate)
         print()
+        self.config.f_seed_2 = 0
+        mixed = False
+        if self.config.F_type == "kernel_pca_svd_mixed":
+            mixed = True
         for X_train, X_test in zip(tqdm(self.Xs_train), self.Xs_test):
             # 各機関の訓練データ, テストデータおよびアンカーデータを取得し、svdを適用
-
-            X_train_svd, X_test_svd, anchor_svd = reduce_dimensions(
+            if mixed:
+                self.config.f_seed_2 += 1
+                if self.config.f_seed_2 % 2 == 0:
+                    self.config.F_type = "svd"
+                else:
+                    self.config.F_type = "kernel_pca_self_tuning"
+            #print(self.config.F_type)
+            X_train_svd, X_test_svd, anchor_svd, anchor_test_svd = reduce_dimensions(
                X_train=X_train,
                X_test=X_test,
                n_components=self.config.dim_intermediate,
                anchor=self.anchor,
+               anchor_test=self.anchor_test,
                F_type=self.config.F_type,
                seed=self.config.f_seed,
                config=self.config,)
@@ -232,6 +256,7 @@ class DataCollaborationAnalysis:
             self.Xs_train_inter.append(X_train_svd)
             self.Xs_test_inter.append(X_test_svd)
             self.anchors_inter.append(anchor_svd)
+            self.anchors_test_inter.append(anchor_test_svd)
 
         print("中間表現の次元数: ", self.Xs_train_inter[0].shape[1])
 
@@ -549,6 +574,19 @@ class DataCollaborationAnalysis:
 
         Ks, Ps, gammas = [], [], []
         I_r = np.eye(r)
+        
+        if self.config.gamma_type == "auto":
+            for S̃ in self.anchors_inter:             # S̃ : r×d̃_k
+                γ = 1.0 / S̃.shape[1]                # γ = 1/d̃_k
+                gammas.append(γ)
+
+        elif self.config.gamma_type == "X_tuning":
+            for X_train_inter in self.Xs_train_inter:
+                # gamma を計算
+                gamma = self_tuning_gamma(X_train_inter, standardize=False, k=3, summary='median')
+                gammas.append(gamma)
+
+        print(gammas)
 
         if hasattr(self.config, "nl_lambda"):
             lam = self.config.nl_lambda
@@ -557,15 +595,12 @@ class DataCollaborationAnalysis:
         #gammas = [11, 15.5, 1000]
         #k = 1
         # --- 1. Gram 行列と射影行列 ---
-        for S̃ in self.anchors_inter:             # S̃ : r×d̃_k
-            #γ = gammas[k-1]
-            #k += 1
-            if hasattr(self.config, "nl_gamma"):
-                γ = self.config.nl_gamma
-            else:
-                γ = 1.0 / S̃.shape[1]                # γ = 1/d̃_k
-            gammas.append(γ)
-            K = rbf_kernel(S̃, S̃, gamma=γ)       # r×r
+        for i, S̃ in enumerate(self.anchors_inter):             # S̃ : r×d̃_k
+            K = rbf_kernel(S̃, S̃, gamma=gammas[i])       # r×r
+            # (a) カーネル行列（先に作って正規化）
+            mu_max = max(eigvalsh(K).max(), 1e-12)            # スペクトル半径
+            K = K / mu_max                                # ||K||_2 = 1
+            
             Ks.append(K)
             Ps.append(K @ inv(K + lam * I_r))     # 射影
 
@@ -582,8 +617,11 @@ class DataCollaborationAnalysis:
         eigvals[eigvals < 0] = 0.0
 
         Z = eigvecs[:, eigvals.argsort()[:p̂]]
-        Z /= norm(Z, 'fro')
-
+        # 列ごとに ||z_j||_2 = 1 へ
+        for j in range(Z.shape[1]):
+            nz = np.linalg.norm(Z[:, j])
+            if nz > 0:
+                Z[:, j] /= nz
         # --- 3. 各機関の係数 B^(k) とデータ射影 ---
         Xs_train_intg, Xs_test_intg = [], []
         for K, S̃, γ, X_tr, X_te in zip(Ks, self.anchors_inter, gammas,
@@ -607,7 +645,21 @@ class DataCollaborationAnalysis:
         print("統合表現の次元数:", self.X_train_integ.shape[1])
         self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
         self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
-    
+        
+                # 固有値の小さい順に p_hat 個選択
+        lambdas = eigvals[:p̂]  # 固有値の上位 p_hat 個
+
+        # 固有値の総和を計算
+        sum_lambdas = np.sum(lambdas)
+
+        # 結果を self.config.g_abs_sum に格納
+        self.config.g_abs_sum = f"{sum_lambdas:.4g}"
+
+        # デバッグ用出力
+        print(f"固有値 λ の上位 {p̂} 個の総和: {self.config.g_abs_sum}")
+
+    """
+    #バイアス項あり
     # ---------------------------------------------------------------
     # 〈非線形統合〉  RBF ⊕ Linear  ―  λ は RBF 部分だけを罰する
     #     g(x)=αᵀ k_rbf(x,·) + β₀ + βᵀx
@@ -616,118 +668,118 @@ class DataCollaborationAnalysis:
     #     有罰則   = α             ← λ‖α‖²
     # ---------------------------------------------------------------
     def make_integrate_nonlinear_linear(self) -> None:
-        import numpy as np
-        from numpy.linalg import inv, norm, pinv
-        from sklearn.metrics.pairwise import rbf_kernel
 
-        # ---------- ハイパーパラメータ／メタ情報  --------------------
-        m   = len(self.anchors_inter)               # 機関数
-        r   = self.anchors_inter[0].shape[0]        # アンカー行数
-        p_hat = self.config.dim_integrate           # 統合表現次元
+        m   = len(self.anchors_inter)
+        r   = self.anchors_inter[0].shape[0]
+        p_hat = self.config.dim_integrate
         lam = getattr(self.config, "nl_lambda", 1e-2)
 
         Ks, Ps, gammas, Ps_lambda = [], [], [], []
+        K_scales = []                           # K の正規化係数（埋め込み時に使う）
         I_r = np.eye(r)
-        
-        from sklearn.preprocessing import StandardScaler
 
-        # 各機関のデータを標準化して上書き
-        scaler = StandardScaler()
-
-        # 訓練データの標準化
-        self.Xs_train_inter = [
-            scaler.fit_transform(X_train_inter) for X_train_inter in self.Xs_train_inter
-        ]
-
-        # テストデータの標準化
-        self.Xs_test_inter = [
-            scaler.transform(X_test_inter) for X_test_inter in self.Xs_test_inter
-        ]
-        # gamma を計算
-        #X_train_inter_1 = 0
-        #gamma_1 = 0
-        for X_train_inter in self.Xs_train_inter:
-            # gamma を計算
-            gamma = self_tuning_gamma(X_train_inter, standardize=False, k=3, summary='median')
-            #print(X_train_inter == X_train_inter_1 )
-            #print(gamma == gamma_1)
-            #X_train_inter_1 = X_train_inter
-            #gamma_1 = gamma
-            # gamma をリストに追加
-            gammas.append(gamma)
-
-            # gammas を config に格納
-            #if not hasattr(self.config, 'gammas') or self.config.gammas is None:
-            #    self.config.gammas = []  # gammas が存在しない場合、新しいリストを作成
-            #self.config.gammas.extend(gammas)  # gammas を config に追加
-        #if hasattr(self.config, 'nl_gammas') and self.config.nl_gammas is not None:
-        #    gammas = self.config.nl_gammas
+        # ---- gamma の用意（省略：あなたのまま） ----
+        gammas = []
+        if self.config.gamma_type == "auto":
+            for S_tilde in self.anchors_inter:
+                gammas.append(1.0 / S_tilde.shape[1])
+        elif self.config.gamma_type == "X_tuning":
+            for X_train_inter in self.Xs_train_inter:
+                gamma = self_tuning_gamma(X_train_inter, standardize=False, k=3, summary='median')
+                gammas.append(gamma)
         print(gammas)
-        
-        # ---------- 1.  Gram 行列 K , 射影 P_λ  ----------------------
-        for i, S_tilde in enumerate(self.anchors_inter):          # (r, d̃_k)
-            d_k = S_tilde.shape[1]
-            #if not hasattr(self.config, 'nl_gammas') or self.config.nl_gammas is None:
-            #    gamma = getattr(self.config, "nl_gamma", 1.0 / d_k)
-            #    gammas.append(gamma)
-            #else:
+
+        # ---- 1. K と P_λ（厳密 or 一次近似） ----
+        USE_FIRST_ORDER = (lam >= 10.0)
+
+        for i, S_tilde in enumerate(self.anchors_inter):
             gamma = gammas[i]
 
-            # (a) カーネル行列 (RBF のみ＝罰則対象)
-            K_rbf = rbf_kernel(S_tilde, S_tilde, gamma=gamma)  # (r,r)
+            # (a) カーネル行列（先に作って正規化）
+            K_rbf_raw = rbf_kernel(S_tilde, S_tilde, gamma=gamma)     # (r,r) 対称PSD
+            mu_max = max(eigvalsh(K_rbf_raw).max(), 1e-12)            # スペクトル半径
+            K_rbf = K_rbf_raw / mu_max                                # ||K||_2 = 1
+            K_scales.append(mu_max)                                   # 未来の K(x,S) にも適用
 
-            # (b) 線形基底   P = [1,  x]               （罰則ゼロ）
-            P_lin = np.hstack((np.ones((r, 1)), S_tilde))      # (r, d_k+1)
+            # (b-1) 線形基底（バイアスなし）
+            #P_lin = S_tilde 
+            # (b-2) 線形基底（バイアス込み）
+            P_lin = np.hstack((np.ones((r, 1)), S_tilde))             # (r, d_k+1)
 
-            # (c) A⁻¹ = (K_rbf + λI)⁻¹
-            A_inv = inv(K_rbf + lam * I_r)
+            if USE_FIRST_ORDER:
+                # ---- 一次近似：P_λ ≈ P_linProj + (1/λ) P^(1) ----
+                # 射影 P_linProj = P (PᵀP)^† Pᵀ
+                G = P_lin.T @ P_lin
+                G_inv = pinv(G)
+                P_linProj = P_lin @ G_inv @ P_lin.T                   # (r,r)
 
-            # (d) M   = (Pᵀ A⁻¹ P)⁻¹   （低ランク時は疑似逆行列）
-            try:
-                M = inv(P_lin.T @ A_inv @ P_lin)
-            except np.linalg.LinAlgError:
-                M = pinv(P_lin.T @ A_inv @ P_lin)
+                # P^(1) = K - K P - P K + P K P   （K は正規化済）
+                P1 = K_rbf - K_rbf @ P_linProj - P_linProj @ K_rbf + P_linProj @ K_rbf @ P_linProj
+                P_lambda = P_linProj + (1.0/lam) * P1                 # (r,r)
 
-            # (e) 射影 P_λ = K_rbf A⁻¹
-            #                 + (P - K_rbf A⁻¹ P) M Pᵀ A⁻¹
-            P_lambda = (K_rbf @ A_inv
-                        + (P_lin - K_rbf @ A_inv @ P_lin)
-                        @ M @ (P_lin.T @ A_inv))
+                # 係数の近似も用意（後段の embed 用）
+                # beta0 = (PᵀP)^† Pᵀ Z,  r0 = Z - P beta0
+                # beta ≈ beta0 + (1/λ) (PᵀP)^† Pᵀ K r0
+                # alpha ≈ (1/λ) r0
+                coeff_mode = "first_order"
+                coeff_pack = (G_inv, P_linProj)                       # 係数再計算用
+            else:
+                # ---- 厳密計算（従来どおり） ----
+                A_inv = inv(K_rbf + lam * I_r)                        # (K + λI)^(-1)
+                try:
+                    M = inv(P_lin.T @ A_inv @ P_lin)
+                except np.linalg.LinAlgError:
+                    M = pinv(P_lin.T @ A_inv @ P_lin)
 
-            Ks.append((K_rbf, P_lin, A_inv, M))     # 後続で再利用
-            Ps_lambda.append(P_lambda)              # r×r
-            
-    
+                P_lambda = (K_rbf @ A_inv
+                            + (P_lin - K_rbf @ A_inv @ P_lin) @ M @ (P_lin.T @ A_inv))
+                coeff_mode = "exact"
+                coeff_pack = (A_inv, M)
 
-        # ---------- 2. 共通ターゲット Z (r×p̂,  ‖Z‖_F = 1) ------------
+            Ks.append((K_rbf, P_lin, coeff_mode, coeff_pack, mu_max))
+            Ps_lambda.append(P_lambda)
+
+        # ---- 2. 共通ターゲット Z（そのまま）----
         M_tot = sum((P_l - I_r).T @ (P_l - I_r) for P_l in Ps_lambda)
-        M_sym = 0.5 * (M_tot + M_tot.T)            # 数値的対称化
+        M_sym = 0.5 * (M_tot + M_tot.T)
         eigvals, eigvecs = np.linalg.eigh(M_sym)
 
         Z = eigvecs[:, eigvals.argsort()[:p_hat]]
-        Z /= norm(Z, 'fro')
-
-        # ---------- 3. 各機関データを写像 ------------------------------
+        # 列ごとに ||z_j||_2 = 1 へ
+        for j in range(Z.shape[1]):
+            nz = np.linalg.norm(Z[:, j])
+            if nz > 0:
+                Z[:, j] /= nz
+        # ---- 3. 各機関データを写像 ----
         Xs_train_intg, Xs_test_intg = [], []
 
-        for (K_rbf, P_lin, A_inv, M), S_tilde, gamma, X_tr, X_te in zip(
-                Ks, self.anchors_inter, gammas,
-                self.Xs_train_inter, self.Xs_test_inter):
+        for (K_rbf, P_lin, coeff_mode, coeff_pack, mu_max), S_tilde, gamma, X_tr, X_te in zip(
+                Ks, self.anchors_inter, gammas, self.Xs_train_inter, self.Xs_test_inter):
 
-            # --- 3-1. 係数 β, α （列ベクトルをまとめて行列で）
-            beta  = M @ (P_lin.T @ A_inv @ Z)       # (d_k+1, p̂)
-            alpha = A_inv @ (Z - P_lin @ beta)      # (r, p̂)
+            if coeff_mode == "exact":
+                A_inv, M = coeff_pack
+                beta  = M @ (P_lin.T @ A_inv @ Z)                     # (d_k+1, p̂)
+                alpha = A_inv @ (Z - P_lin @ beta)                    # (r, p̂)
+            else:
+                # 一次近似：beta0, r0, beta1, alpha
+                G_inv, P_linProj = coeff_pack
+                beta0 = G_inv @ (P_lin.T @ Z)
+                r0 = Z - P_lin @ beta0
+                beta1 = G_inv @ (P_lin.T @ (K_rbf @ r0))
+                beta  = beta0 + (1.0/lam) * beta1
+                alpha = (1.0/lam) * r0
 
-            # --- 3-2. 新データ → 表現 -------------------------------
+            # --- 埋め込み関数（K(x,S) も同じスケールで正規化！）---
             def embed(X):
-                # features:  [K_rbf(X,S̃)  ,  1  X]
-                Kx  = rbf_kernel(X, S_tilde, gamma=gamma)       # (n,r)
-                Px  = np.hstack((np.ones((len(X), 1)), X))      # (n,d_k+1)
-                return Kx @ alpha + Px @ beta                   # (n, p̂)
+                Kx_raw = rbf_kernel(X, S_tilde, gamma=gamma)          # (n,r)
+                Kx = Kx_raw / mu_max                                  # K と同じ正規化
+                Px  = np.hstack((np.ones((len(X), 1)), X))            # (n,d_k+1)
+                return Kx @ alpha + Px @ beta
+
             Xs_train_intg.append(embed(X_tr))
             Xs_test_intg.append(embed(X_te))
 
-        # ---------- 4. スタック & 保存 -------------------------------
+        # ---- 4. スタック & 保存 ----
         self.X_train_integ = np.vstack(Xs_train_intg)
         self.X_test_integ  = np.vstack(Xs_test_intg)
         self.y_train_integ = np.hstack(self.ys_train)
@@ -735,9 +787,330 @@ class DataCollaborationAnalysis:
 
         self.logger.info(f"nonlinear integrate (RBF+Linear): "
                         f"X_train {self.X_train_integ.shape}, "
-                        f"X_test {self.X_test_integ.shape}")
+                        f"X_test {self.X_test_integ.shape}, "
+                        f"lambda={lam}, approx={'1st' if USE_FIRST_ORDER else 'exact'}")
+        print("統合表現の次元数:", self.X_train_integ.shape[1])
+    """
+    # ---------------------------------------------------------------
+    # 〈非線形統合〉  RBF ⊕ Linear（※線形のバイアス項なし）
+    #     g(x)= αᵀ k_rbf(x,·) + βᵀx
+    #     零空間 = { βᵀx }（無罰則）, 有罰則 = α（λ‖α‖²）
+    # ---------------------------------------------------------------
+    def make_integrate_nonlinear_linear(self) -> None:
+
+        import numpy as np
+        from numpy.linalg import eigvalsh, inv, pinv
+        from sklearn.metrics.pairwise import rbf_kernel
+
+        m     = len(self.anchors_inter)
+        r     = self.anchors_inter[0].shape[0]
+        p_hat = self.config.dim_integrate
+        lam   = getattr(self.config, "nl_lambda", 1e-2)
+
+        Ks, gammas, Ps_lambda = [], [], []
+        K_scales = []
+        I_r = np.eye(r)
+
+        # ---- gamma の用意（既存ロジックのまま）----
+        if self.config.gamma_type == "auto":
+            for S_tilde in self.anchors_inter:
+                gammas.append(1.0 / S_tilde.shape[1])
+        elif self.config.gamma_type == "X_tuning":
+            for X_train_inter in self.Xs_train_inter:
+                gamma = self_tuning_gamma(X_train_inter, standardize=False, k=3, summary='median')
+                gammas.append(gamma)
+        else:
+            # フォールバック
+            for S_tilde in self.anchors_inter:
+                gammas.append(1.0 / S_tilde.shape[1])
+
+        # ---- 1. K と P_λ（厳密 or 一次近似） ----
+        # 不要な気がする
+        USE_FIRST_ORDER = (lam >= 10.0)
+
+        for i, S_tilde in enumerate(self.anchors_inter):
+            gamma = gammas[i]
+
+            # (a) RBF カーネル行列と正規化
+            K_rbf_raw = rbf_kernel(S_tilde, S_tilde, gamma=gamma)        # (r,r)
+            mu_max = max(eigvalsh(K_rbf_raw).max(), 1e-12)               # スペクトル半径
+            K_rbf = K_rbf_raw / mu_max                                   # ||K||_2 = 1
+            K_scales.append(mu_max)
+
+            # (b) ★ 線形基底（バイアス無し）
+            P_lin = S_tilde                                              # ★ (r, d_k)
+
+            if USE_FIRST_ORDER:
+                # 一次近似：P_λ ≈ P_linProj + (1/λ) P^(1)
+                G = P_lin.T @ P_lin
+                G_inv = pinv(G)
+                P_linProj = P_lin @ G_inv @ P_lin.T                      # (r,r)
+
+                # P^(1) = K - K P - P K + P K P   （K は正規化済）
+                P1 = K_rbf - K_rbf @ P_linProj - P_linProj @ K_rbf + P_linProj @ K_rbf @ P_linProj
+                P_lambda = P_linProj + (1.0/lam) * P1
+
+                coeff_mode = "first_order"
+                coeff_pack = (G_inv, P_linProj)                          # 係数再計算用
+            else:
+                # 厳密計算
+                A_inv = inv(K_rbf + lam * I_r)                           # (K + λI)^(-1)
+                try:
+                    M = inv(P_lin.T @ A_inv @ P_lin)                     # ★ (d_k,d_k)
+                except np.linalg.LinAlgError:
+                    M = pinv(P_lin.T @ A_inv @ P_lin)
+
+                # P_λ = K A^{-1} + (P - K A^{-1} P) M Pᵀ A^{-1}
+                P_lambda = (K_rbf @ A_inv
+                            + (P_lin - K_rbf @ A_inv @ P_lin) @ M @ (P_lin.T @ A_inv))
+                coeff_mode = "exact"
+                coeff_pack = (A_inv, M)
+
+            Ks.append((K_rbf, P_lin, coeff_mode, coeff_pack, mu_max))
+            Ps_lambda.append(P_lambda)
+
+        # ---- 2. 共通ターゲット Z（固有値問題）----
+        M_tot = sum((P_l - I_r).T @ (P_l - I_r) for P_l in Ps_lambda)
+        M_sym = 0.5 * (M_tot + M_tot.T)
+        eigvals, eigvecs = np.linalg.eigh(M_sym)
+
+        Z = eigvecs[:, eigvals.argsort()[:p_hat]]
+        # 列正規化（任意）
+        for j in range(Z.shape[1]):
+            nz = np.linalg.norm(Z[:, j])
+            if nz > 0:
+                Z[:, j] /= nz
+
+        # ---- 3. 各機関データを写像 ----
+        Xs_train_intg, Xs_test_intg = [], []
+
+        for (K_rbf, P_lin, coeff_mode, coeff_pack, mu_max), S_tilde, gamma, X_tr, X_te in zip(
+                Ks, self.anchors_inter, gammas, self.Xs_train_inter, self.Xs_test_inter):
+
+            if coeff_mode == "exact":
+                A_inv, M = coeff_pack
+                beta  = M @ (P_lin.T @ A_inv @ Z)                          # ★ (d_k, p̂)
+                alpha = A_inv @ (Z - P_lin @ beta)                         # (r, p̂)
+            else:
+                # 一次近似
+                G_inv, P_linProj = coeff_pack
+                beta0 = G_inv @ (P_lin.T @ Z)                              # ★ (d_k, p̂)
+                r0    = Z - P_lin @ beta0
+                beta1 = G_inv @ (P_lin.T @ (K_rbf @ r0))                   # ★ (d_k, p̂)
+                beta  = beta0 + (1.0/lam) * beta1
+                alpha = (1.0/lam) * r0
+
+            # --- 埋め込み（K(x,S) も同じスケールで正規化）---
+            def embed(X):
+                Kx_raw = rbf_kernel(X, S_tilde, gamma=gamma)               # (n,r)
+                Kx = Kx_raw / mu_max
+                Px = X                                                     # ★ (n, d_k)  ← バイアス無し
+                return Kx @ alpha + Px @ beta
+
+            Xs_train_intg.append(embed(X_tr))
+            Xs_test_intg .append(embed(X_te))
+
+        # ---- 4. スタック & 保存 ----
+        self.X_train_integ = np.vstack(Xs_train_intg)
+        self.X_test_integ  = np.vstack(Xs_test_intg)
+        self.y_train_integ = np.hstack(self.ys_train)
+        self.y_test_integ  = np.hstack(self.ys_test)
+
+        self.logger.info(
+            f"nonlinear integrate (RBF + Linear[no-bias]): "
+            f"X_train {self.X_train_integ.shape}, X_test {self.X_test_integ.shape}, "
+            f"lambda={lam}, approx={'1st' if USE_FIRST_ORDER else 'exact'}"
+        )
         print("統合表現の次元数:", self.X_train_integ.shape[1])
 
+ 
+        
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 〈非線形統合〉 10× / 0.1× ステップで λ・γ_k を探索する座標勾配アルゴリズム
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 〈非形統合〉 γ_k のみ 10× / 0.1× 探索（λ=1e-9 固定）
+    # ------------------------------------------------------------------
+    def make_integrate_nonlinear_expression_tuning(self) -> None:
+        """
+        * λ は 1e-9 に固定。
+        * 機関別カーネル幅 γ_k のみを勾配符号に沿って 1 桁スケール移動で最適化。
+        * 改善なければ方向反転しステップ幅を対数で 1/2 に縮小。
+        * 同じパラメータで 2 回縮小が起これば収束とみなす。
+        """
+        import math
+
+        import numpy as np
+        from numpy.linalg import eigh, inv, norm
+        from sklearn.metrics.pairwise import rbf_kernel
+
+        # ------------------ 基本設定 ------------------------------------------
+        LAMBDA_FIXED = 1e-9                               # λ を固定
+        m = len(self.anchors_inter)                       # 機関数
+        r = self.anchors_inter[0].shape[0]                # アンカー行数
+        p_hat = self.config.dim_integrate                 # 統合表現次元
+
+        # 5:5 split ------------------------------------------------------------
+        r_tr = r // 2
+        tr_idx = np.arange(r_tr)
+        val_idx = np.arange(r_tr, r)
+        I_tr = np.eye(r_tr)
+        I_r = np.eye(r)
+
+        # 距離^2 行列をキャッシュ ----------------------------------------------
+        sq_dists = []
+        for S in self.anchors_inter:
+            G = S @ S.T
+            diag = np.diag(G)
+            sq_dists.append(diag[:, None] + diag[None, :] - 2 * G)
+
+        # -------------------- val loss 関数 (λ 固定) --------------------------
+        def val_loss(log_gammas: np.ndarray) -> float:
+            gammas = np.exp(log_gammas)
+
+            P_tr_list, P_val_list = [], []
+            for dist, gamma in zip(sq_dists, gammas):
+                K_tr = np.exp(-gamma * dist[np.ix_(tr_idx, tr_idx)])
+                K_val_tr = np.exp(-gamma * dist[np.ix_(val_idx, tr_idx)])
+                A = inv(K_tr + LAMBDA_FIXED * I_tr)
+                P_tr_list.append(K_tr @ A)
+                P_val_list.append(K_val_tr @ A)
+
+            # --- 固有値問題 (train) -----------------------------------------
+            M_tr = np.zeros((r_tr, r_tr))
+            for P_tr in P_tr_list:
+                M_tr += (I_tr - P_tr).T @ (I_tr - P_tr)
+            M_tr = 0.5 * (M_tr + M_tr.T)
+            eigvals, eigvecs = eigh(M_tr)
+            Z_tr = eigvecs[:, np.argsort(eigvals)[:p_hat]]
+            Z_tr /= norm(Z_tr, 'fro')
+
+            # val 側の予測平均
+            Z_val_pred = sum(P_val @ Z_tr for P_val in P_val_list) / m
+
+            loss = 0.0
+            for P_val in P_val_list:
+                E = P_val @ Z_tr - Z_val_pred
+                loss += np.sum(E ** 2)
+            return loss
+
+        # --------------------- 勾配 (有限差分) -------------------------------
+        def finite_grad(fun, x, eps=1e-4):
+            g = np.zeros_like(x)
+            for i in range(len(x)):
+                e = np.zeros_like(x)
+                e[i] = eps
+                g[i] = (fun(x + e) - fun(x - e)) / (2 * eps)
+            return g
+
+        # ------------------- 初期値とステップ幅 ------------------------------
+        gammas0 = [1.0 / S.shape[1] for S in self.anchors_inter]
+        log_gammas = np.log(np.array(gammas0, dtype=float))
+        print(gammas0)
+        step_sizes = np.full_like(log_gammas, math.log(10.0))   # ln10
+        shrink_counts = np.zeros_like(log_gammas, dtype=int)
+        min_step = math.log(1.5)                                # ≈0.405
+        max_iter = 300
+
+        curr_loss = val_loss(log_gammas)
+
+        for it in range(max_iter):
+            grad = finite_grad(val_loss, log_gammas)
+            improved_any = False
+            for i in range(len(log_gammas)):
+                if shrink_counts[i] >= 2:
+                    continue   # この γ_k は収束済み
+
+                direction = -np.sign(grad[i])
+                if direction == 0:
+                    shrink_counts[i] = 2  # フラット => 収束
+                    continue
+
+                # 1 桁移動 (×10 or ÷10)
+                trial = log_gammas.copy()
+                trial[i] += direction * step_sizes[i]
+                loss1 = val_loss(trial)
+
+                if loss1 < curr_loss:     # 改善
+                    log_gammas = trial
+                    curr_loss = loss1
+                    improved_any = True
+                    continue
+
+                # 方向反転
+                trial2 = log_gammas.copy()
+                trial2[i] -= direction * step_sizes[i]
+                loss2 = val_loss(trial2)
+                if loss2 < curr_loss:
+                    log_gammas = trial2
+                    curr_loss = loss2
+                    improved_any = True
+                else:
+                    # ステップ幅半減 (対数的に 1/2) and count ++
+                    step_sizes[i] *= 0.5
+                    shrink_counts[i] += 1
+                print(log_gammas)
+            # 全 γ_k が 2 回縮小済みなら収束
+            if np.all(shrink_counts >= 2):
+                break
+            # 1 イテレーションで何も改善しなければ再度勾配計算で続行
+            if not improved_any and np.all(step_sizes < min_step):
+                break
+
+        # ------------------ 最終統合（固定 λ, 最適 γ） -----------------------
+        gammas_opt = np.exp(log_gammas)
+        print("最適化された γ_k:", gammas_opt)
+        Ks, Ps = [], []
+        for S, gamma in zip(self.anchors_inter, gammas_opt):
+            K = rbf_kernel(S, S, gamma=gamma)
+            Ks.append(K)
+            Ps.append(K @ inv(K + LAMBDA_FIXED * I_r))
+
+        M_full = np.zeros((r, r))
+        for P in Ps:
+            M_full += (I_r - P).T @ (I_r - P)
+        M_full = 0.5 * (M_full + M_full.T)
+        eigvals_full, eigvecs_full = eigh(M_full)
+        Z = eigvecs_full[:, np.argsort(eigvals_full)[:p_hat]]
+        Z /= norm(Z, 'fro')
+        
+        # ---- 各機関を統合空間に射影 ----------------------------------------
+        Xs_train_intg, Xs_test_intg = [], []
+        for S, K, gamma, X_tr, X_te in zip(self.anchors_inter, Ks, gammas_opt,
+                                           self.Xs_train_inter, self.Xs_test_inter):
+            Bk = inv(K + LAMBDA_FIXED * I_r) @ Z
+            Xs_train_intg.append(rbf_kernel(X_tr, S, gamma=gamma) @ Bk)
+            Xs_test_intg.append(rbf_kernel(X_te, S, gamma=gamma) @ Bk)
+
+        self.X_train_integ = np.vstack(Xs_train_intg)
+        self.X_test_integ = np.vstack(Xs_test_intg)
+        self.y_train_integ = np.hstack(self.ys_train)
+        self.y_test_integ = np.hstack(self.ys_test)
+
+        # --------------- 保存 & ログ -----------------------------------------
+        eig_top = eigvals_full[np.argsort(eigvals_full)[:p_hat]].sum()
+        self.config.g_abs_sum = f"{eig_top:.4g}"
+        self.config.nl_lambda_opt = LAMBDA_FIXED
+        self.config.nl_gamma_opt = [float(g) for g in gammas_opt]
+        self.logger.info(f"[nonlinear integrate] λ fixed = {LAMBDA_FIXED}")
+        self.logger.info(f"[nonlinear integrate] opt γ = {[round(g,5) for g in gammas_opt]}")
+        self.logger.info(f"[nonlinear integrate] X_train {self.X_train_integ.shape}")
+        self.logger.info(f"[nonlinear integrate] X_test  {self.X_test_integ.shape}")
+        print("統合表現の次元数:", self.X_train_integ.shape[1])
+        print(gammas_opt)
+
+        # 固有値の小さい順に p_hat 個選択
+        lambdas = eigvals_full[:p_hat]  # 固有値の上位 p_hat 個
+
+        # 固有値の総和を計算
+        sum_lambdas = np.sum(lambdas)
+
+        # 結果を self.config.g_abs_sum に格納
+        self.config.g_abs_sum = f"{sum_lambdas:.4g}"
+
+        # デバッグ用出力
+        print(f"固有値 λ の上位 {p_hat} 個の総和: {self.config.g_abs_sum}")
 
 
     def visualize_representations(self, save_dir: Optional[str] = None) -> None:
@@ -839,7 +1212,7 @@ class DataCollaborationAnalysis:
         plt.tight_layout(rect=[0, 0.03, 1, 0.97])
         if save_dir:
             Path(save_dir).mkdir(parents=True, exist_ok=True)
-            plt.savefig(Path(save_dir) / f"train_{self.config.G_type}_{self.config.nl_lambda}.png")
+            plt.savefig(Path(save_dir) / f"_{self.config.dataset}_{self.config.nl_lambda}__{self.config.True_F_type}_{self.config.G_type}_{self.config.gamma_type}.png")
         """
         # --- テストデータの可視化 ---
         fig_test, axes_test = plt.subplots(num_institutions, 4, figsize=(24, 5 * num_institutions), squeeze=False)

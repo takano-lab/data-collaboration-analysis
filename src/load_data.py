@@ -94,21 +94,40 @@ def _load_digits_df() -> pd.DataFrame:
     return df
 
 
+from sklearn.preprocessing import StandardScaler
+
 def _load_concentric_circles_df() -> pd.DataFrame:
     path = Path("input/Three_Organization_Dataset.csv")
     df = pd.read_csv(path)
     df = df.rename(columns={"y": "target"})
-    #df["y"] = df["target"]
+
+    # "target" 列以外を標準化
+    scaler = StandardScaler()
+    feature_columns = [col for col in df.columns if col != "target"]
+    df[feature_columns] = scaler.fit_transform(df[feature_columns])
+
     return df
 
 def _load_two_gaussian_distributions_df() -> pd.DataFrame:
     path = Path("input/Two_Gaussian_Distributions.csv")
     df = pd.read_csv(path)
+
+    # "target" 列以外を標準化
+    scaler = StandardScaler()
+    feature_columns = [col for col in df.columns if col != "target"]
+    df[feature_columns] = scaler.fit_transform(df[feature_columns])
+
     return df
 
 def _load_3D_gaussian_clusters_df() -> pd.DataFrame:
     path = Path("input/3D_8_Gaussian_Clusters.csv")
     df = pd.read_csv(path)
+
+    # "target" 列以外を標準化
+    scaler = StandardScaler()
+    feature_columns = [col for col in df.columns if col != "target"]
+    df[feature_columns] = scaler.fit_transform(df[feature_columns])
+
     return df
 
 def load_tdc_dataset(name: str, **kwargs) -> pd.DataFrame:
@@ -302,12 +321,18 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
     # ── one-hot encoding（targetは除く）
     X = pd.get_dummies(X, drop_first=True)
-    
-    # ── カテゴリ変数は除外
-    #X = X.select_dtypes(exclude=['object', 'category'])
+
+    # ── 特徴量を標準化 # one-hot も標準化している点に注意
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X)
+
+    # ── numpy.ndarray を DataFrame に変換
+    X = pd.DataFrame(X, columns=pd.get_dummies(df.drop(columns=["target"]), drop_first=True).columns)
 
     # ── 再結合
-    df = pd.concat([X, y], axis=1)
+    df = pd.concat([X, y.reset_index(drop=True)], axis=1)
+
+
 
     if config.dataset == 'qsar':
         config.feature_num = 41

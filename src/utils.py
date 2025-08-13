@@ -260,6 +260,7 @@ def reduce_dimensions(
     X_test: np.ndarray,
     n_components: int,
     anchor: Optional[np.ndarray] = None,
+    anchor_test: Optional[np.ndarray] = None,
     F_type = "kernel_pca",
     seed= None,
     param = None,
@@ -276,7 +277,8 @@ def reduce_dimensions(
 
         if anchor is not None:
             X_anchor_svd = model.transform(anchor)
-            return X_train_svd, X_test_svd, X_anchor_svd
+            X_anchor_test_svd = model.transform(anchor_test)
+            return X_train_svd, X_test_svd, X_anchor_svd, X_anchor_test_svd
 
         return X_train_svd, X_test_svd
     
@@ -298,7 +300,9 @@ def reduce_dimensions(
         if anchor is not None:
             X_anchor_F_prime = svd.transform(anchor)
             X_anchor_F = X_anchor_F_prime @ E
-            return X_train_F, X_test_F, X_anchor_F
+            X_anchor_test_prime = svd.transform(anchor_test)
+            X_anchor_test_F = X_anchor_test_prime @ E
+            return X_train_F, X_test_F, X_anchor_F, X_anchor_test_F
 
         return X_train_F, X_test_F
     
@@ -333,7 +337,7 @@ def reduce_dimensions(
 
         if anchor is not None:
             X_anchor_reduced = anchor @ F
-            return X_train_reduced, X_test_reduced, X_anchor_reduced
+            return X_train_reduced, X_test_reduced, X_anchor_reduced, None
 
         return X_train_reduced, X_test_reduced
 
@@ -367,7 +371,7 @@ def reduce_dimensions(
 
         if anchor is not None:
             X_anchor_reduced = anchor @ F
-            return X_train_reduced, X_test_reduced, X_anchor_reduced
+            return X_train_reduced, X_test_reduced, X_anchor_reduced, None
 
         return X_train_reduced, X_test_reduced
     
@@ -380,10 +384,9 @@ def reduce_dimensions(
 
         if anchor is not None:
             X_anchor_lpp = model.transform(anchor)
-            return X_train_lpp, X_test_lpp, X_anchor_lpp
+            return X_train_lpp, X_test_lpp, X_anchor_lpp, None
 
         return X_train_lpp, X_test_lpp
-
 
     else:
     # --- スケーリング ---
@@ -391,8 +394,11 @@ def reduce_dimensions(
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
         anchor_scaled = scaler.transform(anchor) if anchor is not None else None
-        gamma = 1.0 / X_train.shape[1] # har だと 0.001 が精度良い
-        gamma = self_tuning_gamma(X_train_scaled, standardize=False, k=7, summary='median')
+        
+        if F_type == "kernel_pca":
+            gamma = 1.0 / X_train.shape[1] # har だと 0.001 が精度良い
+        elif F_type == "kernel_pca_self_tuning":
+            gamma = self_tuning_gamma(X_train_scaled, standardize=False, k=7, summary='median')
         if config is not None:
             # config.gammas に追加
             if not hasattr(config, 'nl_gammas') or config.nl_gammas is None:
@@ -412,7 +418,7 @@ def reduce_dimensions(
         
         if anchor_scaled is not None:
             X_anchor_svd = model.transform(anchor_scaled)
-            return X_train_svd, X_test_svd, X_anchor_svd
+            return X_train_svd, X_test_svd, X_anchor_svd, None
 
         return X_train_svd, X_test_svd
 
