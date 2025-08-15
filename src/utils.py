@@ -399,6 +399,12 @@ def reduce_dimensions(
             gamma = 1.0 / X_train.shape[1] # har だと 0.001 が精度良い
         elif F_type == "kernel_pca_self_tuning":
             gamma = self_tuning_gamma(X_train_scaled, standardize=False, k=7, summary='median')
+        elif F_type == "kernel_pca_unfixed_gamma":
+            gamma = self_tuning_gamma(X_train_scaled, standardize=False, k=7, summary='median')
+            if seed % 6 != 0:
+                gamma = 10**((seed % 6)-3)*gamma # 2, 1, 0, -1, -2
+            else:
+                gamma = 1.0 / X_train.shape[1]
         if config is not None:
             # config.gammas に追加
             if not hasattr(config, 'nl_gammas') or config.nl_gammas is None:

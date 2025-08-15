@@ -90,7 +90,16 @@ def _load_digits_df() -> pd.DataFrame:
     # `bunch.frame` には data と target が入り済み
     df = bunch.frame.copy()
     df = df.rename(columns={"target": "target"})
-    df = df.drop(columns=["org"])
+    # 'org' 列が存在する場合のみ削除
+    if "org" in df.columns:
+        df = df.drop(columns=["org"])
+    
+        # NaN 値を確認し、処理する
+    if df.isnull().any().any():
+        # NaN を 0 で埋める場合
+        df = df.fillna(0)
+        # または、NaN を削除する場合
+        # df = df.dropna()
     return df
 
 
@@ -120,7 +129,7 @@ def _load_two_gaussian_distributions_df() -> pd.DataFrame:
     return df
 
 def _load_3D_gaussian_clusters_df() -> pd.DataFrame:
-    path = Path("input/3D_8_Gaussian_Clusters.csv")
+    path = Path("input/3D_3_Gaussian_Clusters.csv")
     df = pd.read_csv(path)
 
     # "target" 列以外を標準化
@@ -375,13 +384,14 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.dim_integrate = config.feature_num-1 # 統合表現の次元数
         config.num_institution_user = 16
         config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
+        config.metrics = "accuracy"
         
     elif config.dataset == 'digits':
         #feature_num = 15  # 特徴量の数（目的変数を除く）
         #config.dim_intermediate = 5 # 中間表現の次元数
         #config.dim_integrate = 5 # 統合表現の次元数
         config.feature_num = min(len(df.columns) - 1, 51)
-        config.num_institution_user = 30
+        config.num_institution_user = 120
         config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
 
     elif config.dataset == 'mnist' or config.dataset == 'fashion_mnist':
@@ -421,6 +431,7 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.dim_integrate = config.feature_num - 1
         config.num_institution_user = max(config.dim_integrate + 1, 50) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
         config.num_institution = int(len(df) / (config.num_institution_user * 2))
+        config.metrics = "auc"
     
     
     # 特徴量だけを取得（target を除外）

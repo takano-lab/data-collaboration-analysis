@@ -1,15 +1,21 @@
 from __future__ import annotations
 
-from typing import Optional, TypeVar
+from typing import Dict, List, Optional, Sequence, Tuple, TypeVar
 
 import numpy as np
 import pandas as pd
 from numpy.linalg import eigvalsh, inv, norm, pinv
 from scipy import linalg
 from sklearn.decomposition import TruncatedSVD
+from sklearn.linear_model import LogisticRegression
 
 # ------ 修正後 ---------------------
 from sklearn.metrics.pairwise import pairwise_distances, rbf_kernel
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_val_score
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.svm import SVC
 from tqdm import tqdm
 
 from config.config import Config
@@ -34,6 +40,7 @@ class DataCollaborationAnalysis:
         self.train_df: pd.DataFrame = train_df
         self.test_df: pd.DataFrame = test_df
         self.anchor: np.ndarray = np.array([])
+        self.anchor_y: np.ndarray = np.array([])
         self.anchor_test: np.ndarray = np.array([])
 
         # 機関ごとの分割データ
@@ -111,6 +118,20 @@ class DataCollaborationAnalysis:
                 writer.writerow([k, v])
 
         print(f"✅ 最適パラメータ saved to: {save_path}")
+        
+    def assign_anchor_labels(self, k=5):
+        """
+        self.anchor に対して、self.Xs_train, self.ys_train を使い
+        k-NN多数決でラベルを付与し self.anchor_y に格納する
+        """
+        # 全機関の訓練データとラベルを結合
+        X_train_all = np.vstack(self.Xs_train)
+        y_train_all = np.hstack(self.ys_train)
+
+        # k-NNでラベル推定
+        knn = KNeighborsClassifier(n_neighbors=k)
+        knn.fit(X_train_all, y_train_all)
+        self.anchor_y = knn.predict(self.anchor)
 
 
     def run(self) -> None:
@@ -130,6 +151,10 @@ class DataCollaborationAnalysis:
         self.anchor = self.produce_anchor(
             num_row=self.config.num_anchor_data, num_col=self.Xs_train[0].shape[1], seed=self.config.seed
         )
+        self.assign_anchor_labels(k=5)
+        
+        
+        
         # アンカーデータの生成
         self.anchor_test = self.produce_anchor(
             num_row=self.config.num_anchor_data, num_col=self.Xs_train[0].shape[1], seed=self.config.seed+1
@@ -225,8 +250,12 @@ class DataCollaborationAnalysis:
         print()
         self.config.f_seed_2 = 0
         mixed = False
-        if self.config.F_type == "kernel_pca_svd_mixed":
+        unfixed_mixed = False
+        if self.config.F_type == "kernel_pca_svd_mixed": #
             mixed = True
+        elif self.config.F_type == "kernel_pca_unfixed_mixed":
+            unfixed_mixed = True
+            # kernel_pca_unfixed_gamma
         for X_train, X_test in zip(tqdm(self.Xs_train), self.Xs_test):
             # 各機関の訓練データ, テストデータおよびアンカーデータを取得し、svdを適用
             if mixed:
@@ -235,6 +264,12 @@ class DataCollaborationAnalysis:
                     self.config.F_type = "svd"
                 else:
                     self.config.F_type = "kernel_pca_self_tuning"
+            elif unfixed_mixed:
+                self.config.f_seed_2 += 1
+                if self.config.f_seed_2 % 6 == 0:
+                    self.config.F_type = "svd"
+                else:
+                    self.config.F_type = "kernel_pca_unfixed_gamma"
             #print(self.config.F_type)
             X_train_svd, X_test_svd, anchor_svd, anchor_test_svd = reduce_dimensions(
                X_train=X_train,
@@ -352,10 +387,19 @@ class DataCollaborationAnalysis:
         # --------------------------------------------------
         # 2. 固有値問題  C_s̃ z = λ z  を解く（昇順）
         # --------------------------------------------------
-        eigvals, eigvecs = eigh(C_tildeS)                 # 昇順で返る
+        #eigvals, eigvecs = eigh(C_tildeS)                 # 昇順で返る
         p_hat = self.config.dim_integrate
-        Z = eigvecs[:, :p_hat]                            # r×p̂  —— 目標行列 Z
-
+        #Z = eigvecs[:, :p_hat]                            # r×p̂  —— 目標行列 Z
+        
+        objective_direction_ratio = getattr(self.config, "objective_direction_ratio", 0)
+        if objective_direction_ratio > 0:
+            idx, Z, eigvals, eigvecs = self.select_eigvecs_multilogit_hybrid(C_tildeS, self.anchor_y, p_hat=p_hat, objective_direction_ratio=objective_direction_ratio)
+        else:
+            # ❷ 実対称用の固有値分解を使う
+            eigvals, eigvecs = np.linalg.eigh(C_tildeS)
+            # ❸ 念のため負の丸め誤差を 0 に
+            eigvals[eigvals < 0] = 0.0
+            Z = eigvecs[:, :p_hat]
         # --------------------------------------------------
         # 3. 各機関ごとに  g^(k) = (S̃^(k))^† Z   を計算
         #    → 係数行列 G^(k)（d_I × p̂）
@@ -555,7 +599,98 @@ class DataCollaborationAnalysis:
         self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
         self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
 
+    def select_eigvecs_multilogit_hybrid(
+        self,
+        M: np.ndarray,
+        y: np.ndarray,
+        p_hat: int,
+        objective_direction_ratio: float = 0.0,
+        C: float = 1.0,
+        random_state: int = 0,
+    ):
+        """
+        ハイブリッド選択：
+        1) 前半 floor(p_hat/2) 本は『固有値の小さい順』で先取り
+        2) 残りは『ロジスティック回帰のスコア（+ 固有値ペナルティ）』で前向き選択
 
+        戻り値は (selected_idx, Z, eigvals, eigvecs)
+        """
+        # --- 固有分解 ---
+        eigvals, eigvecs = np.linalg.eigh(M)  # eigvecs[:, i] が固有ベクトル u_i
+        n = M.shape[0]
+
+        # --- One-hot & 初期確率 ---
+        try:
+            enc = OneHotEncoder(sparse_output=False, dtype=float)
+        except TypeError:  # scikit-learn 古い版対策
+            enc = OneHotEncoder(sparse=False, dtype=float)
+        Y = enc.fit_transform(y.reshape(-1, 1))  # (n, K)
+        K = Y.shape[1]
+        class_priors = Y.mean(axis=0)            # (K,)
+        P = np.tile(class_priors, (n, K))        # (n, K)
+
+        # --- 1) 固有値で前半を先取り ---
+        m1 = int(p_hat*(1-objective_direction_ratio))
+        
+        eig_order = np.argsort(eigvals)          # 小さい→大きい
+        selected_idx = list(eig_order[:m1])
+        remaining = [i for i in range(n) if i not in selected_idx]
+
+        # 先取り分で一度フィット（m1>0 のとき）
+        if m1 > 0:
+            Z_sel = eigvecs[:, selected_idx]
+            clf = LogisticRegression(
+                multi_class="multinomial", solver="lbfgs",
+                C=C, max_iter=1000, random_state=random_state
+            )
+            clf.fit(Z_sel, y)
+            P = clf.predict_proba(Z_sel)  # (n, K)
+        else:
+            Z_sel = None  # まだ何もない
+
+        # --- 2) 残りをスコアで前向き選択 ---
+        m2 = p_hat - m1
+        for _ in range(m2):
+            R = Y - P
+            W_diag_list = [P[:, c] * (1.0 - P[:, c]) + 1e-12 for c in range(K)]
+
+            best_j, best_score = None, -np.inf
+            for j in remaining:
+                u = eigvecs[:, j]
+                # ロジスティックのスコア検定（OvR の和） - gamma * λ_j
+                num = 0.0
+                for c in range(K):
+                    r_c = R[:, c]
+                    W_c = W_diag_list[c]
+                    uTr = float(u @ r_c)
+                    uWu = float(u @ (W_c * u))
+                    num += (uTr ** 2) / uWu
+                score = num #- gamma * float(eigvals[j])
+
+                # --- SVM基準にしたい場合はここを差し替え ---
+                # score = cv_linear_svm_score(np.column_stack([Z_sel, u]) if Z_sel is not None else u.reshape(-1,1), y)
+                #        - gamma * normalized_eigval[j]
+                # --------------------------------------------
+
+                if score > best_score:
+                    best_score = score
+                    best_j = j
+
+            # 採用＆再フィット
+            selected_idx.append(best_j)
+            remaining.remove(best_j)
+            Z_sel = eigvecs[:, selected_idx]
+
+            clf = LogisticRegression(
+                multi_class="multinomial", solver="lbfgs",
+                C=C, max_iter=1000, random_state=random_state
+            )
+            clf.fit(Z_sel, y)
+            P = clf.predict_proba(Z_sel)
+
+        Z = eigvecs[:, selected_idx]
+        return selected_idx, Z, eigvals, eigvecs
+    
     # ------------------------------------------------------------------
     # 〈非線形統合〉　射影行列 P^(k) で Z を最適化する ２段階アルゴリズム
     # ------------------------------------------------------------------
@@ -585,7 +720,13 @@ class DataCollaborationAnalysis:
                 # gamma を計算
                 gamma = self_tuning_gamma(X_train_inter, standardize=False, k=3, summary='median')
                 gammas.append(gamma)
-
+        
+        elif self.config.gamma_type == "same_as_f":
+            gammas = self.config.nl_gammas
+            print("ggggggggggggggggggggggggggggg")
+            print(len(self.Xs_train_inter))
+            print(len(gammas))
+            # svd だと記録されないためバグる
         print(gammas)
 
         if hasattr(self.config, "nl_lambda"):
@@ -609,14 +750,17 @@ class DataCollaborationAnalysis:
 
         # ❶ ほんのわずかな非対称を切り落とす
         M = (M + M.T) * 0.5
-
-        # ❷ 実対称用の固有値分解を使う
-        eigvals, eigvecs = np.linalg.eigh(M)
-
-        # ❸ 念のため負の丸め誤差を 0 に
-        eigvals[eigvals < 0] = 0.0
-
-        Z = eigvecs[:, eigvals.argsort()[:p̂]]
+        
+        objective_direction_ratio = getattr(self.config, "objective_direction_ratio", 0)
+        if objective_direction_ratio > 0:
+            idx, Z, eigvals, eigvecs = self.select_eigvecs_multilogit_hybrid(M, self.anchor_y, p_hat=p̂, objective_direction_ratio=objective_direction_ratio)
+        else:
+            # ❷ 実対称用の固有値分解を使う
+            eigvals, eigvecs = np.linalg.eigh(M)
+            # ❸ 念のため負の丸め誤差を 0 に
+            eigvals[eigvals < 0] = 0.0
+            Z = eigvecs[:, eigvals.argsort()[:p̂]]
+            
         # 列ごとに ||z_j||_2 = 1 へ
         for j in range(Z.shape[1]):
             nz = np.linalg.norm(Z[:, j])
@@ -646,7 +790,7 @@ class DataCollaborationAnalysis:
         self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
         self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
         
-                # 固有値の小さい順に p_hat 個選択
+        # 固有値の小さい順に p_hat 個選択
         lambdas = eigvals[:p̂]  # 固有値の上位 p_hat 個
 
         # 固有値の総和を計算
@@ -657,6 +801,7 @@ class DataCollaborationAnalysis:
 
         # デバッグ用出力
         print(f"固有値 λ の上位 {p̂} 個の総和: {self.config.g_abs_sum}")
+        #print(f"固有値 λ の目的関数減少 {p̂} 個の総和: {np.sum(eigvals[idx])}")
 
     """
     #バイアス項あり
@@ -825,7 +970,7 @@ class DataCollaborationAnalysis:
                 gammas.append(1.0 / S_tilde.shape[1])
 
         # ---- 1. K と P_λ（厳密 or 一次近似） ----
-        # 不要な気がする
+        # λ大きいことに寄る誤差はほとんどないが、一次近似すると計算時間が短縮される
         USE_FIRST_ORDER = (lam >= 10.0)
 
         for i, S_tilde in enumerate(self.anchors_inter):

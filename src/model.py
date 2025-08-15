@@ -48,6 +48,7 @@ class ModelRunner:
             "svm_classifier": self._run_svm,
             "svm_linear_classifier": self._run_svm_linear,
             "mlp": self._run_mlp,  # MLPを追加
+            "softmax": self._run_softmax
         }
 
     def run(self, X_train: np.ndarray, y_train: np.ndarray, X_test: np.ndarray, y_test: np.ndarray) -> float:
@@ -147,6 +148,40 @@ class ModelRunner:
         y_pred = model.predict(X_test)
         y_score = model.predict_proba(X_test)
         n_classes = len(model.classes_)
+
+        return self._evaluate(y_test, y_pred, y_score, n_classes)
+    
+    def _run_softmax(self, X_train, y_train, X_test, y_test, **kwargs) -> float:
+        """ロジスティック回帰（多クラスsoftmax）で評価指標を計算する"""
+        from sklearn.linear_model import LogisticRegression
+
+        # ラベルのエンコード
+        if not np.issubdtype(y_train.dtype, np.number):
+            encoder = LabelEncoder().fit(y_train)
+            y_train = encoder.transform(y_train)
+            y_test = encoder.transform(y_test)
+
+        # パイプラインの構築
+        steps = [StandardScaler()]
+        eigenvalues = kwargs.get('eigenvalues', None)
+        if eigenvalues is not None:
+            steps.append(EigenWeightingTransformer(eigenvalues=eigenvalues))
+
+        # ロジスティック回帰（多クラス対応）
+        clf = LogisticRegression(
+            multi_class='multinomial',
+            solver='lbfgs',
+            max_iter=1000,
+            random_state=self.config.seed
+        )
+        steps.append(clf)
+        model = make_pipeline(*steps)
+
+        # 学習と評価
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        y_score = model.predict_proba(X_test)
+        n_classes = len(clf.classes_) if hasattr(clf, "classes_") else len(np.unique(y_train))
 
         return self._evaluate(y_test, y_pred, y_score, n_classes)
 
