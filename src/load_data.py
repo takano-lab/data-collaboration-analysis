@@ -18,6 +18,18 @@ from config.config import Config
 # テーブル：データ名 → 読み込みロジック             #
 # -------------------------------------------------- #
 
+def _load_housing() -> pd.DataFrame:
+    """
+    California Housing データセットを DataFrame で返す。
+    目的変数は 'target' 列に格納。
+    """
+    from sklearn.datasets import fetch_california_housing
+
+    data = fetch_california_housing(as_frame=True)
+    df = data.frame.copy()
+    df = df.rename(columns={"MedHouseVal": "target"})  # 目的変数を 'target' に統一
+    return df
+
 def _load_qsar() -> pd.DataFrame:
     # カラム名（UCI 公式説明より）
     columns = [
@@ -285,10 +297,12 @@ LOADERS = {
     "bank_marketing": _load_bank_marketing,
     "har": _load_har,
     "digits": _load_digits_df,
+    "digits_v2": _load_digits_df,
     "concentric_circles": _load_concentric_circles_df,
     "two_gaussian_distributions": _load_two_gaussian_distributions_df,
     "3D_gaussian_clusters": _load_3D_gaussian_clusters_df,
     "mice": _load_mice_df,
+    "housing": _load_housing,
 
     # === TDC datasets ===
     "ames": lambda: load_tdc_dataset("AMES"),
@@ -390,22 +404,25 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         #feature_num = 15  # 特徴量の数（目的変数を除く）
         #config.dim_intermediate = 5 # 中間表現の次元数
         #config.dim_integrate = 5 # 統合表現の次元数
+        config.feature_num =  len(df.columns) - 1 # 特徴量の数（目的変数を除く）
+        config.dim_intermediate = 50 # 中間表現の次元数
+        config.dim_integrate = 50 # 統合表現の次元数
         config.feature_num = min(len(df.columns) - 1, 51)
         config.num_institution_user = 120
         config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
 
     elif config.dataset == 'mnist' or config.dataset == 'fashion_mnist':
         config.feature_num = len(df.columns) - 1  # 特徴量の数（目的変数を除く）
-        config.dim_intermediate = 50 # 中間表現の次元数
-        config.dim_integrate = 50 # 統合表現の次元数
-        config.num_institution = 50
+        config.dim_intermediate = 10 # 中間表現の次元数
+        config.dim_integrate = 10 # 統合表現の次元数
+        config.num_institution = 10
         config.num_institution_user = 50
         
     elif config.dataset == 'concentric_circles':
         config.feature_num = 2
         config.dim_intermediate = 2  # 中間表現の次元数
         config.dim_integrate = 2  # 統合表現の次元数
-        config.num_institution = 3
+        config.num_institution = 4
         config.num_institution_user = int(len(df) / (config.num_institution * 2))
     
     elif config.dataset == 'two_gaussian_distributions':
@@ -421,7 +438,29 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.dim_integrate = 2
         config.num_institution = 3
         config.num_institution_user = int(len(df) / (config.num_institution * 2))       
-        
+    
+    elif config.dataset == 'digits_':
+        config.feature_num = len(df.columns) - 1
+        config.dim_intermediate = 4
+        config.dim_integrate = 4
+        config.num_institution = 10
+        config.num_institution_user = 100    
+    
+    elif config.dataset == 'digits_v2':
+        config.feature_num = len(df.columns) - 1
+        config.dim_intermediate = 30
+        config.dim_integrate = 30
+        config.num_institution = 29
+        config.num_institution_user = 30
+
+    elif config.dataset == 'housing':
+        config.feature_num = len(df.columns) - 1
+        config.dim_intermediate = config.feature_num - 1
+        config.dim_integrate = config.feature_num - 1
+        config.num_institution = 10
+        config.num_institution_user = 10
+        config.metrics = "rmse"
+    
     else:
         #config.feature_num = min(len(df.columns) - 1)#, 50)  # 特徴量の数（目的変数を除く）
         #config.dim_intermediate = config.feature_num-1 # 中間表現の次元数
@@ -429,9 +468,9 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.feature_num = len(df.columns) - 1
         config.dim_intermediate = config.feature_num - 1
         config.dim_integrate = config.feature_num - 1
-        config.num_institution_user = max(config.dim_integrate + 1, 50) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
-        config.num_institution = int(len(df) / (config.num_institution_user * 2))
-        config.metrics = "auc"
+        config.num_institution_user = 30#, max(config.dim_integrate + 1, 50) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
+        config.num_institution = min(int(len(df) / (config.num_institution_user * 2)), 5)
+        #config.metrics = "auc"
     
     
     # 特徴量だけを取得（target を除外）
@@ -447,16 +486,26 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
     # 制限後のデータフレーム
     df = df[final_columns]
     df = df[:2*config.num_institution_user*config.num_institution]
-    
-    
-    # ── train/test split
-    train_df, test_df = train_test_split(
-        df,
-        test_size=0.5,
-        random_state=config.seed,
-        shuffle=True,
-        stratify=df["target"]
-    )
+
+
+    if config.dataset == "housing":
+        # ── train/test split
+        train_df, test_df = train_test_split(
+            df,
+            test_size=0.5,
+            random_state=config.seed,
+            shuffle=True,
+        )
+
+    else:
+        # ── train/test split
+        train_df, test_df = train_test_split(
+            df,
+            test_size=0.5,
+            random_state=config.seed,
+            shuffle=True,
+            stratify=df["target"]
+        )
 
     # ── 行数制約でカット（デモ用）
     lim = config.num_institution * config.num_institution_user

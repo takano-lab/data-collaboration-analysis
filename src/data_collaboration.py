@@ -7,9 +7,8 @@ import pandas as pd
 from numpy.linalg import eigvalsh, inv, norm, pinv
 from scipy import linalg
 from sklearn.decomposition import TruncatedSVD
-from sklearn.linear_model import LogisticRegression
-
-# ------ 修正後 ---------------------
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.metrics import mean_squared_error
 from sklearn.metrics.pairwise import pairwise_distances, rbf_kernel
 from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_val_score
 from sklearn.neighbors import KNeighborsClassifier
@@ -182,6 +181,14 @@ class DataCollaborationAnalysis:
             self.make_integrate_nonlinear_expression_tuning()
         elif self.config.G_type == "nonlinear_linear":
             self.make_integrate_nonlinear_linear()
+        elif self.config.G_type == "linear_objective":
+            self.make_integrate_expression_gen_eig()
+            self.build_init_from_gen_eig()   # ← 上で追加した関数
+            self.make_integrate_gen_eig_linear_fitting_objective() 
+        elif self.config.G_type == "mlp_objective":
+            #self.make_integrate_expression_gen_eig()
+            self.build_init_from_gen_eig()   # ← 上で追加した関数
+            self.make_integrate_gen_eig_fitting_objective()       
         else:
             print(f"Unknown G_type: {self.config.G_type}")
 
@@ -383,6 +390,11 @@ class DataCollaborationAnalysis:
         C_tildeS = m * I_r
         for S_tilde in self.anchors_inter:                # S_tilde : (r, d_I)
             C_tildeS -= S_tilde @ pinv(S_tilde)           # r×r
+            
+        # 固有値を計算
+        eigvals = np.linalg.eigvals(C_tildeS)
+
+        # すべての固有値が正か確認
 
         # --------------------------------------------------
         # 2. 固有値問題  C_s̃ z = λ z  を解く（昇順）
@@ -391,9 +403,15 @@ class DataCollaborationAnalysis:
         p_hat = self.config.dim_integrate
         #Z = eigvecs[:, :p_hat]                            # r×p̂  —— 目標行列 Z
         
-        objective_direction_ratio = getattr(self.config, "objective_direction_ratio", 0)
-        if objective_direction_ratio > 0:
-            idx, Z, eigvals, eigvecs = self.select_eigvecs_multilogit_hybrid(C_tildeS, self.anchor_y, p_hat=p_hat, objective_direction_ratio=objective_direction_ratio)
+        objective_direction_ratio = getattr(self.config, "objective_direction_ratio", 0.1)
+        if objective_direction_ratio < 0:
+            # すべての固有値が正か確認
+            is_positive_definite = np.all(eigvals > 0)
+            print(f"C_tildeS is positive definite: {is_positive_definite}")
+            
+            selected_idx, Z, eigvals_centered, eigvecs, coef = self.select_eigvecs_linear_hybrid(C_tildeS, self.anchor_y, p_hat=p_hat, objective_direction_ratio=objective_direction_ratio)
+            #is_positive_definite = np.all(eigvals > 0)
+            #print(f"zzzC_tildeS is positive definite: {is_positive_definite}")
         else:
             # ❷ 実対称用の固有値分解を使う
             eigvals, eigvecs = np.linalg.eigh(C_tildeS)
@@ -430,6 +448,29 @@ class DataCollaborationAnalysis:
         self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
 
         # 必要なら self.Gs = Gs などで保存しておくと解析に便利
+        
+        # すべての固有値が正か確認
+        
+        reg = LinearRegression()
+        reg.fit(Z, self.anchor_y)
+        y_pred = reg.predict(Z)
+        mse = mean_squared_error(self.anchor_y, y_pred)
+        print(f"平均二乗誤差 (MSE)最小: {mse:.4g}")
+        #print(eigvals > 0)
+        reg = LinearRegression()
+        Z = eigvecs[:, eigvals.argsort()[:p_hat]]
+        reg.fit(Z, self.anchor_y)
+        y_pred = reg.predict(Z)
+        mse = mean_squared_error(self.anchor_y, y_pred)
+        print(f"平均二乗誤差 (MSE)普通: {mse:.4g}")
+        
+        reg = LinearRegression()
+        Z_ = eigvecs[:, eigvals.argsort()[:p_hat]]
+        reg.fit(Z_, self.anchor_y)
+        y_pred = reg.predict(Z_)
+        mse = mean_squared_error(self.anchor_y, y_pred)
+        print(f"平均二乗誤差 (MSE) 直後2: {mse:.4g}")
+        #print(eigvals > 0)
 
     # ============================================================
     # 〈統合関数の最適化〉§3 一般化固有値問題 (8) ベース
@@ -483,8 +524,38 @@ class DataCollaborationAnalysis:
         eigvals, eigvecs = eigh(A_s_tilde, B_s_tilde)                 # SciPy の一般化固有分解
         order   = np.argsort(eigvals)                                 # 昇順
         lambdas = eigvals[order][:p_hat]                              # ★ λ_1 … λ_p̂
+        print(lambdas)
         V_sel   = eigvecs[:, order[:p_hat]]
         cum_dims = np.cumsum([0] + [S.shape[1] for S in self.anchors_inter])
+
+        # Jreg (目的関数第2項) の値を計算して記録
+        jreg_val = 0.0
+        for j in range(p_hat):
+            gj = V_sel[:, j]
+            term1 = 0.0
+            sum_Sgj = np.zeros(self.anchors_inter[0].shape[0]) # r次元ベクトル
+            for k in range(m):
+                gjk = gj[cum_dims[k]:cum_dims[k+1]]
+                Sk = self.anchors_inter[k]
+                term1 += gjk.T @ (Sk.T @ Sk) @ gjk
+                sum_Sgj += Sk @ gjk
+            jreg_val += (2.0 * m * term1 - 2.0 * (sum_Sgj @ sum_Sgj))
+        self.config.jreg_gep = f"{jreg_val:.6g}"
+        print(f"Jreg (GEP) = {self.config.jreg_gep}")
+        
+        # --- ノルム値の計算 ---
+        norm_val_sum = 0.0
+        for j in range(p_hat):
+            gj = V_sel[:, j]
+            for k in range(m):
+                gjk = gj[cum_dims[k]:cum_dims[k+1]]
+                Sk = self.anchors_inter[k]
+                norm_vec = Sk @ gjk
+                norm_val_sum += norm_vec @ norm_vec
+        
+        avg_norm_val = norm_val_sum / p_hat
+        self.config.g_norm_val_gep = f"{avg_norm_val:.6g}"
+        print(f"norm (GEP) = {self.config.g_norm_val_gep}")
 
         # λ の総和を計算して記録
         self.config.sum_objective_function = f"{np.sum(lambdas):.4g}"
@@ -534,7 +605,7 @@ class DataCollaborationAnalysis:
 
             Gk = V_sel[cum_dims[k]:cum_dims[k + 1], :]               # d_k × p̂
             Xs_train_integrate.append(X_tr_k @ Gk)
-            Xs_test_integrate.append( X_te_k @ Gk)
+            Xs_test_integrate.append(X_te_k @ Gk)
 
         # --------------------------------------------------
         # 6. スタック & 保存
@@ -552,6 +623,137 @@ class DataCollaborationAnalysis:
         if use_eigen_weighting:
 
             self.config.eigenvalues  = lambdas
+
+    # ============================================================
+    # 〈統合関数の最適化〉§3 一般化固有値問題 (8) ベース
+    #   A_s̃ v = λ B_s̃ v ,  vᵀ B_s̃ v = 1
+    # ============================================================
+    def make_integrate_expression_gen_eig_gurobi(self, use_eigen_weighting=False) -> None:
+        """
+        論文の最適化問題をGurobiで直接解く (非凸QCQP)。
+        min  Σ_j ( 2m Σ_k g_jk^T S_k^T S_k g_jk - 2 || Σ_k S_k g_jk ||^2 )
+        s.t. Σ_k g_jk^T S_k^T S_k g_jk = 1  (for j=1..p̂)
+        これはGEPを解くことと等価。
+        """
+        print("********************統合表現の生成 (Gurobi Direct QCQP) ********************")
+        from gurobipy import Model, GRB
+        import numpy as np
+
+        # -------------------- 0) 基本設定 --------------------
+        m       = self.config.num_institution
+        p_hat   = self.config.dim_integrate
+        
+        Ss = self.anchors_inter
+        
+        dims = [S.shape[1] for S in Ss]
+        dtot = int(sum(dims))
+        cum  = np.cumsum([0] + dims)
+        rdim = Ss[0].shape[0]
+
+        # 事前計算
+        SkT_Sk = [S.T @ S for S in Ss]
+
+        # -------------------- 1) Gurobiモデル構築 --------------------
+        model = Model("GEP_Direct_QCQP")
+        model.Params.OutputFlag = 1
+        model.Params.NonConvex = 2  # 非凸二次問題として解く
+        tlim = getattr(self.config, "gurobi_timelimit", None)
+        if tlim is not None:
+            model.Params.TimeLimit = tlim
+
+        # 変数 G (dtot × p_hat)
+        G = model.addMVar((dtot, p_hat), lb=-GRB.INFINITY, name="G")
+
+        # -------------------- 2) 目的関数 --------------------
+        obj = 0.0
+        for j in range(p_hat):
+            gj = G[:, j]
+            
+            term1 = 0.0
+            sum_Sgj = 0.0
+            for k in range(m):
+                gjk = gj[cum[k]:cum[k+1]]
+                term1 += gjk @ SkT_Sk[k] @ gjk
+                sum_Sgj += Ss[k] @ gjk
+            
+            obj += (2.0 * m * term1 - 2.0 * (sum_Sgj @ sum_Sgj))
+
+        model.setObjective(obj, GRB.MINIMIZE)
+
+        # -------------------- 3) 制約条件 --------------------
+        for j in range(p_hat):
+            gj = G[:, j]
+            norm2 = 0.0
+            for k in range(m):
+                gjk = gj[cum[k]:cum[k+1]]
+                norm2 += gjk @ SkT_Sk[k] @ gjk
+            model.addConstr(norm2 == 1.0, name=f"norm_constraint_{j}")
+
+        # -------------------- 4) 最適化実行 --------------------
+        model.optimize()
+
+        if model.status not in (GRB.OPTIMAL, GRB.TIME_LIMIT):
+            print(f"Gurobi optimization failed. Status: {model.status}")
+            # 失敗した場合は空の表現をセットして終了
+            self.X_train_integ = np.array([])
+            self.X_test_integ = np.array([])
+            self.y_train_integ = np.array([])
+            self.y_test_integ = np.array([])
+            return
+
+        # -------------------- 5) 結果の取得と射影 --------------------
+        G_opt = G.X
+
+        Xs_train_integrate, Xs_test_integrate = [], []
+        for k in range(m):
+            Gk = G_opt[cum[k]:cum[k+1], :]
+            Xs_train_integrate.append(self.Xs_train_inter[k] @ Gk)
+            Xs_test_integrate.append(self.Xs_test_inter[k] @ Gk)
+
+        # -------------------- 6) スタック & 保存 --------------------
+        self.X_train_integ = np.vstack(Xs_train_integrate)
+        self.X_test_integ  = np.vstack(Xs_test_integrate)
+        self.y_train_integ = np.hstack(self.ys_train)
+        self.y_test_integ  = np.hstack(self.ys_test)
+
+        print("統合表現の次元数:", self.X_train_integ.shape[1])
+        self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
+        self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
+
+        # --- GEP版と互換性のある指標を計算・保存 ---
+        self.config.sum_objective_function = f"{model.ObjVal:.4g}"
+        print(f"目的関数値 (sum_objective_function): {self.config.sum_objective_function}")
+        
+        self.config.g_abs_sum = f"{np.sum(np.abs(G_opt)):.4g}"
+        print(f"G_optの絶対値の総和: {self.config.g_abs_sum}")
+
+        mean_vars = []
+        for k in range(m):
+            V_k = G_opt[cum[k]:cum[k+1], :]
+            var_k = np.var(V_k, axis=0)
+            mean_vars.append(np.mean(var_k))
+        self.config.g_mean_var = f"{np.mean(mean_vars):.4g}"
+        print(f"機関ごとのベクトル分散の平均: {self.config.g_mean_var}")
+
+        self.config.g_condition_number = "N/A (Gurobi)"
+        print(f"条件数: {self.config.g_condition_number}")
+
+        # Jreg, norm_val も計算
+        self.config.jreg_gep = f"{model.ObjVal:.6g}"
+        print(f"Jreg (Gurobi) = {self.config.jreg_gep}")
+
+        norm_val_sum = 0.0
+        for j in range(p_hat):
+            gj = G_opt[:, j]
+            for k in range(m):
+                gjk = gj[cum[k]:cum[k+1]]
+                Sk = self.anchors_inter[k]
+                norm_vec = Sk @ gjk
+                norm_val_sum += norm_vec @ norm_vec
+        avg_norm_val = norm_val_sum / p_hat
+        self.config.g_norm_val_gep = f"{avg_norm_val:.6g}"
+        print(f"norm (Gurobi) = {self.config.g_norm_val_gep}")
+
 
     def make_integrate_expression_odc(self) -> None:
         """
@@ -599,6 +801,13 @@ class DataCollaborationAnalysis:
         self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
         self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
 
+    import numpy as np
+    from sklearn.linear_model import LogisticRegression
+
+    def _one_hot(self, y: np.ndarray, classes: np.ndarray) -> np.ndarray:
+        # classes の順に one-hot を作る（列順が常に一定）
+        return (y.reshape(-1, 1) == classes.reshape(1, -1)).astype(float)
+
     def select_eigvecs_multilogit_hybrid(
         self,
         M: np.ndarray,
@@ -608,35 +817,26 @@ class DataCollaborationAnalysis:
         C: float = 1.0,
         random_state: int = 0,
     ):
-        """
-        ハイブリッド選択：
-        1) 前半 floor(p_hat/2) 本は『固有値の小さい順』で先取り
-        2) 残りは『ロジスティック回帰のスコア（+ 固有値ペナルティ）』で前向き選択
-
-        戻り値は (selected_idx, Z, eigvals, eigvecs)
-        """
-        # --- 固有分解 ---
-        eigvals, eigvecs = np.linalg.eigh(M)  # eigvecs[:, i] が固有ベクトル u_i
+        y = y - np.mean(y)
+        eigvals, eigvecs = np.linalg.eigh(M)
         n = M.shape[0]
 
-        # --- One-hot & 初期確率 ---
-        try:
-            enc = OneHotEncoder(sparse_output=False, dtype=float)
-        except TypeError:  # scikit-learn 古い版対策
-            enc = OneHotEncoder(sparse=False, dtype=float)
-        Y = enc.fit_transform(y.reshape(-1, 1))  # (n, K)
-        K = Y.shape[1]
-        class_priors = Y.mean(axis=0)            # (K,)
-        P = np.tile(class_priors, (n, K))        # (n, K)
+        # ① クラス配列を固定（列順の基準）
+        classes = np.unique(y)           # 例: array([0,1,2,3])
+        K = len(classes)
+        Y = self._one_hot(y, classes)         # (n, K)
 
-        # --- 1) 固有値で前半を先取り ---
-        m1 = int(p_hat*(1-objective_direction_ratio))
-        
-        eig_order = np.argsort(eigvals)          # 小さい→大きい
+        # ② 初期確率：事前確率で (n,K)
+        class_priors = Y.mean(axis=0)    # (K,)
+        P = np.tile(class_priors, (n, 1))
+
+        # 1) 固有値で前半を先取り
+        m1 = int(p_hat * (1 - objective_direction_ratio))
+        eig_order = np.argsort(eigvals)
         selected_idx = list(eig_order[:m1])
         remaining = [i for i in range(n) if i not in selected_idx]
 
-        # 先取り分で一度フィット（m1>0 のとき）
+        # 先取り分で一度フィット
         if m1 > 0:
             Z_sel = eigvecs[:, selected_idx]
             clf = LogisticRegression(
@@ -644,20 +844,25 @@ class DataCollaborationAnalysis:
                 C=C, max_iter=1000, random_state=random_state
             )
             clf.fit(Z_sel, y)
-            P = clf.predict_proba(Z_sel)  # (n, K)
+            P_raw = clf.predict_proba(Z_sel)   # 列順は clf.classes_
+            # ③ 列順を classes に合わせて並べ替え
+            order = [np.where(clf.classes_ == c)[0][0] for c in classes]
+            P = P_raw[:, order]
         else:
-            Z_sel = None  # まだ何もない
+            Z_sel = None
 
-        # --- 2) 残りをスコアで前向き選択 ---
+        # 2) 残りをスコアで前向き選択
         m2 = p_hat - m1
         for _ in range(m2):
+            # 安全確認（デバッグ用）
+            # assert Y.shape[1] == P.shape[1] == K
+
             R = Y - P
             W_diag_list = [P[:, c] * (1.0 - P[:, c]) + 1e-12 for c in range(K)]
 
             best_j, best_score = None, -np.inf
             for j in remaining:
                 u = eigvecs[:, j]
-                # ロジスティックのスコア検定（OvR の和） - gamma * λ_j
                 num = 0.0
                 for c in range(K):
                     r_c = R[:, c]
@@ -665,18 +870,12 @@ class DataCollaborationAnalysis:
                     uTr = float(u @ r_c)
                     uWu = float(u @ (W_c * u))
                     num += (uTr ** 2) / uWu
-                score = num #- gamma * float(eigvals[j])
-
-                # --- SVM基準にしたい場合はここを差し替え ---
-                # score = cv_linear_svm_score(np.column_stack([Z_sel, u]) if Z_sel is not None else u.reshape(-1,1), y)
-                #        - gamma * normalized_eigval[j]
-                # --------------------------------------------
+                score = num  # 固有値ペナルティを入れるなら: - gamma * eigvals[j]
 
                 if score > best_score:
                     best_score = score
                     best_j = j
 
-            # 採用＆再フィット
             selected_idx.append(best_j)
             remaining.remove(best_j)
             Z_sel = eigvecs[:, selected_idx]
@@ -686,11 +885,124 @@ class DataCollaborationAnalysis:
                 C=C, max_iter=1000, random_state=random_state
             )
             clf.fit(Z_sel, y)
-            P = clf.predict_proba(Z_sel)
+            P_raw = clf.predict_proba(Z_sel)
+            order = [np.where(clf.classes_ == c)[0][0] for c in classes]
+            P = P_raw[:, order]
 
         Z = eigvecs[:, selected_idx]
+        
         return selected_idx, Z, eigvals, eigvecs
     
+    def select_eigvecs_linear_hybrid(
+        self,
+        M: np.ndarray,
+        y: np.ndarray,
+        p_hat: int,
+        objective_direction_ratio: float = 0.0,
+    ):
+        """
+        線形回帰（最小二乗）用の固有ベクトル選択（ハイブリッド：後ろ向き選択版）。
+        - 前半 m1 本: 固有値が小さい順に先取り（固定）
+        - 後半 m2 本: 中心化スコアに基づく「後ろ向き選択」
+        - 候補は固有値小さい順に p_hat の3倍までに制限
+        """
+        # 1) 固有分解（対称化しておくと数値安定）
+        M = 0.5 * (M + M.T)
+        eigvals, eigvecs = np.linalg.eigh(M)  # 各列は直交・ノルム1
+        n = M.shape[0]
+
+        # 固有値小さい順に p_hat の3倍までに制限
+        max_candidates = min(3 * p_hat, n)
+        candidate_indices = np.argsort(eigvals)[:max_candidates]
+        eigvals = eigvals[candidate_indices]
+        eigvecs = eigvecs[:, candidate_indices]
+
+        # 2) スコア用に中心化（切片ありOLSと等価）
+        y_c = y - np.mean(y)
+        U = eigvecs
+        U_c = U - U.mean(axis=0)  # 列中心化（直交性は壊れる）
+
+        # 3) 前半: 固有値の小さい順で m1 本（固定セット）
+        m1 = int(p_hat * (1.0 - objective_direction_ratio))
+        m1 = max(0, min(p_hat, m1))
+        order_small = np.argsort(eigvals)  # 昇順
+        fixed_idx = list(order_small[:m1])
+        fixed_idx_set = set(fixed_idx)
+
+        # 4) 後半: 残り候補から m2 本を「後ろ向き選択」で決める
+        m2 = p_hat - m1
+        if m2 < 0:
+            m2 = 0
+
+        remaining_pool = [j for j in range(max_candidates) if j not in fixed_idx_set]
+        if m2 == 0:
+            selected_idx = fixed_idx
+        else:
+            # 後ろ向き選択：残り候補を最終的に m2 本まで「削って」絞り込む
+            chosen = remaining_pool.copy()  # 現在の採用集合（ここから削る）
+            A_fixed = U_c[:, fixed_idx] if len(fixed_idx) > 0 else None
+
+            def rss_with_columns(cols: list[int]) -> tuple[float, np.ndarray, np.ndarray]:
+                """固定列 + 指定列で OLS を解き、RSSを返す（中心化・切片なし）"""
+                A_cols = U_c[:, cols] if len(cols) > 0 else None
+                if A_fixed is None and A_cols is None:
+                    r = y_c
+                    return float(r @ r), np.empty((0,)), np.empty((0, 0))
+                elif A_fixed is None:
+                    A = A_cols
+                elif A_cols is None:
+                    A = A_fixed
+                else:
+                    A = np.hstack([A_fixed, A_cols])
+
+                coef, *_ = np.linalg.lstsq(A, y_c, rcond=None)
+                r = y_c - A @ coef
+                return float(r @ r), coef, A
+
+            base_rss, _, _ = rss_with_columns(chosen)
+
+            while len(chosen) > m2:
+                best_drop = None
+                best_increase = np.inf
+
+                for j in chosen:
+                    trial = [c for c in chosen if c != j]
+                    rss_j, _, _ = rss_with_columns(trial)
+                    increase = rss_j - base_rss
+                    if increase < best_increase:
+                        best_increase = increase
+                        best_drop = j
+
+                if best_drop is None:
+                    break
+                chosen.remove(best_drop)
+                base_rss, _, _ = rss_with_columns(chosen)
+
+            selected_idx = fixed_idx + chosen
+
+        # 5) 最終 Z は「元の固有ベクトル列」を返す（評価は切片ありでOK）
+        Z = U[:, selected_idx]
+
+        # 係数（参考）：中心化問題の最小二乗解（スコア計算と同条件）
+        A_c = U_c[:, selected_idx]
+        coef_centered, *_ = np.linalg.lstsq(A_c, y_c, rcond=None)
+
+        # デバッグ出力（切片ありで評価）
+        from sklearn.linear_model import LinearRegression
+        from sklearn.metrics import mean_squared_error
+
+        reg = LinearRegression()  # intercept=True
+        reg.fit(Z, y)
+        mse_hybrid = mean_squared_error(y, reg.predict(Z))
+        print(f"[hybrid-backward] MSE (with intercept) = {mse_hybrid:.6g}")
+
+        Z_small = U[:, order_small[:p_hat]]
+        reg2 = LinearRegression()
+        reg2.fit(Z_small, y)
+        mse_small = mean_squared_error(y, reg2.predict(Z_small))
+        print(f"[small-eigs]     MSE (with intercept) = {mse_small:.6g}")
+
+        return selected_idx, Z, eigvals, eigvecs, coef_centered
     # ------------------------------------------------------------------
     # 〈非線形統合〉　射影行列 P^(k) で Z を最適化する ２段階アルゴリズム
     # ------------------------------------------------------------------
@@ -717,6 +1029,7 @@ class DataCollaborationAnalysis:
 
         elif self.config.gamma_type == "X_tuning":
             for X_train_inter in self.Xs_train_inter:
+                # gamma を計算
                 # gamma を計算
                 gamma = self_tuning_gamma(X_train_inter, standardize=False, k=3, summary='median')
                 gammas.append(gamma)
@@ -752,8 +1065,10 @@ class DataCollaborationAnalysis:
         M = (M + M.T) * 0.5
         
         objective_direction_ratio = getattr(self.config, "objective_direction_ratio", 0)
-        if objective_direction_ratio > 0:
-            idx, Z, eigvals, eigvecs = self.select_eigvecs_multilogit_hybrid(M, self.anchor_y, p_hat=p̂, objective_direction_ratio=objective_direction_ratio)
+        if objective_direction_ratio < 0:
+            print(1)
+            idx, Z, eigvals, eigvecs = self.select_eigvecs_linear_hybrid(M, self.anchor_y, p_hat=p̂, objective_direction_ratio=objective_direction_ratio)
+            print(2)
         else:
             # ❷ 実対称用の固有値分解を使う
             eigvals, eigvecs = np.linalg.eigh(M)
@@ -802,7 +1117,7 @@ class DataCollaborationAnalysis:
         # デバッグ用出力
         print(f"固有値 λ の上位 {p̂} 個の総和: {self.config.g_abs_sum}")
         #print(f"固有値 λ の目的関数減少 {p̂} 個の総和: {np.sum(eigvals[idx])}")
-
+        
     """
     #バイアス項あり
     # ---------------------------------------------------------------
@@ -1256,14 +1571,786 @@ class DataCollaborationAnalysis:
 
         # デバッグ用出力
         print(f"固有値 λ の上位 {p_hat} 個の総和: {self.config.g_abs_sum}")
+        
 
+    def build_init_from_gen_eig(self):
+        """
+        make_integrate_expression_gen_eig() のロジックに基づき、
+        交互最適化の初期解 G_init と beta_init を生成して self に保存する。
+        """
+        print("******************** 初期解生成 (from GEP) ********************")
+        from functools import reduce
+        from scipy.linalg import block_diag, eigh
 
+        # --- 0. 設定とデータ ---
+        m     = self.config.num_institution
+        p_hat = self.config.dim_integrate
+        Ss    = self.anchors_inter
+        Xs    = self.Xs_train_inter
+        ys    = self.ys_train
+
+        # --- 1. GEPを解いて V_sel を得る ---
+        W_s_tilde = np.hstack(Ss)
+        blocks    = [S.T @ S for S in Ss]
+        epsilon   = 1e-6
+        B_s_tilde = reduce(lambda a, b: block_diag(a, b), blocks) + epsilon * np.eye(sum(S.shape[1] for S in Ss))
+        A_s_tilde = 2 * m * B_s_tilde - 2 * (W_s_tilde.T @ W_s_tilde)
+
+        eigvals, eigvecs = eigh(A_s_tilde, B_s_tilde)
+        order = np.argsort(eigvals)
+        V_sel = eigvecs[:, order[:p_hat]]  # (Σd_k, p_hat)
+
+        # --- 2. V_sel を G_init として整形し、制約を満たすように正規化 ---
+        dims = [S.shape[1] for S in Ss]
+        cum  = np.cumsum([0] + dims)
+        G_init = V_sel.copy()
+
+        # 制約: Σ_k ||S_k g_jk||^2 = 1 に合わせて各列を正規化
+        for j in range(p_hat):
+            vj = G_init[:, j]
+            norm_sq = 0.0
+            for k in range(m):
+                vjk = vj[cum[k]:cum[k+1]]
+                norm_sq += vjk.T @ blocks[k] @ vjk
+            
+            if norm_sq > 1e-9:
+                G_init[:, j] /= np.sqrt(norm_sq)
+
+        # --- 3. 生成した G_init を使って beta_init を最小二乗法で計算 ---
+        X_blocks = []
+        for k in range(m):
+            Gk = G_init[cum[k]:cum[k+1], :]
+            X_blocks.append(Xs[k] @ Gk)
+        X_all = np.vstack(X_blocks)
+        y_all = np.hstack(ys)
+
+        try:
+            beta_init, _, _, _ = np.linalg.lstsq(X_all, y_all, rcond=None)
+        except np.linalg.LinAlgError:
+            beta_init = np.zeros(p_hat)
+
+        # --- 4. 初期解をインスタンス変数として保存 ---
+        self.G_init    = G_init
+        self.beta_init = beta_init
+        print("✅ 初期解 G_init と beta_init を生成しました。")
+        print(f"  G_init.shape: {self.G_init.shape}, beta_init.shape: {self.beta_init.shape}")
+        
+    def make_integrate_gen_eig_linear_fitting_objective(self) -> None:
+        """
+        Gurobiなし・勾配法(Adam)で手法2を最小化:
+        min_{β,G} Σ_k ||y^(k) - X'^(k) G^(k) β||^2
+                    + λ Σ_j Σ_{k,k'} ||S'^(k) g_j^(k) - S'^(k') g_j^(k')||^2
+        s.t.      Σ_k ||S'^(k) g_j^(k)||^2 = 1 (j=1..p̂)
+        制約は各ステップ後の列正規化で満たす（投影付き最適化）。
+        """
+        import numpy as np
+        import torch
+
+        print("******************** 統合表現 (GD / Adam) ********************")
+
+        # -------------------- 0) 設定 --------------------
+        m       = int(self.config.num_institution)
+        p_hat   = int(self.config.dim_integrate)
+        lam     = float(getattr(self.config, "lambda_gurobi", 1.0))
+
+        # 勾配法ハイパーパラメータ（必要ならconfigから拾ってください）
+        max_it = int(getattr(self.config, "gd_max_iter", None) or 2000)
+        lr = float(getattr(self.config, "gd_lr", None) or 1e-2)
+        betas = getattr(self.config, "gd_betas", None) or (0.9, 0.999)
+        weight_decay = float(getattr(self.config, "gd_weight_decay", None) or 0.0)
+        grad_clip = float(getattr(self.config, "gd_grad_clip", None) or 0.0)  # 0 なら無効
+        print_every = int(getattr(self.config, "gd_print_every", None) or 100)
+        max_it = int(getattr(self.config, "gd_max_iter", None) or 2000)
+        seed    = getattr(self.config, "gd_seed", None) or 0
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+
+        Xs = self.Xs_train_inter  # list of (n_k × d_k)
+        Ss = self.anchors_inter   # list of (r   × d_k)
+        ys = self.ys_train        # list of (n_k,)
+
+        # 形状など
+        assert len(Xs) == m and len(Ss) == m and len(ys) == m, "Xs/Ss/ys の長さ m が一致しません。"
+        dims = [S.shape[1] for S in Ss]      # d_k
+        dtot = int(sum(dims))
+        cum  = np.cumsum([0] + dims)
+
+        # -------------------- 1) Tensor化（double精度） --------------------
+        device = torch.device("cpu")
+        dtype  = torch.double
+
+        X_list = [torch.tensor(X, dtype=dtype, device=device) for X in Xs]
+        S_list = [torch.tensor(S, dtype=dtype, device=device) for S in Ss]
+        y_list = [torch.tensor(y, dtype=dtype, device=device) for y in ys]
+        STS_list = [S.T @ S for S in S_list]  # d_k×d_k
+
+        # -------------------- 2) 初期値 --------------------
+        # 既に自前の初期値があれば利用
+        G_init = getattr(self, "G_init", None)
+        beta_init = getattr(self, "beta_init", None)
+
+        if G_init is None or G_init.shape != (dtot, p_hat):
+            G_np = 0.01 * np.random.randn(dtot, p_hat)
+        else:
+            G_np = np.array(G_init, copy=True)
+
+        # 制約に合わせて列ごとに正規化: Σ_k ||S_k g_jk||^2 = 1
+        for j in range(p_hat):
+            vj = G_np[:, j].copy()
+            norm2 = 0.0
+            for k in range(m):
+                vjk = vj[cum[k]:cum[k+1]]
+                norm2 += float(vjk.T @ (STS_list[k].cpu().numpy()) @ vjk)
+            if norm2 > 0:
+                G_np[:, j] = vj / np.sqrt(norm2)
+
+        if beta_init is None or beta_init.shape != (p_hat,):
+            # LS で初期化
+            X_blocks = [Xs[k] @ G_np[cum[k]:cum[k+1], :] for k in range(m)]
+            X_all = np.vstack(X_blocks)
+            y_all = np.hstack(ys)
+            try:
+                beta_np = np.linalg.lstsq(X_all, y_all, rcond=None)[0]
+            except Exception:
+                beta_np = np.zeros(p_hat)
+        else:
+            beta_np = np.array(beta_init, copy=True)
+
+        # 学習変数
+        G = torch.tensor(G_np, dtype=dtype, device=device, requires_grad=True)        # (dtot × p_hat)
+        beta = torch.tensor(beta_np, dtype=dtype, device=device, requires_grad=True)  # (p_hat,)
+
+        opt = torch.optim.Adam([{"params": [G], "lr": lr},
+                                {"params": [beta], "lr": lr}],
+                            betas=betas, weight_decay=weight_decay)
+
+        eps = 1e-12
+
+        def loss_fn(G, beta):
+            # 第1項: Σ_k || y^(k) - X^(k) G^(k) β ||^2
+            se = 0.0 * beta.sum()  # dummy to keep torch type
+            for k in range(m):
+                Gk = G[cum[k]:cum[k+1], :]                # d_k × p_hat
+                pred_k = X_list[k] @ (Gk @ beta)          # n_k
+                res_k  = y_list[k] - pred_k               # n_k
+                se = se + (res_k @ res_k)
+
+            # 第2項: λ Σ_j ( 2m Σ_k g_jk^T S_k^T S_k g_jk - 2 || Σ_k S_k g_jk ||^2 )
+            align = 0.0 * beta.sum()
+            for j in range(p_hat):
+                gj = G[:, j]                              # (dtot,)
+                term1 = 0.0 * beta.sum()
+                sumS  = 0.0
+                # sumS は r 次元テンソルを使う必要があるので、一旦 torchベクトルで保持
+                # r は各S_kで同一前提
+                rdim = S_list[0].shape[0]
+                sumS_vec = torch.zeros(rdim, dtype=dtype, device=device)
+                for k in range(m):
+                    gjk = gj[cum[k]:cum[k+1]]            # (d_k,)
+                    term1 = term1 + (gjk @ (STS_list[k] @ gjk))
+                    sumS_vec = sumS_vec + (S_list[k] @ gjk)
+                align = align + (2.0 * m) * term1 - 2.0 * (sumS_vec @ sumS_vec)
+
+            return se + lam * align
+
+        # -------------------- 3) 最適化ループ（投影付き） --------------------
+        last_val = None
+        for it in range(1, max_it + 1):
+            opt.zero_grad()
+            val = loss_fn(G, beta)
+            val.backward()
+
+            # 勾配クリップ（必要なら）
+            if grad_clip and grad_clip > 0.0:
+                torch.nn.utils.clip_grad_norm_([G, beta], max_norm=grad_clip)
+
+            opt.step()
+
+            # 射影: 各列 j について Σ_k ||S_k g_jk||^2 = 1 に正規化
+            with torch.no_grad():
+                for j in range(p_hat):
+                    gj = G[:, j]
+                    norm2 = torch.tensor(0.0, dtype=dtype, device=device)
+                    for k in range(m):
+                        gjk = gj[cum[k]:cum[k+1]]
+                        norm2 = norm2 + (gjk @ (STS_list[k] @ gjk))
+                    scale = torch.sqrt(torch.clamp(norm2, min=eps))
+                    G[:, j] = gj / scale
+
+            if print_every and (it % print_every == 0 or it == 1):
+                v = float(val.detach().cpu().numpy())
+                if last_val is None:
+                    print(f"iter {it:5d} | obj={v:.6g}")
+                else:
+                    rel = abs(last_val - v) / (1.0 + abs(last_val))
+                    print(f"iter {it:5d} | obj={v:.6g} | relΔ={rel:.3e}")
+                    # 収束判定（任意）：tol が config にあれば利用
+                    tol = float(getattr(self.config, "gd_tol", None) or 1e-6)
+                    if rel < tol:
+                        print("Converged by tolerance.")
+                        # 早期停止
+                        break
+                last_val = v
+
+        # -------------------- 4) 結果の取り出し＆保存 --------------------
+        G_opt = G.detach().cpu().numpy()
+        beta_opt = beta.detach().cpu().numpy()
+
+        # 埋め込み計算
+        Xs_train_integrate, Xs_test_integrate = [], []
+        for k in range(m):
+            Gk = G_opt[cum[k]:cum[k+1], :]
+            Xs_train_integrate.append(self.Xs_train_inter[k] @ Gk)
+            Xs_test_integrate.append(self.Xs_test_inter[k]  @ Gk)
+
+        self.X_train_integ = np.vstack(Xs_train_integrate)
+        self.X_test_integ  = np.vstack(Xs_test_integrate)
+        self.y_train_integ = np.hstack(self.ys_train)
+        self.y_test_integ  = np.hstack(self.ys_test)
+
+        print("統合表現の次元数:", self.X_train_integ.shape[1])
+        self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
+        self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
+
+        # オプション：初期値として保持（次回のウォームスタートに使える）
+        self.G_init = G_opt
+        self.beta_init = beta_opt
+
+    def make_integrate_gen_eig_fitting_objective(self) -> None:
+        """
+        NN(θ) + 統合行列 G を同時最適化（Adam）。
+        - 列ごとに Bノルム=1 制約を“射影”で厳密に満たす（B=S_k^T S_k をブロック対角に並べたもの）
+        - 直交罰則は各機関ブロック G^{(k)} に対して Euclid（Bなし）：off-diagonal を 0 に寄せる
+        - λ は J_pred に掛ける（J = λ*Jpred + Jreg + Jortho）
+
+        Jpred(θ,G) = Σ_k CE( y^(k), NN( X^(k) G^(k); θ ) )
+        Jreg(G)    = Σ_j [ 2m Σ_k g_jk^T (S_k^T S_k) g_jk  - 2 || Σ_k S_k g_jk ||^2 ]
+        Jortho(G)  = μ Σ_k || OffDiag( (G^{(k)})^T G^{(k)} ) ||_F^2
+        """
+        import numpy as np
+        import torch
+        import torch.nn as nn
+
+        print("******************** 統合表現 (NN + Bノルム制約 + Gk直交罰則) ********************")
+
+        # -------------------- 0) config --------------------
+        m      = int(self.config.num_institution)
+        p_hat  = int(self.config.dim_integrate)
+
+        lam_pred   = float(getattr(self.config, "lambda_pred", None) or 0)   # ★ 予測損の重み
+        mu_ortho   = float(getattr(self.config, "lambda_g_ortho", None) or 0)  # Gk 直交罰則
+        # （必要なら Jreg にも重みを付けたい場合は lambda_reg を追加して下さい）
+
+        max_it      = int(getattr(self.config, "gd_max_iter", None) or 1000)
+        lr_theta    = float(getattr(self.config, "gd_lr_theta", None) or getattr(self.config, "gd_lr", None) or 1e-3)
+        lr_G        = float(getattr(self.config, "gd_lr_G", None) or getattr(self.config, "gd_lr", None) or 1e-2)
+        betas       = getattr(self.config, "gd_betas", None) or (0.9, 0.999)
+        weight_decay= float(getattr(self.config, "gd_weight_decay", None) or 0.0)
+        grad_clip   = float(getattr(self.config, "gd_grad_clip", None) or 0.0)
+        tol         = float(getattr(self.config, "gd_tol", None) or 1e-6)
+        print_every = int(getattr(self.config, "gd_print_every", None) or 100)
+        seed        = int(getattr(self.config, "gd_seed", None) or 0)
+
+        torch.manual_seed(seed); np.random.seed(seed)
+
+        # データ（_inter を優先）
+        S_list   = getattr(self, "anchors_inter", None) or self.anchors
+        Xtr_list = getattr(self, "Xs_train_inter", None) or self.Xs_train
+        Xte_list = getattr(self, "Xs_test_inter",  None) or self.Xs_test
+        ytr_list = self.ys_train
+        yte_list = self.ys_test
+
+        assert len(S_list)==m and len(Xtr_list)==m and len(Xte_list)==m, "m とリスト長の不一致。"
+        dims = [S.shape[1] for S in S_list]                 # d_k
+        dtot = int(sum(dims)); cum = np.cumsum([0]+dims)
+        rdim = S_list[0].shape[0]
+        STS_np = [S.T @ S for S in S_list]                  # B_k
+
+        num_classes = int(max(int(y.max()) for y in ytr_list) + 1)
+
+        # -------------------- 1) tensors --------------------
+        device = torch.device("cpu")
+        dtype  = torch.double
+        Xtr = [torch.tensor(X, dtype=dtype, device=device) for X in Xtr_list]
+        Xte = [torch.tensor(X, dtype=dtype, device=device) for X in Xte_list]
+        ytr = [torch.tensor(y.astype(int), dtype=torch.long, device=device) for y in ytr_list]
+        yte = [torch.tensor(y.astype(int), dtype=torch.long, device=device) for y in yte_list]
+        S   = [torch.tensor(Si, dtype=dtype, device=device) for Si in S_list]
+        STS = [torch.tensor(M,  dtype=dtype, device=device) for M in STS_np]
+
+        # -------------------- 2) model & variables --------------------
+        hidden = getattr(self.config, "nn_hidden", None) or [64, 32]
+        layers, in_dim = [], p_hat
+        for h in hidden:
+            layers += [nn.Linear(in_dim, h, bias=True), nn.ReLU()]
+            in_dim = h
+        layers += [nn.Linear(in_dim, num_classes, bias=True)]
+        model = nn.Sequential(*layers).to(device).double()
+
+        # 初期 G
+        G_init = getattr(self, "G_init", None)
+        if G_init is None or G_init.shape != (dtot, p_hat):
+            G_np = 0.01 * np.random.randn(dtot, p_hat)
+        else:
+            G_np = np.array(G_init, copy=True)
+
+        # 列ごと Bノルム=1 に正規化（制約射影）
+        def project_columns_Bnorm(G_np: np.ndarray) -> np.ndarray:
+            for j in range(p_hat):
+                vj = G_np[:, j].copy()
+                norm2 = 0.0
+                for k in range(m):
+                    vjk = vj[cum[k]:cum[k+1]]
+                    norm2 += float(vjk.T @ STS_np[k] @ vjk)
+                if norm2 > 0:
+                    G_np[:, j] = vj / np.sqrt(norm2)
+            return G_np
+
+        G_np = project_columns_Bnorm(G_np)
+        G = torch.tensor(G_np, dtype=dtype, device=device, requires_grad=True)
+
+        opt = torch.optim.Adam(
+            [{"params": model.parameters(), "lr": lr_theta, "weight_decay": weight_decay},
+            {"params": [G],               "lr": lr_G,     "weight_decay": 0.0}],
+            betas=betas
+        )
+        ce = nn.CrossEntropyLoss(reduction="sum")
+
+        # 整合化項（値）
+        def reg_term(G: torch.Tensor) -> torch.Tensor:
+            tot = torch.tensor(0.0, dtype=dtype, device=device)
+            for j in range(p_hat):
+                gj   = G[:, j]
+                term1 = torch.tensor(0.0, dtype=dtype, device=device)
+                sumS  = torch.zeros(rdim, dtype=dtype, device=device)
+                for k in range(m):
+                    gjk = gj[cum[k]:cum[k+1]]
+                    term1 = term1 + (gjk @ (STS[k] @ gjk))   # g^T B_k g
+                    sumS  = sumS  + (S[k] @ gjk)             # S_k g
+                tot = tot + (2.0*m)*term1 - 2.0*(sumS @ sumS)
+            return tot
+
+        # Gk 直交（Euclid, off-diagonalのみ）
+        def ortho_penalty_blockwise_offdiag(G: torch.Tensor) -> torch.Tensor:
+            if mu_ortho == 0.0:
+                return torch.tensor(0.0, dtype=dtype, device=device)
+            tot = torch.tensor(0.0, dtype=dtype, device=device)
+            for k in range(m):
+                Gk   = G[cum[k]:cum[k+1], :]              # d_k × p̂
+                Gram = 0.5 * (Gk.T @ Gk + (Gk.T @ Gk).T)  # 対称化
+                off  = Gram - torch.diag(torch.diag(Gram))
+                tot += (off ** 2).sum()
+            return mu_ortho * tot
+
+        # -------------------- 3) training --------------------
+        last_obj = None
+        for it in range(1, max_it + 1):
+            opt.zero_grad()
+
+            # 予測損（合計）
+            Jpred = torch.tensor(0.0, dtype=dtype, device=device)
+            for k in range(m):
+                Gk = G[cum[k]:cum[k+1], :]
+                xhat_k = Xtr[k] @ Gk
+                logits = model(xhat_k)
+                Jpred = Jpred + ce(logits, ytr[k])
+
+            Jreg   = reg_term(G)
+            Jortho = ortho_penalty_blockwise_offdiag(G)
+
+            # ★ λ は予測損に掛ける
+            obj = lam_pred * Jpred + Jreg + Jortho
+
+            obj.backward()
+            if grad_clip and grad_clip > 0.0:
+                torch.nn.utils.clip_grad_norm_(list(model.parameters()) + [G], max_norm=grad_clip)
+            opt.step()
+
+            # 列ごと Bノルム=1 に再正規化（制約厳密化）
+            with torch.no_grad():
+                G_np = G.detach().cpu().numpy()
+                G_np = project_columns_Bnorm(G_np)
+                G.data[:] = torch.tensor(G_np, dtype=dtype, device=device)
+
+            # ログ & 収束
+            if print_every and (it % print_every == 0 or it == 1 or it == max_it):
+                val = float(obj.detach().cpu().numpy())
+                if last_obj is None:
+                    print(f"iter {it:5d} | J={val:.6g} | λJpred={float(lam_pred*Jpred):.6g} | "
+                        f"Jreg={float(Jreg):.6g} | Jortho={float(Jortho):.6g}")
+                else:
+                    rel = abs(last_obj - val) / (1.0 + abs(last_obj))
+                    print(f"iter {it:5d} | J={val:.6g} | relΔ={rel:.3e} | λJpred={float(lam_pred*Jpred):.6g} | "
+                        f"Jreg={float(Jreg):.6g} | Jortho={float(Jortho):.6g}")
+                    if rel < tol:
+                        print("Converged by tolerance.")
+                        break
+                last_obj = val
+            
+
+        # -------------------- 4) embeddings --------------------
+        G_opt = G.detach().cpu().numpy()
+        Xs_train_integrate, Xs_test_integrate = [], []
+        for k in range(m):
+            Gk = G_opt[cum[k]:cum[k+1], :]
+            Xs_train_integrate.append((self.Xs_train_inter if getattr(self, "Xs_train_inter", None) is not None else self.Xs_train)[k] @ Gk)
+            Xs_test_integrate.append((self.Xs_test_inter  if getattr(self, "Xs_test_inter",  None) is not None else self.Xs_test)[k]   @ Gk)
+
+        self.X_train_integ = np.vstack(Xs_train_integrate)
+        self.X_test_integ  = np.vstack(Xs_test_integrate)
+        self.y_train_integ = np.hstack(self.ys_train)
+        self.y_test_integ  = np.hstack(self.ys_test)
+        self.G_init = G_opt
+        
+        # --- ノルム値の計算 ---
+        norm_val_sum = 0.0
+        G_opt_torch = torch.tensor(G_opt, dtype=dtype, device=device)
+        for j in range(p_hat):
+            norm_val = 0
+            gj = G_opt_torch[:, j]
+            for k in range(m):
+                gjk = gj[cum[k]:cum[k+1]]
+                Sk = S[k] # torch.Tensor
+                norm_vec = Sk @ gjk
+                norm_val_sum += norm_vec @ norm_vec
+                norm_val += norm_vec @ norm_vec
+            print(f"norm (MO) = {norm_val:.6g} (j={j})")
+        
+        avg_norm_val = norm_val_sum / p_hat
+        self.config.g_norm_val_mo = f"{float(avg_norm_val):.6g}"
+        print(f"norm (MO) = {self.config.g_norm_val_mo}")
+        
+        # --- 制約項の値の評価 ---
+        # Jreg (目的関数第2項) の値を計算して記録
+        jreg_val = torch.tensor(0.0, dtype=dtype, device=device)
+        with torch.no_grad(): # 勾配計算は不要
+            for j in range(p_hat):
+                gj = G_opt_torch[:, j]
+                term1 = torch.tensor(0.0, dtype=dtype, device=device)
+                sum_Sgj = torch.zeros(rdim, dtype=dtype, device=device)
+                for k in range(m):
+                    gjk = gj[cum[k]:cum[k+1]]
+                    Sk = S[k]         # ★ NumPy配列ではなく、Tensor版のSを使用
+                    SkT_Sk = STS[k]   # ★ 事前計算済みの S^T S を使用
+                    term1 = term1 + (gjk @ SkT_Sk @ gjk)
+                    sum_Sgj = sum_Sgj + (Sk @ gjk)
+                jreg_val = jreg_val + (2.0 * m * term1 - 2.0 * (sum_Sgj @ sum_Sgj))
+        self.config.jreg_gep = f"{jreg_val.item():.6g}"
+        print(f"Jreg (MO) = {self.config.jreg_gep}")
+
+        print("統合表現の次元数:", self.X_train_integ.shape[1])
+        self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
+        self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
+        
+                # --- [検証] G_optがGEPの解の性質を満たすか ---
+        print("\n--- [検証] G_opt がGEPの解の性質を満たすか ---")
+        from scipy.linalg import block_diag
+        from numpy.linalg import norm
+
+        # 1. 行列 A, B を構築
+        Ss_np = self.anchors_inter
+        SkT_Sk_np = [S.T @ S for S in Ss_np]
+        
+        # B = blkdiag(S_k^T S_k)
+        B_s_tilde = block_diag(*SkT_Sk_np)
+
+        # --- [検証] B_s_tilde の正定値性 ---
+        try:
+            eigvals_B = np.linalg.eigvalsh(B_s_tilde)
+            min_eig_B = np.min(eigvals_B)
+            print(f"\n[検証] B_s_tilde の最小固有値: {min_eig_B:.6g}")
+            if min_eig_B > 0:
+                print("[検証] B_s_tilde は正定値です。\n")
+            else:
+                print("[検証] B_s_tilde は正定値ではありません。\n")
+        except np.linalg.LinAlgError:
+            print("[検証] B_s_tilde の固有値計算に失敗しました。\n")
+        
+        # W = hstack(S_k)
+        W_s_tilde = np.hstack(Ss_np)
+        
+        # A = 2m B - 2 W^T W
+        A_s_tilde = 2 * m * B_s_tilde - 2 * (W_s_tilde.T @ W_s_tilde)
+        print("A_s_tilde", A_s_tilde)
+        print("B_s_tilde", B_s_tilde)
+
+        # 2. G_opt の各列 v_j について検証
+        eigenvalues_from_v = []
+        for j in range(p_hat):
+            v_j = G_opt[:, j]
+            print(f"v_{j}", v_j)
+
+            # (7)式: v^T B v = 1 の検証
+            norm_val = v_j.T @ B_s_tilde @ v_j
+            print(f"v_{j}: 制約 v^T B v = {norm_val:.6f} (→1に近いか？)")
+
+            # (8)式: Av = λBv の検証
+            Av = A_s_tilde @ v_j
+            Bv = B_s_tilde @ v_j
+            
+            # Av と Bv のコサイン類似度で平行か確認
+            cos_sim = (Av @ Bv) / (norm(Av) * norm(Bv))
+            print(f"v_{j}: Av と Bv のコサイン類似度 = {cos_sim:.6f} (→1に近いか？)")
+
+            # 対応する固有値 λ を計算
+            lambda_j = v_j.T @ A_s_tilde @ v_j
+            eigenvalues_from_v.append(lambda_j)
+            print(f"v_{j}: 対応する固有値 λ = {lambda_j:.6f}")
+            print("-" * 20)
+
+        # 3. 固有値の和を計算
+        sum_lambda = np.sum(eigenvalues_from_v)
+        print(f"計算された固有値の総和: {sum_lambda:.6f}")
+        
+        # ★【追加】Av - λBv の差のノルムを計算
+        diff_norm = norm(Av - lambda_j * Bv)
+        print(f"v_{j}: ||Av - λBv|| のノルム = {diff_norm:.6f} (→0に近いか？)")
+        
+        # Jregの値を取得して比較
+        jreg_val_str = getattr(self.config, 'jreg_gep', 'N/A')
+        print(f"目的関数の正則化項 Jreg: {jreg_val_str} (→固有値の総和と近いか？)")
+        print("--- [検証] 終了 ---\n")
+        
+    def make_integrate_gen_eig_fitting_objective_ortho(self) -> None:
+        """
+        分類版 + 直交「制約」：G^T B G = I を毎ステップのリトラクションで厳密に満たす。
+        J(θ,G) = Σ_k CE(y^(k), NN(X^(k) G^(k);θ))
+                + λ * Σ_j [ 2m Σ_k g_jk^T S_k^T S_k g_jk - 2 ||Σ_k S_k g_jk||^2 ]
+                (+ ρ ||G||_F^2 は任意、既定は 0)
+
+        制約:
+        G^T B G = I  （B = blkdiag(S_k^T S_k)）
+        実装:
+        勾配更新 → B-計量 Gram–Schmidt で列直交化（リトラクション）
+        保存:
+        self.X_train_integ / self.X_test_integ / self.y_*_integ, self.G_init
+        """
+        import numpy as np
+        import torch
+        import torch.nn as nn
+
+        print("******************** 統合表現 (NN + B-直交制約) ********************")
+
+        # -------------------- 0) 設定とデータ --------------------
+        m        = int(self.config.num_institution)
+        p_hat    = int(self.config.dim_integrate)
+        lam      = float(getattr(self.config, "lambda_nn_reg", None)
+                        or getattr(self.config, "lambda_gurobi", None) or 1.0)
+
+        # ハイパラ（デフォルト安全）
+        max_it      = int(getattr(self.config, "gd_max_iter", None) or 2000)
+        lr_theta    = float(getattr(self.config, "gd_lr_theta", None)
+                            or getattr(self.config, "gd_lr", None) or 1e-3)
+        lr_G        = float(getattr(self.config, "gd_lr_G", None)
+                            or getattr(self.config, "gd_lr", None) or 1e-2)
+        betas       = getattr(self.config, "gd_betas", None) or (0.9, 0.999)
+        weight_decay= float(getattr(self.config, "gd_weight_decay", None) or 0.0)
+        grad_clip   = float(getattr(self.config, "gd_grad_clip", None) or 0.0)
+        tol         = float(getattr(self.config, "gd_tol", None) or 1e-6)
+        print_every = int(getattr(self.config, "gd_print_every", None) or 100)
+        seed        = int(getattr(self.config, "gd_seed", None) or 0)
+        rho_g_l2    = float(getattr(self.config, "lambda_g_l2", None) or 0.0)  # 任意
+
+        torch.manual_seed(seed); np.random.seed(seed)
+
+        # ソース（_inter があれば優先）
+        S_list   = getattr(self, "anchors_inter", None) or self.anchors
+        Xtr_list = getattr(self, "Xs_train_inter", None) or self.Xs_train
+        Xte_list = getattr(self, "Xs_test_inter",  None) or self.Xs_test
+        ytr_list = self.ys_train
+        yte_list = self.ys_test
+
+        assert len(S_list)==m and len(Xtr_list)==m and len(Xte_list)==m, "機関数 m とリスト長が不一致です。"
+
+        dims = [S.shape[1] for S in S_list]  # d_k
+        dtot = int(sum(dims))
+        cum  = np.cumsum([0]+dims)
+        rdim = S_list[0].shape[0]
+
+        # -------------------- 1) Tensor 化 & B (= blkdiag(S^T S)) --------------------
+        device = torch.device("cpu")
+        dtype  = torch.double
+
+        Xtr = [torch.tensor(X, dtype=dtype, device=device) for X in Xtr_list]
+        Xte = [torch.tensor(X, dtype=dtype, device=device) for X in Xte_list]
+        ytr = [torch.tensor(y.astype(int), dtype=torch.long, device=device) for y in ytr_list]
+        yte = [torch.tensor(y.astype(int), dtype=torch.long, device=device) for y in yte_list]
+        S   = [torch.tensor(Si, dtype=dtype, device=device) for Si in S_list]
+
+        # B の各ブロック S_k^T S_k（数値安定のため εI を加える）
+        eps_spd = 1e-10
+        STS = []
+        for k in range(m):
+            M = S[k].T @ S[k]
+            M = M + eps_spd * torch.eye(M.shape[0], dtype=dtype, device=device)
+            STS.append(M)
+
+        # -------------------- 2) モデル & 変数 --------------------
+        num_classes = int(max(int(y.max()) for y in ytr_list) + 1)
+        hidden = getattr(self.config, "nn_hidden", None) or [64, 32]
+        layers = []; in_dim = p_hat
+        for h in hidden:
+            layers += [nn.Linear(in_dim, h, bias=True), nn.ReLU()]
+            in_dim = h
+        layers += [nn.Linear(in_dim, num_classes, bias=True)]
+        model = nn.Sequential(*layers).to(device).double()
+
+        # 初期 G（ウォームスタートがあれば使用）
+        G_init = getattr(self, "G_init", None)
+        if G_init is None or G_init.shape!=(dtot, p_hat):
+            G_np = 0.01 * np.random.randn(dtot, p_hat)
+        else:
+            G_np = np.array(G_init, copy=True)
+            print(1111111111111111111111111111111111111111111)
+
+        # --- B-直交正規化ヘルパ ---
+        def b_dot(u: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+            """<u,v>_B = u^T B v を計算（u,v は dtot）"""
+            s = torch.tensor(0.0, dtype=dtype, device=device)
+            for k in range(m):
+                uk = u[cum[k]:cum[k+1]]
+                vk = v[cum[k]:cum[k+1]]
+                s  = s + (uk @ (STS[k] @ vk))
+            return s
+
+        def b_norm(u: torch.Tensor) -> torch.Tensor:
+            return torch.sqrt(torch.clamp(b_dot(u,u), min=1e-18))
+
+        def b_orthonormalize_blockwise_(G: torch.Tensor) -> None:
+            """
+            各ブロック k について:
+            C_k = Gk^T (S_k^T S_k) Gk を Cholesky（or EVD）で逆平方根し、
+            Gk <- Gk C_k^{-1/2} により (Gk^T B_k Gk) = I を満たす。
+            """
+            with torch.no_grad():
+                for k in range(m):
+                    Gk = G[cum[k]:cum[k+1], :]                 # d_k × p̂
+                    # C_k = Gk^T B_k Gk
+                    Ck = Gk.T @ (STS[k] @ Gk)                  # p̂ × p̂
+                    Ck = 0.5 * (Ck + Ck.T)                     # 対称化
+                    eps = 1e-12
+                    Iph = torch.eye(Ck.shape[0], dtype=Ck.dtype, device=Ck.device)
+                    try:
+                        R = torch.linalg.cholesky(Ck + eps*Iph)    # Ck = R^T R
+                        Rinv = torch.linalg.inv(R)
+                        Gk_new = Gk @ Rinv                         # Gk R^{-1} ⇒ (Gk^T B_k Gk) = I
+                    except RuntimeError:
+                        # 数値不安定なら固有値分解で逆平方根
+                        w, V = torch.linalg.eigh(Ck)
+                        w = torch.clamp(w, min=1e-12)
+                        Ck_inv_sqrt = V @ torch.diag(1.0/torch.sqrt(w)) @ V.T
+                        Gk_new = Gk @ Ck_inv_sqrt
+                    # 書き戻し
+                    G[cum[k]:cum[k+1], :].copy_(Gk_new)
+
+        # 初期 G を B-直交化
+        G = torch.tensor(G_np, dtype=dtype, device=device, requires_grad=True)
+        b_orthonormalize_blockwise_(G)  # ここで G^T B G ≈ I
+
+        # 最適化器（θ と G の学習率を分ける）
+        opt = torch.optim.Adam(
+            [{"params": model.parameters(), "lr": lr_theta},
+            {"params": [G], "lr": lr_G}],
+            betas=betas, weight_decay=weight_decay
+        )
+        ce = nn.CrossEntropyLoss(reduction="sum")
+
+        # 整合化項
+        def reg_term(G: torch.Tensor) -> torch.Tensor:
+            tot = torch.tensor(0.0, dtype=dtype, device=device)
+            for j in range(p_hat):
+                gj = G[:, j]
+                term1 = torch.tensor(0.0, dtype=dtype, device=device)
+                sumS  = torch.zeros(rdim, dtype=dtype, device=device)
+                for k in range(m):
+                    gjk = gj[cum[k]:cum[k+1]]
+                    term1 = term1 + (gjk @ (STS[k] @ gjk))
+                    sumS  = sumS + (S[k] @ gjk)
+                tot = tot + (2.0 * m) * term1 - 2.0 * (sumS @ sumS)
+            return tot
+
+        last_obj = None
+
+        # -------------------- 3) 学習ループ（投影付き最適化） --------------------
+        for it in range(1, max_it+1):
+            opt.zero_grad()
+
+            # 分類損
+            Jpred = torch.tensor(0.0, dtype=dtype, device=device)
+            for k in range(m):
+                Gk = G[cum[k]:cum[k+1], :]                 # d_k × p̂
+                logits_k = model(Xtr[k] @ Gk)              # n_k × C
+                Jpred = Jpred + ce(logits_k, ytr[k])
+
+            # 整合化 + 任意 Ridge
+            Jreg   = reg_term(G)
+            Jridge = rho_g_l2 * (G**2).sum()
+            obj    = Jpred + lam * Jreg + Jridge
+
+            obj.backward()
+            if grad_clip and grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(list(model.parameters()) + [G], grad_clip)
+            opt.step()
+
+            # --- B-直交制約を厳密に満たす（リトラクション） ---
+            b_orthonormalize_blockwise_(G)   # ⇒ ここで常に G^T B G = I に戻す
+
+            # ログ＆収束
+            if print_every and (it % print_every == 0 or it == 1 or it == max_it):
+                val = float(obj.detach().cpu().numpy())
+                jp  = float(Jpred.detach().cpu().numpy())
+                jr  = float(Jreg.detach().cpu().numpy())
+                jw  = float(Jridge.detach().cpu().numpy())
+                # 直交誤差の確認
+                with torch.no_grad():
+                    # gram = G^T B G の Frobenius 誤差
+                    gram = torch.zeros((p_hat, p_hat), dtype=dtype, device=device)
+                    # gram[i,j] = <g_i, g_j>_B
+                    for i in range(p_hat):
+                        for j2 in range(p_hat):
+                            gram[i, j2] = b_dot(G[:, i], G[:, j2])
+                    ortho_err = float(torch.sum((gram - torch.eye(p_hat, dtype=dtype, device=device))**2).cpu().numpy())
+                if last_obj is None:
+                    print(f"iter {it:5d} | J={val:.6g} | Jpred={jp:.6g} | Jreg={jr:.6g} | Jridge={jw:.6g} | "
+                        f"||G^TBG-I||_F^2={ortho_err:.3e}")
+                else:
+                    rel = abs(last_obj - val) / (1.0 + abs(last_obj))
+                    print(f"iter {it:5d} | J={val:.6g} | relΔ={rel:.3e} | Jpred={jp:.6g} | Jreg={jr:.6g} | "
+                        f"Jridge={jw:.6g} | ||G^TBG-I||_F^2={ortho_err:.3e}")
+                    if rel < tol:
+                        print("Converged by tolerance.")
+                        break
+                last_obj = val
+
+        # -------------------- 4) 埋め込み計算＆保存 --------------------
+        G_opt = G.detach().cpu().numpy()
+        Xs_train_integrate, Xs_test_integrate = [], []
+        for k in range(m):
+            Gk = G_opt[cum[k]:cum[k+1], :]
+            Xs_train_integrate.append((self.Xs_train_inter[k] if getattr(self, "Xs_train_inter", None) is not None
+                                    else self.Xs_train[k]) @ Gk)
+            Xs_test_integrate.append((self.Xs_test_inter[k] if getattr(self, "Xs_test_inter", None) is not None
+                                    else self.Xs_test[k]) @ Gk)
+
+        self.X_train_integ = np.vstack(Xs_train_integrate)
+        self.X_test_integ  = np.vstack(Xs_test_integrate)
+        self.y_train_integ = np.hstack(self.ys_train)
+        self.y_test_integ  = np.hstack(self.ys_test)
+
+        # 後段の初期値として保持
+        self.G_init = G_opt
+
+        print("統合表現の次元数:", self.X_train_integ.shape[1])
+        self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
+        self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
+
+    
     def visualize_representations(self, save_dir: Optional[str] = None) -> None:
         """
         元データ、中間表現、統合表現（機関ごとと全体）を2次元散布図で可視化する関数。
         訓練データとテストデータをそれぞれ別の図で出力する。
         """
-        save_dir = save_dir or self.config.output_path
+        save_dir = save_dir or self.config.output_path / "visualizations"
         if not self.Xs_train or not self.Xs_train_inter or self.X_train_integ.size == 0:
             print("可視化する表現が生成されていません。run()メソッドを実行してください。")
             return
@@ -1357,7 +2444,7 @@ class DataCollaborationAnalysis:
         plt.tight_layout(rect=[0, 0.03, 1, 0.97])
         if save_dir:
             Path(save_dir).mkdir(parents=True, exist_ok=True)
-            plt.savefig(Path(save_dir) / f"_{self.config.dataset}_{self.config.nl_lambda}__{self.config.True_F_type}_{self.config.G_type}_{self.config.gamma_type}.png")
+            plt.savefig(Path(save_dir) / f"_0828_{self.config.lambda_nn_reg}_{self.config.dataset}_{self.config.G_type}.png")
         """
         # --- テストデータの可視化 ---
         fig_test, axes_test = plt.subplots(num_institutions, 4, figsize=(24, 5 * num_institutions), squeeze=False)

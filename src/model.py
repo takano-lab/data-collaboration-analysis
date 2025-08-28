@@ -48,7 +48,7 @@ class ModelRunner:
             "svm_classifier": self._run_svm,
             "svm_linear_classifier": self._run_svm_linear,
             "mlp": self._run_mlp,  # MLPを追加
-            "softmax": self._run_softmax
+            "softmax": self._run_softmax,
         }
 
     def run(self, X_train: np.ndarray, y_train: np.ndarray, X_test: np.ndarray, y_test: np.ndarray) -> float:
@@ -71,6 +71,14 @@ class ModelRunner:
         config.metricsに基づいて評価指標を計算する。
         """
         metric = getattr(self.config, 'metrics', 'auc').lower()  # デフォルトはauc
+        
+        # 回帰指標
+        if metric in ['rmse', 'r2']:
+            if metric == 'rmse':
+                return np.sqrt(mean_squared_error(y_true, y_pred))
+            elif metric == 'r2':
+                from sklearn.metrics import r2_score
+                return r2_score(y_true, y_pred)
 
         if metric == 'auc':
             if y_score is None:
@@ -87,12 +95,19 @@ class ModelRunner:
             raise ValueError(f"未対応の評価指標です: {self.config.metrics}")
 
     def _run_linear_regression(self, X_train, y_train, X_test, y_test, **kwargs) -> float:
-        """線形回帰で RMSE を返す"""
-        # 注意: linear_regressionは回帰モデルのため、accuracy/aucは適用されません。
+        """線形回帰で評価指標を計算する"""
         model = LinearRegression()
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
-        return np.sqrt(mean_squared_error(y_test, y_pred))
+        # 線形回帰は回帰問題なので、評価指標はRMSEまたはR2など
+        metric = getattr(self.config, 'metrics', 'rmse').lower()
+        if metric == 'rmse':
+            return np.sqrt(mean_squared_error(y_test, y_pred))
+        elif metric == 'r2':
+            from sklearn.metrics import r2_score
+            return r2_score(y_test, y_pred)
+        else:
+            raise ValueError(f"未対応の回帰評価指標です: {self.config.metrics}")
 
     def _run_random_forest(self, X_train, y_train, X_test, y_test, **kwargs) -> float:
         """ランダムフォレストで評価指標を計算する"""

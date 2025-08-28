@@ -4,6 +4,7 @@ import argparse
 from logging import INFO, FileHandler, getLogger
 import statistics
 import pandas as pd
+
 import yaml
 from tqdm import tqdm 
 from config.config import Config
@@ -70,6 +71,7 @@ def main(visualize):
     data_collaboration.run()
     if visualize:
         data_collaboration.visualize_representations()
+        print(1111)
     #data_collaboration.save_representations_to_csv()
         # 提案手法
     record_config_to_cfg(config)
@@ -142,18 +144,20 @@ def main(visualize):
 
 def main_loop():
     LOADERS = [
-    #    "concentric_circles",
+        "concentric_circles",
     #    "two_gaussian_distributions",
     #    '3D_gaussian_clusters',
-        "mice",
-      "statlog",
-        'qsar',
+    #    "mice",
+    #  "statlog",
+    #    'qsar',
     #   "breast_cancer",
     #   "har",
     #    "adult",
     #    "diabetes130",
     #    "bank_marketing", # 性能に変化でない
     #"digits",
+    #"digits_v2",
+    #"housing",
     #"ames",
     #"tox21_sr_are",
     #"hiv",
@@ -163,21 +167,23 @@ def main_loop():
     #"mnist",
     #"fashion_mnist",
     ]
-    MODELS = ["softmax"]#, "mlp"]#"random_forest"]#, "svm_linear_classifier", "mlp"]#"mlp"]#, "svm_linear_classifier"] #"svm_classifier"]#"random_forest"]#, _linear_
-    gamma_types = ["auto"]#, "X_tuning"]
-    F_types = ["svd"]#"kernel_pca_svd_mixed", "svd", "kernel_pca_self_tuning"]#, "svd", "kernel_pca_self_tuning"]#"svd", "kernel_pca", "kernel_pca_self_tuning", ] # , "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    G_types = ["targetvec"]#, "nonlinear_linear", 'centralize', 'individual', "fl", "Imakura", "ODC", "GEP"]#, "nonlinear_tuning"#'centralize_dim', "nonlinear", "Imakura"]#"nonlinear_tuning"]#, "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#["fl", 'centralize', 'individual', "Imakura", "ODC", "GEP", "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#'centralize_dim', "nonlinear", "Imakura"]#
-    config.metrics = "auc"
-    # G_types = ["nonlinear"]
+    MODELS = ["linear_regression"]#, "mlp"]#"random_forest"]#, "svm_linear_classifier", "mlp"]#"mlp"]#, "svm_linear_classifier"] #"svm_classifier"]#"random_forest"]#, _linear_
+    gamma_types = ["X_tuning"]
+    F_types = ["kernel_pca_svd_mixed"]#"kernel_pca_svd_mixed", "svd", "kernel_pca_self_tuning"]#, "svd", "kernel_pca_self_tuning"]#"svd", "kernel_pca", "kernel_pca_self_tuning", ] # , "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
+    G_types = ["mlp_objective"]# "nonlinear_tuning"#'centralize_dim', "nonlinear", "Imakura"]#"nonlinear_tuning"]#, "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#["fl", 'centralize', 'individual', "Imakura", "ODC", "GEP", "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#'centralize_dim', "nonlinear", "Imakura"]#
+    # G_types = ["nonlinear"] mlp_objective
     config.F_type = F_types[0]
     config.G_type = G_types[0]
-    
+    config.objective_direction_ratio = 0
     data = {}
     #config.nl_gamma = 1
     config.nl_lambda = 10
+    config.lambda_nn_reg = 0.1
+    config.gurobi_max_iter = 1
     config.h_model = MODELS[0]
-    visualize = False
+    visualize = True
     for dataset in tqdm(LOADERS):
+        config.metrics = "rmse"
         data = {}
         for model in MODELS:
             config.h_model = model
@@ -188,28 +194,24 @@ def main_loop():
                 config.True_F_type = F_type
                 for G_type in G_types:
                         config.G_type = G_type
-                        for objective_direction_ratio in [0]:
+                        for lambda_nn_reg in [0.2]:
                             for gamma_type in gamma_types:
-                                config.nl_lambda = 0.1
-                                config.objective_direction_ratio = objective_direction_ratio
+                                config.lambda_nn_reg = lambda_nn_reg
                                 config.gamma_type = gamma_type
-                                if not (G_type == "nonlinear_linear" or G_type == "nonlinear"):
-                                    if not (gamma_type == "auto"):
-                                        continue
                                 metrics = []
-                                for i in range(1, 11):
+                                for i in range(1, 2):
                                     config.seed = i
                                     metrics.append(main(visualize))
                                     config.F_type = config.True_F_type
                                 # 平均値を計算
                                 metrics_mean = sum(metrics) / len(metrics)
                                 metrics_stdev = statistics.stdev(metrics) if len(metrics) > 1 else 0.0
-                                data[f'{dataset}_{model}_{F_type}_{G_type}_{gamma_type}_{objective_direction_ratio}'] = [dataset, model, F_type, G_type, gamma_type, objective_direction_ratio, metrics_mean, metrics_stdev]
+                                data[f'{dataset}_{model}_{F_type}_{G_type}_{gamma_type}_{lambda_nn_reg}'] = [dataset, model, F_type, G_type, gamma_type, lambda_nn_reg, metrics_mean, metrics_stdev]
 
 
         # DataFrameに変換
-    df_all = pd.DataFrame.from_dict(data, orient="index", columns=["dataset", "model", "F_type", "G_type", "gamma_type", "nl_lambda", "metrics_mean", "metrics_stdev"])
-    df_all.to_csv(output_path / f"result.csv", index=True, encoding="utf-8-sig")
+        df_all = pd.DataFrame.from_dict(data, orient="index", columns=["dataset", "model", "F_type", "G_type", "gamma_type", "lambda_nn_reg", "metrics_mean", "metrics_stdev"])
+        df_all.to_csv(output_path / f"result_{dataset}.csv", index=True, encoding="utf-8-sig")
 
 def partial_run():
     logger.info(f"データセット: {config.dataset}")
