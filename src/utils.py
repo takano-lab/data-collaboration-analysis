@@ -200,6 +200,81 @@ class SVDScratch_:
     # ------------------------------------------------------------
     def fit_transform(self, X):
         return self.fit(X).transform(X)
+    
+class KCCAScratch:
+    """
+    Kernel Canonical Correlation Analysis (KCCA)
+    2つのビュー (X, Y) 間の相関を最大化する射影を見つける。
+    """
+    def __init__(self, n_components, reg=1e-4, kernel_x='rbf', kernel_y='linear', gamma_x=None, gamma_y=None):
+        self.n_components = n_components
+        self.reg = reg  # 正則化パラメータ
+        self.kernel_x = kernel_x
+        self.kernel_y = kernel_y
+        self.gamma_x = gamma_x
+        self.gamma_y = gamma_y
+        
+        self.alpha = None  # Xの射影ベクトル
+        self.beta = None   # Yの射影ベクトル
+        self.X_train = None # fit時のX
+
+    def _get_kernel(self, X, Y=None, kernel_type='rbf', gamma=None):
+        from sklearn.metrics.pairwise import rbf_kernel, polynomial_kernel, linear_kernel
+        if kernel_type == 'rbf':
+            if gamma is None:
+                gamma = 1.0 / X.shape[1]
+            return rbf_kernel(X, Y, gamma=gamma)
+        elif kernel_type == 'poly':
+            return polynomial_kernel(X, Y, degree=3, coef0=1)
+        else: # linear
+            return linear_kernel(X, Y)
+
+    def fit(self, X, Y):
+        self.X_train = X
+        n = X.shape[0]
+        
+        # 1. カーネル行列の計算
+        Kx = self._get_kernel(X, kernel_type=self.kernel_x, gamma=self.gamma_x)
+        Ky = self._get_kernel(Y, kernel_type=self.kernel_y, gamma=self.gamma_y)
+
+        # 2. 中心化
+        N = np.eye(n) - np.ones((n, n)) / n
+        Kx_c = N @ Kx @ N
+        Ky_c = N @ Ky @ N
+
+        # 3. 一般化固有値問題のセットアップ
+        # (Kx_c @ Ky_c @ Kx_c) alpha = rho^2 (Kx_c @ Kx_c) alpha
+        R = Kx_c @ Ky_c
+        LHS = R @ Kx_c
+        RHS = Kx_c @ Kx_c + self.reg * np.eye(n) # 正則化
+
+        try:
+            eigvals, eigvecs = eigh(LHS, RHS)
+            
+            # 固有値の大きい順にソート
+            sorted_indices = np.argsort(eigvals)[::-1]
+            self.alpha = eigvecs[:, sorted_indices[:self.n_components]]
+
+        except np.linalg.LinAlgError:
+            print("KCCAで固有値計算エラー。PCAにフォールバックします。")
+            # エラー時はPCAで代用
+            from sklearn.decomposition import KernelPCA
+            kpca = KernelPCA(n_components=self.n_components, kernel=self.kernel_x, gamma=self.gamma_x)
+            kpca.fit(X)
+            self.alpha = kpca.alphas_
+            
+    def transform(self, X_new):
+        if self.alpha is None:
+            raise RuntimeError("まず fit を呼んでください")
+        
+        K_new = self._get_kernel(X_new, self.X_train, kernel_type=self.kernel_x, gamma=self.gamma_x)
+        return K_new @ self.alpha
+
+    def fit_transform(self, X, Y):
+        self.fit(X, Y)
+        # fitで使ったXに対する変換を返す
+        Kx = self._get_kernel(X, kernel_type=self.kernel_x, gamma=self.gamma_x)
+        return Kx @ self.alpha
 
 def self_tuning_gamma(
         X, *,
@@ -259,6 +334,7 @@ def reduce_dimensions(
     X_train: np.ndarray,
     X_test: np.ndarray,
     n_components: int,
+    y_train: np.ndarray= None,
     anchor: Optional[np.ndarray] = None,
     anchor_test: Optional[np.ndarray] = None,
     F_type = "kernel_pca",
@@ -387,6 +463,39 @@ def reduce_dimensions(
             return X_train_lpp, X_test_lpp, X_anchor_lpp, None
 
         return X_train_lpp, X_test_lpp
+    
+    elif F_type == "kcca":
+            # --- スケーリング ---
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        anchor_scaled = scaler.transform(anchor) if anchor is not None else None
+        # y_trainがカテゴリカル（整数）かチェックし、そうであればOne-Hotエンコーディング
+        if np.issubdtype(y_train.dtype, np.integer):
+            from sklearn.preprocessing import OneHotEncoder
+            encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
+            Y_train_view = encoder.fit_transform(y_train.reshape(-1, 1))
+            print("KCCA: y_trainをOne-Hotエンコーディングしました。")
+        else:
+            # 連続値の場合はそのまま使用（必要に応じてreshape）
+            Y_train_view = y_train.reshape(-1, 1) if y_train.ndim == 1 else y_train
+            print("KCCA: y_trainを連続値として使用します。")
+
+        # KCCAモデルの初期化と学習
+        gamma_x = 1.0 / X_train.shape[1] # self_tuning_gamma(X_train, standardize=True, k=7, summary='median') / 30
+        # Yのカーネルは線形カーネルをデフォルトに
+        model = KCCAScratch(n_components=n_components, reg=1e-4, kernel_x='rbf', kernel_y='linear', gamma_x=gamma_x)
+        
+        X_train_kcca = model.fit_transform(X_train, Y_train_view)
+        X_test_kcca = model.transform(X_test)
+
+        if anchor is not None:
+            X_anchor_kcca = model.transform(anchor)
+            # anchor_test は y がないので変換不可
+            return X_train_kcca, X_test_kcca, X_anchor_kcca, None
+
+        return X_train_kcca, X_test_kcca
+        
 
     else:
     # --- スケーリング ---

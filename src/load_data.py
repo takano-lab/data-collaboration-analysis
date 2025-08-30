@@ -129,6 +129,18 @@ def _load_concentric_circles_df() -> pd.DataFrame:
 
     return df
 
+def _load_concentric_three_circles_df() -> pd.DataFrame:
+    path = Path("input/concentric_three_classes_big.csv")
+    df = pd.read_csv(path)
+    df = df.rename(columns={"y": "target"})
+    # "target" 列以外を標準化
+    scaler = StandardScaler()
+    feature_columns = [col for col in df.columns if col != "target"]
+    df[feature_columns] = scaler.fit_transform(df[feature_columns])
+
+    return df
+
+
 def _load_two_gaussian_distributions_df() -> pd.DataFrame:
     path = Path("input/Two_Gaussian_Distributions.csv")
     df = pd.read_csv(path)
@@ -299,6 +311,7 @@ LOADERS = {
     "digits": _load_digits_df,
     "digits_v2": _load_digits_df,
     "concentric_circles": _load_concentric_circles_df,
+    "concentric_three_circles": _load_concentric_three_circles_df,
     "two_gaussian_distributions": _load_two_gaussian_distributions_df,
     "3D_gaussian_clusters": _load_3D_gaussian_clusters_df,
     "mice": _load_mice_df,
@@ -417,14 +430,21 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.dim_integrate = 10 # 統合表現の次元数
         config.num_institution = 10
         config.num_institution_user = 50
-        
+                                                                      
     elif config.dataset == 'concentric_circles':
         config.feature_num = 2
         config.dim_intermediate = 2  # 中間表現の次元数
         config.dim_integrate = 2  # 統合表現の次元数
         config.num_institution = 4
-        config.num_institution_user = int(len(df) / (config.num_institution * 2))
-    
+        config.num_institution_user = int(len(df) / (config.num_institution * 2))                                                              
+
+    elif config.dataset == 'concentric_three_circles':
+        config.feature_num = 2
+        config.dim_intermediate = 2  # 中間表現の次元数
+        config.dim_integrate = 2  # 統合表現の次元数
+        config.num_institution = 4
+        config.num_institution_user = int(len(df) / (config.num_institution * 2))               
+        
     elif config.dataset == 'two_gaussian_distributions':
         config.feature_num = 2
         config.dim_intermediate = 2
@@ -506,7 +526,7 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
             shuffle=True,
             stratify=df["target"]
         )
-
+    
     # ── 行数制約でカット（デモ用）
     lim = config.num_institution * config.num_institution_user
     train_df = train_df.iloc[:lim].reset_index(drop=True)

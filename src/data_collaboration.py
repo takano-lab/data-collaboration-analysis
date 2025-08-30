@@ -170,6 +170,8 @@ class DataCollaborationAnalysis:
         elif self.config.G_type  == "targetvec":
             self.make_integrate_expression_targetvec()
         elif self.config.G_type  == "GEP":
+            if self.config.semi_integ:
+                self.make_semi_integrate_expression()
             self.make_integrate_expression_gen_eig(use_eigen_weighting=False)
         elif self.config.G_type  == "GEP_weighted":
             self.make_integrate_expression_gen_eig(use_eigen_weighting=True)
@@ -181,12 +183,7 @@ class DataCollaborationAnalysis:
             self.make_integrate_nonlinear_expression_tuning()
         elif self.config.G_type == "nonlinear_linear":
             self.make_integrate_nonlinear_linear()
-        elif self.config.G_type == "linear_objective":
-            self.make_integrate_expression_gen_eig()
-            self.build_init_from_gen_eig()   # ← 上で追加した関数
-            self.make_integrate_gen_eig_linear_fitting_objective() 
         elif self.config.G_type == "mlp_objective":
-            #self.make_integrate_expression_gen_eig()
             self.build_init_from_gen_eig()   # ← 上で追加した関数
             self.make_integrate_gen_eig_fitting_objective()       
         else:
@@ -304,6 +301,40 @@ class DataCollaborationAnalysis:
 
         self.logger.info(f"中間表現（訓練データ）の数と次元数: {self.Xs_train_inter[0].shape}")
 
+    def make_semi_integrate_expression(self) -> None:
+        print("********************中間表現の生成********************")
+        """
+        中間統合表現を生成する関数
+        """
+        self.Xs_train_inter_copy = self.Xs_train_inter.copy()
+        self.Xs_test_inter_copy = self.Xs_test_inter.copy()
+        self.anchors_inter_copy = self.anchors_inter.copy()
+        # 中間表現
+        self.Xs_train_inter: list[np.ndarray] = []
+        self.Xs_test_inter: list[np.ndarray] = []
+        self.anchors_inter: list[np.ndarray] = []
+
+        for X_train, X_test, y_train, anchor_inter in zip(tqdm(self.Xs_train_inter_copy), self.Xs_test_inter_copy, self.ys_train, self.anchors_inter_copy):
+            X_train_svd, X_test_svd, anchor_svd, anchor_test_svd = reduce_dimensions(
+               X_train=X_train,
+               X_test=X_test,
+               n_components=self.config.dim_intermediate,
+               y_train=y_train,
+               anchor=anchor_inter,
+               seed=self.config.f_seed,
+               F_type="kcca", 
+               config=self.config,)
+            self.config.f_seed += 1
+
+            # svdを適用したデータをリストに格納
+            self.Xs_train_inter.append(X_train_svd)
+            self.Xs_test_inter.append(X_test_svd)
+            self.anchors_inter.append(anchor_svd)
+            self.anchors_test_inter.append(anchor_test_svd)
+
+        print("中間表現の次元数: ", self.Xs_train_inter[0].shape[1])
+
+        self.logger.info(f"中間表現（訓練データ）の数と次元数: {self.Xs_train_inter[0].shape}")
 
     def make_integrate_expression(self) -> None:
         print("********************統合表現の生成********************")
@@ -500,6 +531,7 @@ class DataCollaborationAnalysis:
         p_hat   = self.config.dim_integrate           # ← 共通表現次元
         r       = self.config.num_anchor_data
         lambda_gen = getattr(self.config, 'lambda_gen_eigen', 0)
+        orth_ver = bool(getattr(self.config, "orth_ver", None) or False)
         #use_w   = getattr(self.config, "use_eigen_weighting", False)   # ★
 
 
@@ -521,7 +553,10 @@ class DataCollaborationAnalysis:
         # --------------------------------------------------
         # 3. 一般化固有値問題  A v = λ B v
         # --------------------------------------------------
-        eigvals, eigvecs = eigh(A_s_tilde, B_s_tilde)                 # SciPy の一般化固有分解
+        if orth_ver:
+            eigvals, eigvecs = eigh(A_s_tilde)                 # SciPy の一般化固有分解
+        else:
+            eigvals, eigvecs = eigh(A_s_tilde, B_s_tilde)                 # SciPy の一般化固有分解
         order   = np.argsort(eigvals)                                 # 昇順
         lambdas = eigvals[order][:p_hat]                              # ★ λ_1 … λ_p̂
         print(lambdas)
@@ -579,21 +614,7 @@ class DataCollaborationAnalysis:
         print(lambda_max / lambda_min)
         self.config.g_condition_number = f"{lambda_max / lambda_min:.4g}" if lambda_min > 0 else "inf"
         print(f"条件数: {self.config.g_condition_number}")
-
-        # --------------------------------------------------
-        # 4.  λ に基づくウェイト計算（オプション）★
-        # --------------------------------------------------
-        # if use_w:
-        #     lam_min, lam_max = lambdas[0], lambdas[-1]
-        #     if np.isclose(lam_max, lam_min):
-        #         weights = np.ones_like(lambdas)
-        #     else:
-        #         weights = np.exp(-(lambdas - lam_min) / (lam_max - lam_min))
-        #     # 射影行列側に重みを掛けておく（後段の行列積で自動適用）
-        #     V_sel = V_sel * weights[np.newaxis, :]
-        # else:
-        #     weights = np.ones_like(lambdas)   # dummy（あとで保存だけする）
-
+        
         # --------------------------------------------------
         # 5. 機関ごとの G^(k) 抽出と射影
         # --------------------------------------------------
@@ -623,137 +644,6 @@ class DataCollaborationAnalysis:
         if use_eigen_weighting:
 
             self.config.eigenvalues  = lambdas
-
-    # ============================================================
-    # 〈統合関数の最適化〉§3 一般化固有値問題 (8) ベース
-    #   A_s̃ v = λ B_s̃ v ,  vᵀ B_s̃ v = 1
-    # ============================================================
-    def make_integrate_expression_gen_eig_gurobi(self, use_eigen_weighting=False) -> None:
-        """
-        論文の最適化問題をGurobiで直接解く (非凸QCQP)。
-        min  Σ_j ( 2m Σ_k g_jk^T S_k^T S_k g_jk - 2 || Σ_k S_k g_jk ||^2 )
-        s.t. Σ_k g_jk^T S_k^T S_k g_jk = 1  (for j=1..p̂)
-        これはGEPを解くことと等価。
-        """
-        print("********************統合表現の生成 (Gurobi Direct QCQP) ********************")
-        from gurobipy import Model, GRB
-        import numpy as np
-
-        # -------------------- 0) 基本設定 --------------------
-        m       = self.config.num_institution
-        p_hat   = self.config.dim_integrate
-        
-        Ss = self.anchors_inter
-        
-        dims = [S.shape[1] for S in Ss]
-        dtot = int(sum(dims))
-        cum  = np.cumsum([0] + dims)
-        rdim = Ss[0].shape[0]
-
-        # 事前計算
-        SkT_Sk = [S.T @ S for S in Ss]
-
-        # -------------------- 1) Gurobiモデル構築 --------------------
-        model = Model("GEP_Direct_QCQP")
-        model.Params.OutputFlag = 1
-        model.Params.NonConvex = 2  # 非凸二次問題として解く
-        tlim = getattr(self.config, "gurobi_timelimit", None)
-        if tlim is not None:
-            model.Params.TimeLimit = tlim
-
-        # 変数 G (dtot × p_hat)
-        G = model.addMVar((dtot, p_hat), lb=-GRB.INFINITY, name="G")
-
-        # -------------------- 2) 目的関数 --------------------
-        obj = 0.0
-        for j in range(p_hat):
-            gj = G[:, j]
-            
-            term1 = 0.0
-            sum_Sgj = 0.0
-            for k in range(m):
-                gjk = gj[cum[k]:cum[k+1]]
-                term1 += gjk @ SkT_Sk[k] @ gjk
-                sum_Sgj += Ss[k] @ gjk
-            
-            obj += (2.0 * m * term1 - 2.0 * (sum_Sgj @ sum_Sgj))
-
-        model.setObjective(obj, GRB.MINIMIZE)
-
-        # -------------------- 3) 制約条件 --------------------
-        for j in range(p_hat):
-            gj = G[:, j]
-            norm2 = 0.0
-            for k in range(m):
-                gjk = gj[cum[k]:cum[k+1]]
-                norm2 += gjk @ SkT_Sk[k] @ gjk
-            model.addConstr(norm2 == 1.0, name=f"norm_constraint_{j}")
-
-        # -------------------- 4) 最適化実行 --------------------
-        model.optimize()
-
-        if model.status not in (GRB.OPTIMAL, GRB.TIME_LIMIT):
-            print(f"Gurobi optimization failed. Status: {model.status}")
-            # 失敗した場合は空の表現をセットして終了
-            self.X_train_integ = np.array([])
-            self.X_test_integ = np.array([])
-            self.y_train_integ = np.array([])
-            self.y_test_integ = np.array([])
-            return
-
-        # -------------------- 5) 結果の取得と射影 --------------------
-        G_opt = G.X
-
-        Xs_train_integrate, Xs_test_integrate = [], []
-        for k in range(m):
-            Gk = G_opt[cum[k]:cum[k+1], :]
-            Xs_train_integrate.append(self.Xs_train_inter[k] @ Gk)
-            Xs_test_integrate.append(self.Xs_test_inter[k] @ Gk)
-
-        # -------------------- 6) スタック & 保存 --------------------
-        self.X_train_integ = np.vstack(Xs_train_integrate)
-        self.X_test_integ  = np.vstack(Xs_test_integrate)
-        self.y_train_integ = np.hstack(self.ys_train)
-        self.y_test_integ  = np.hstack(self.ys_test)
-
-        print("統合表現の次元数:", self.X_train_integ.shape[1])
-        self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
-        self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
-
-        # --- GEP版と互換性のある指標を計算・保存 ---
-        self.config.sum_objective_function = f"{model.ObjVal:.4g}"
-        print(f"目的関数値 (sum_objective_function): {self.config.sum_objective_function}")
-        
-        self.config.g_abs_sum = f"{np.sum(np.abs(G_opt)):.4g}"
-        print(f"G_optの絶対値の総和: {self.config.g_abs_sum}")
-
-        mean_vars = []
-        for k in range(m):
-            V_k = G_opt[cum[k]:cum[k+1], :]
-            var_k = np.var(V_k, axis=0)
-            mean_vars.append(np.mean(var_k))
-        self.config.g_mean_var = f"{np.mean(mean_vars):.4g}"
-        print(f"機関ごとのベクトル分散の平均: {self.config.g_mean_var}")
-
-        self.config.g_condition_number = "N/A (Gurobi)"
-        print(f"条件数: {self.config.g_condition_number}")
-
-        # Jreg, norm_val も計算
-        self.config.jreg_gep = f"{model.ObjVal:.6g}"
-        print(f"Jreg (Gurobi) = {self.config.jreg_gep}")
-
-        norm_val_sum = 0.0
-        for j in range(p_hat):
-            gj = G_opt[:, j]
-            for k in range(m):
-                gjk = gj[cum[k]:cum[k+1]]
-                Sk = self.anchors_inter[k]
-                norm_vec = Sk @ gjk
-                norm_val_sum += norm_vec @ norm_vec
-        avg_norm_val = norm_val_sum / p_hat
-        self.config.g_norm_val_gep = f"{avg_norm_val:.6g}"
-        print(f"norm (Gurobi) = {self.config.g_norm_val_gep}")
-
 
     def make_integrate_expression_odc(self) -> None:
         """
@@ -1595,8 +1485,11 @@ class DataCollaborationAnalysis:
         epsilon   = 1e-6
         B_s_tilde = reduce(lambda a, b: block_diag(a, b), blocks) + epsilon * np.eye(sum(S.shape[1] for S in Ss))
         A_s_tilde = 2 * m * B_s_tilde - 2 * (W_s_tilde.T @ W_s_tilde)
-
-        eigvals, eigvecs = eigh(A_s_tilde, B_s_tilde)
+        
+        if self.config.orth_ver:
+            eigvals, eigvecs = eigh(A_s_tilde)
+        else:
+            eigvals, eigvecs = eigh(A_s_tilde, B_s_tilde)
         order = np.argsort(eigvals)
         V_sel = eigvecs[:, order[:p_hat]]  # (Σd_k, p_hat)
 
@@ -1816,30 +1709,35 @@ class DataCollaborationAnalysis:
         self.G_init = G_opt
         self.beta_init = beta_opt
 
+
     def make_integrate_gen_eig_fitting_objective(self) -> None:
         """
         NN(θ) + 統合行列 G を同時最適化（Adam）。
-        - 列ごとに Bノルム=1 制約を“射影”で厳密に満たす（B=S_k^T S_k をブロック対角に並べたもの）
-        - 直交罰則は各機関ブロック G^{(k)} に対して Euclid（Bなし）：off-diagonal を 0 に寄せる
-        - λ は J_pred に掛ける（J = λ*Jpred + Jreg + Jortho）
-
-        Jpred(θ,G) = Σ_k CE( y^(k), NN( X^(k) G^(k); θ ) )
-        Jreg(G)    = Σ_j [ 2m Σ_k g_jk^T (S_k^T S_k) g_jk  - 2 || Σ_k S_k g_jk ||^2 ]
-        Jortho(G)  = μ Σ_k || OffDiag( (G^{(k)})^T G^{(k)} ) ||_F^2
+        目的:  λ*J_pred(θ,G) + J_reg(G) + μ*J_B-ortho(G)
+        制約:  diag(G^T B G) = 1  （列ごと B-ノルム=1 を射影で課す）
+        罰則:  J_B-ortho = Σ_{i≠j} (v_i^T B v_j)^2
         """
         import numpy as np
         import torch
         import torch.nn as nn
+        import torch.optim.lr_scheduler as lr_scheduler
 
-        print("******************** 統合表現 (NN + Bノルム制約 + Gk直交罰則) ********************")
-
-        # -------------------- 0) config --------------------
+        # ---------- config ----------
         m      = int(self.config.num_institution)
         p_hat  = int(self.config.dim_integrate)
 
-        lam_pred   = float(getattr(self.config, "lambda_pred", None) or 0)   # ★ 予測損の重み
-        mu_ortho   = float(getattr(self.config, "lambda_g_ortho", None) or 0)  # Gk 直交罰則
-        # （必要なら Jreg にも重みを付けたい場合は lambda_reg を追加して下さい）
+        # パラメータでバージョンを切り替え
+        orth_ver = bool(getattr(self.config, "orth_ver", None) or False)
+
+        if orth_ver:
+            print("***** 統合表現 (NN + ユークリッドノルム制約 + 直交罰則) *****")
+        else:
+            print("***** 統合表現 (NN + Bノルム制約 + B直交罰則) *****")
+
+
+        lam_pred   = float(getattr(self.config, "lambda_pred", None) or 0)
+        lam_reg    = float(getattr(self.config, "lambda_reg", None) or 1.0) # ★ Jregの重みを追加
+        mu_off     = float(getattr(self.config, "lambda_offdiag", None) or 0.0)
 
         max_it      = int(getattr(self.config, "gd_max_iter", None) or 1000)
         lr_theta    = float(getattr(self.config, "gd_lr_theta", None) or getattr(self.config, "gd_lr", None) or 1e-3)
@@ -1850,36 +1748,35 @@ class DataCollaborationAnalysis:
         tol         = float(getattr(self.config, "gd_tol", None) or 1e-6)
         print_every = int(getattr(self.config, "gd_print_every", None) or 100)
         seed        = int(getattr(self.config, "gd_seed", None) or 0)
+        
+        # ★ 学習率スケジューラの設定
+        lr_step_size = int(getattr(self.config, "lr_step_size", None) or 500)
+        lr_gamma     = float(getattr(self.config, "lr_gamma", None) or 0.5)
 
         torch.manual_seed(seed); np.random.seed(seed)
 
-        # データ（_inter を優先）
+        # ---------- data (inter を優先) ----------
         S_list   = getattr(self, "anchors_inter", None) or self.anchors
         Xtr_list = getattr(self, "Xs_train_inter", None) or self.Xs_train
         Xte_list = getattr(self, "Xs_test_inter",  None) or self.Xs_test
         ytr_list = self.ys_train
-        yte_list = self.ys_test
 
-        assert len(S_list)==m and len(Xtr_list)==m and len(Xte_list)==m, "m とリスト長の不一致。"
-        dims = [S.shape[1] for S in S_list]                 # d_k
-        dtot = int(sum(dims)); cum = np.cumsum([0]+dims)
+        dims = [S.shape[1] for S in S_list]; dtot = int(sum(dims)); cum = np.cumsum([0]+dims)
         rdim = S_list[0].shape[0]
-        STS_np = [S.T @ S for S in S_list]                  # B_k
+        STS_np = [S.T @ S for S in S_list]
 
         num_classes = int(max(int(y.max()) for y in ytr_list) + 1)
 
-        # -------------------- 1) tensors --------------------
+        # ---------- tensors ----------
         device = torch.device("cpu")
         dtype  = torch.double
         Xtr = [torch.tensor(X, dtype=dtype, device=device) for X in Xtr_list]
-        Xte = [torch.tensor(X, dtype=dtype, device=device) for X in Xte_list]
         ytr = [torch.tensor(y.astype(int), dtype=torch.long, device=device) for y in ytr_list]
-        yte = [torch.tensor(y.astype(int), dtype=torch.long, device=device) for y in yte_list]
         S   = [torch.tensor(Si, dtype=dtype, device=device) for Si in S_list]
         STS = [torch.tensor(M,  dtype=dtype, device=device) for M in STS_np]
 
-        # -------------------- 2) model & variables --------------------
-        hidden = getattr(self.config, "nn_hidden", None) or [64, 32]
+        # ---------- NN model ----------
+        hidden = getattr(self.config, "nn_hidden", None) or [256]
         layers, in_dim = [], p_hat
         for h in hidden:
             layers += [nn.Linear(in_dim, h, bias=True), nn.ReLU()]
@@ -1887,36 +1784,33 @@ class DataCollaborationAnalysis:
         layers += [nn.Linear(in_dim, num_classes, bias=True)]
         model = nn.Sequential(*layers).to(device).double()
 
-        # 初期 G
+        # ---------- init G & projection (Bノルム=1 列ごと) ----------
         G_init = getattr(self, "G_init", None)
         if G_init is None or G_init.shape != (dtot, p_hat):
             G_np = 0.01 * np.random.randn(dtot, p_hat)
         else:
             G_np = np.array(G_init, copy=True)
 
-        # 列ごと Bノルム=1 に正規化（制約射影）
-        def project_columns_Bnorm(G_np: np.ndarray) -> np.ndarray:
+        def project_columns(G_np: np.ndarray) -> np.ndarray:
             for j in range(p_hat):
                 vj = G_np[:, j].copy()
                 norm2 = 0.0
                 for k in range(m):
                     vjk = vj[cum[k]:cum[k+1]]
-                    norm2 += float(vjk.T @ STS_np[k] @ vjk)
-                if norm2 > 0:
+                    if orth_ver:
+                        norm2 += float(vjk.T @ vjk)
+                    else:
+                        norm2 += float(vjk.T @ STS_np[k] @ vjk)
+                if norm2 > 1e-9:
                     G_np[:, j] = vj / np.sqrt(norm2)
             return G_np
 
-        G_np = project_columns_Bnorm(G_np)
+        G_np = project_columns(G_np)
         G = torch.tensor(G_np, dtype=dtype, device=device, requires_grad=True)
 
-        opt = torch.optim.Adam(
-            [{"params": model.parameters(), "lr": lr_theta, "weight_decay": weight_decay},
-            {"params": [G],               "lr": lr_G,     "weight_decay": 0.0}],
-            betas=betas
-        )
+        # ---------- helpers ----------
         ce = nn.CrossEntropyLoss(reduction="sum")
 
-        # 整合化項（値）
         def reg_term(G: torch.Tensor) -> torch.Tensor:
             tot = torch.tensor(0.0, dtype=dtype, device=device)
             for j in range(p_hat):
@@ -1925,118 +1819,422 @@ class DataCollaborationAnalysis:
                 sumS  = torch.zeros(rdim, dtype=dtype, device=device)
                 for k in range(m):
                     gjk = gj[cum[k]:cum[k+1]]
-                    term1 = term1 + (gjk @ (STS[k] @ gjk))   # g^T B_k g
-                    sumS  = sumS  + (S[k] @ gjk)             # S_k g
+                    term1 = term1 + (gjk @ (STS[k] @ gjk))
+                    sumS  = sumS  + (S[k] @ gjk)
                 tot = tot + (2.0*m)*term1 - 2.0*(sumS @ sumS)
             return tot
 
-        # Gk 直交（Euclid, off-diagonalのみ）
-        def ortho_penalty_blockwise_offdiag(G: torch.Tensor) -> torch.Tensor:
-            if mu_ortho == 0.0:
-                return torch.tensor(0.0, dtype=dtype, device=device)
-            tot = torch.tensor(0.0, dtype=dtype, device=device)
+        def B_times_G(G: torch.Tensor) -> torch.Tensor:
+            blocks = []
             for k in range(m):
-                Gk   = G[cum[k]:cum[k+1], :]              # d_k × p̂
-                Gram = 0.5 * (Gk.T @ Gk + (Gk.T @ Gk).T)  # 対称化
-                off  = Gram - torch.diag(torch.diag(Gram))
-                tot += (off ** 2).sum()
-            return mu_ortho * tot
+                Gk = G[cum[k]:cum[k+1], :]
+                blocks.append(STS[k] @ Gk)
+            return torch.vstack(blocks)
 
-        # -------------------- 3) training --------------------
+        def offdiag_penalty(G: torch.Tensor) -> torch.Tensor:
+            if mu_off == 0.0:
+                return torch.tensor(0.0, dtype=dtype, device=device)
+            
+            if orth_ver:
+                M = G.T @ G
+            else:
+                BG = B_times_G(G)
+                M  = G.T @ BG
+            
+            off = M - torch.diag(torch.diag(M))
+            return mu_off * torch.sum(off**2)
+
+
+        # ---------- optimizer & scheduler ★ ----------
+        opt = torch.optim.Adam(
+            [{"params": model.parameters(), "lr": lr_theta, "weight_decay": weight_decay},
+             {"params": [G], "lr": lr_G, "weight_decay": 0.0}],
+            betas=betas
+        )
+        scheduler = lr_scheduler.StepLR(opt, step_size=lr_step_size, gamma=lr_gamma)
+
+        # ---------- training loop ----------
         last_obj = None
         for it in range(1, max_it + 1):
             opt.zero_grad()
 
-            # 予測損（合計）
             Jpred = torch.tensor(0.0, dtype=dtype, device=device)
             for k in range(m):
                 Gk = G[cum[k]:cum[k+1], :]
-                xhat_k = Xtr[k] @ Gk
-                logits = model(xhat_k)
-                Jpred = Jpred + ce(logits, ytr[k])
+                logits = model(Xtr[k] @ Gk)
+                Jpred += ce(logits, ytr[k])
 
-            Jreg   = reg_term(G)
-            Jortho = ortho_penalty_blockwise_offdiag(G)
+            Jreg  = reg_term(G)
+            Joff  = offdiag_penalty(G)
 
-            # ★ λ は予測損に掛ける
-            obj = lam_pred * Jpred + Jreg + Jortho
-
+            obj = lam_pred * Jpred + lam_reg * Jreg + Joff
             obj.backward()
+
             if grad_clip and grad_clip > 0.0:
                 torch.nn.utils.clip_grad_norm_(list(model.parameters()) + [G], max_norm=grad_clip)
-            opt.step()
 
-            # 列ごと Bノルム=1 に再正規化（制約厳密化）
+            opt.step()
+            scheduler.step() # ★ スケジューラを更新
+
             with torch.no_grad():
-                G_np = G.detach().cpu().numpy()
-                G_np = project_columns_Bnorm(G_np)
+                G_np = project_columns(G.detach().cpu().numpy())
                 G.data[:] = torch.tensor(G_np, dtype=dtype, device=device)
 
-            # ログ & 収束
             if print_every and (it % print_every == 0 or it == 1 or it == max_it):
                 val = float(obj.detach().cpu().numpy())
+                # ★ 勾配ノルムと学習率をログに追加
+                g_norm_G = torch.norm(G.grad).item() if G.grad is not None else 0.0
+                g_norm_theta_list = [p.grad.flatten() for p in model.parameters() if p.grad is not None]
+                g_norm_theta = torch.norm(torch.cat(g_norm_theta_list)).item() if g_norm_theta_list else 0.0
+                current_lr = scheduler.get_last_lr()[0]
+
                 if last_obj is None:
-                    print(f"iter {it:5d} | J={val:.6g} | λJpred={float(lam_pred*Jpred):.6g} | "
-                        f"Jreg={float(Jreg):.6g} | Jortho={float(Jortho):.6g}")
+                    print(f"iter {it:5d} | J={val:.6g} | λJpred={float(lam_pred*Jpred):.6g} | Jreg={float(lam_reg*Jreg):.6g} | Joff={float(Joff):.6g} | ∇G={g_norm_G:.2e} | ∇θ={g_norm_theta:.2e} | lr={current_lr:.2e}")
                 else:
                     rel = abs(last_obj - val) / (1.0 + abs(last_obj))
-                    print(f"iter {it:5d} | J={val:.6g} | relΔ={rel:.3e} | λJpred={float(lam_pred*Jpred):.6g} | "
-                        f"Jreg={float(Jreg):.6g} | Jortho={float(Jortho):.6g}")
+                    print(f"iter {it:5d} | J={val:.6g} | relΔ={rel:.3e} | λJpred={float(lam_pred*Jpred):.6g} | Jreg={float(lam_reg*Jreg):.6g} | Joff={float(Joff):.6g} | ∇G={g_norm_G:.2e} | ∇θ={g_norm_theta:.2e} | lr={current_lr:.2e}")
                     if rel < tol:
-                        print("Converged by tolerance.")
-                        break
+                        print("Converged by tolerance."); break
                 last_obj = val
-            
 
-        # -------------------- 4) embeddings --------------------
+        # ---------- build embeddings & save results ----------
         G_opt = G.detach().cpu().numpy()
         Xs_train_integrate, Xs_test_integrate = [], []
         for k in range(m):
             Gk = G_opt[cum[k]:cum[k+1], :]
-            Xs_train_integrate.append((self.Xs_train_inter if getattr(self, "Xs_train_inter", None) is not None else self.Xs_train)[k] @ Gk)
-            Xs_test_integrate.append((self.Xs_test_inter  if getattr(self, "Xs_test_inter",  None) is not None else self.Xs_test)[k]   @ Gk)
+            Xs_train_integrate.append(self.Xs_train_inter[k] @ Gk)
+            Xs_test_integrate.append(self.Xs_test_inter[k]  @ Gk)
 
         self.X_train_integ = np.vstack(Xs_train_integrate)
         self.X_test_integ  = np.vstack(Xs_test_integrate)
         self.y_train_integ = np.hstack(self.ys_train)
         self.y_test_integ  = np.hstack(self.ys_test)
         self.G_init = G_opt
+
+        self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
+        self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
         
-        # --- ノルム値の計算 ---
-        norm_val_sum = 0.0
-        G_opt_torch = torch.tensor(G_opt, dtype=dtype, device=device)
+                # --- [検証] G_optがGEPの解の性質を満たすか ---
+        print("\n--- [検証] G_opt がGEPの解の性質を満たすか ---")
+        from scipy.linalg import block_diag
+        from numpy.linalg import norm
+
+        # 1. 行列 A, B を構築
+        Ss_np = self.anchors_inter
+        SkT_Sk_np = [S.T @ S for S in Ss_np]
+        
+        # B = blkdiag(S_k^T S_k)
+        B_s_tilde = block_diag(*SkT_Sk_np)
+
+        # --- [検証] B_s_tilde の正定値性 ---
+        try:
+            eigvals_B = np.linalg.eigvalsh(B_s_tilde)
+            min_eig_B = np.min(eigvals_B)
+            print(f"\n[検証] B_s_tilde の最小固有値: {min_eig_B:.6g}")
+            if min_eig_B > 0:
+                print("[検証] B_s_tilde は正定値です。\n")
+            else:
+                print("[検証] B_s_tilde は正定値ではありません。\n")
+        except np.linalg.LinAlgError:
+            print("[検証] B_s_tilde の固有値計算に失敗しました。\n")
+        
+        # W = hstack(S_k)
+        W_s_tilde = np.hstack(Ss_np)
+        
+        # A = 2m B - 2 W^T W
+        A_s_tilde = 2 * m * B_s_tilde - 2 * (W_s_tilde.T @ W_s_tilde)
+        #print("A_s_tilde", A_s_tilde)
+        #print("B_s_tilde", B_s_tilde)
+
+        # 2. G_opt の各列 v_j について検証
+        eigenvalues_from_v = []
         for j in range(p_hat):
-            norm_val = 0
-            gj = G_opt_torch[:, j]
-            for k in range(m):
-                gjk = gj[cum[k]:cum[k+1]]
-                Sk = S[k] # torch.Tensor
-                norm_vec = Sk @ gjk
-                norm_val_sum += norm_vec @ norm_vec
-                norm_val += norm_vec @ norm_vec
-            print(f"norm (MO) = {norm_val:.6g} (j={j})")
+            v_j = G_opt[:, j]
+            
+            if j > 0:
+                v_prev = G_opt[:, j-1]
+                # ユークリッド内積ベースのコサイン類似度
+                cos_sim_vs = (v_j @ v_prev) / (norm(v_j) * norm(v_prev))
+                print(f"v_{j} vs v_{j-1}: ユークリッド コサイン類似度 = {cos_sim_vs:.6f}")
+                
+                # B-内積 (罰則項が0にしようとする値)
+                b_inner_product = v_j.T @ B_s_tilde @ v_prev
+                print(f"v_{j} vs v_{j-1}: B-内積 v_j^T B v_{j-1} = {b_inner_product:.6f} (→0に近いか？)")
+
+            # (7)式: v^T B v = 1 の検証
+            norm_val = v_j.T @ B_s_tilde @ v_j
+            print(f"v_{j}: 制約 v^T B v = {norm_val:.6f} (→1に近いか？)")
+
+            # (8)式: Av = λBv の検証
+            Av = A_s_tilde @ v_j
+            Bv = B_s_tilde @ v_j
+            
+            # Av と Bv のコサイン類似度で平行か確認
+            cos_sim = (Av @ Bv) / (norm(Av) * norm(Bv))
+            print(f"v_{j}: Av と Bv のコサイン類似度 = {cos_sim:.6f} (→1に近いか？)")
+
+            # 対応する固有値 λ を計算
+            lambda_j = v_j.T @ A_s_tilde @ v_j
+            eigenvalues_from_v.append(lambda_j)
+            print(f"v_{j}: 対応する固有値 λ = {lambda_j:.6f}")
+            print("-" * 20)
+
+        # 3. 固有値の和を計算
+        sum_lambda = np.sum(eigenvalues_from_v)
+        print(f"計算された固有値の総和: {sum_lambda:.6f}")
         
-        avg_norm_val = norm_val_sum / p_hat
-        self.config.g_norm_val_mo = f"{float(avg_norm_val):.6g}"
-        print(f"norm (MO) = {self.config.g_norm_val_mo}")
+        # ★【追加】Av - λBv の差のノルムを計算
+        diff_norm = norm(Av - lambda_j * Bv)
+        print(f"v_{j}: ||Av - λBv|| のノルム = {diff_norm:.6f} (→0に近いか？)")
         
-        # --- 制約項の値の評価 ---
-        # Jreg (目的関数第2項) の値を計算して記録
-        jreg_val = torch.tensor(0.0, dtype=dtype, device=device)
-        with torch.no_grad(): # 勾配計算は不要
+        # Jregの値を取得して比較
+        jreg_val_str = getattr(self.config, 'jreg_gep', 'N/A')
+        print(f"目的関数の正則化項 Jreg: {jreg_val_str} (→固有値の総和と近いか？)")
+        print("--- [検証] 終了 ---\n")
+
+    def make_integrate_gen_eig_logi_fitting_objective(self) -> None:
+
+        """
+        線形モデル + 統合行列 G を同時最適化（Adam）。
+        目的:  J_pred(β,G) + J_reg(G) + μ*J_ortho(G)
+        モデル: J_predはロジスティック回帰(分類) or 線形回帰(回帰)の損失
+        制約:  列ごとのノルム=1 を射影で課す
+        """
+        import numpy as np
+        import torch
+        import torch.nn as nn
+
+        # ---------- config ----------
+        m      = int(self.config.num_institution)
+        p_hat  = int(self.config.dim_integrate)
+        
+        orth_ver = bool(getattr(self.config, "orth_ver", None) or False)
+
+        if orth_ver:
+            print("***** 統合表現 (線形モデル + ユークリッドノルム制約 + 直交罰則) *****")
+        else:
+            print("***** 統合表現 (線形モデル + Bノルム制約 + B直交罰則) *****")
+
+        lam_pred   = float(getattr(self.config, "lambda_pred", None) or 1.0)
+        mu_off     = float(getattr(self.config, "lambda_b_offdiag", None) or 10000.0)
+
+        max_it      = int(getattr(self.config, "gd_max_iter", None) or 2000)
+        lr_beta     = float(getattr(self.config, "gd_lr_beta", None) or getattr(self.config, "gd_lr", None) or 1e-3)
+        lr_G        = float(getattr(self.config, "gd_lr_G", None) or getattr(self.config, "gd_lr", None) or 1e-2)
+        betas       = getattr(self.config, "gd_betas", None) or (0.9, 0.999)
+        weight_decay= float(getattr(self.config, "gd_weight_decay", None) or 0.0)
+        grad_clip   = float(getattr(self.config, "gd_grad_clip", None) or 0.0)
+        tol         = float(getattr(self.config, "gd_tol", None) or 1e-6)
+        print_every = int(getattr(self.config, "gd_print_every", None) or 100)
+        seed        = int(getattr(self.config, "gd_seed", None) or 0)
+        
+        early_stopping_patience = int(getattr(self.config, "early_stopping_patience", None) or 10)
+        use_early_stopping = early_stopping_patience > 0
+
+        torch.manual_seed(seed); np.random.seed(seed)
+
+        # ---------- data (inter を優先) ----------
+        S_list   = getattr(self, "anchors_inter", None) or self.anchors
+        Xtr_list = getattr(self, "Xs_train_inter", None) or self.Xs_train
+        Xte_list = getattr(self, "Xs_test_inter",  None) or self.Xs_test
+        ytr_list = self.ys_train
+        yte_list = self.ys_test
+
+        dims = [S.shape[1] for S in S_list]; dtot = int(sum(dims)); cum = np.cumsum([0]+dims)
+        rdim = S_list[0].shape[0]
+        STS_np = [S.T @ S for S in S_list]
+
+        # --- ★ 問題の種類を判別 (分類 or 回帰) ---
+        is_classification = np.issubdtype(ytr_list[0].dtype, np.integer)
+        if is_classification:
+            print("問題を「分類」として扱います。")
+            num_classes = int(max(int(y.max()) for y in ytr_list) + 1)
+            # 2クラス問題も多クラスとして扱う（CrossEntropyLossが対応）
+            if num_classes < 2: num_classes = 2 
+        else:
+            print("問題を「回帰」として扱います。")
+            num_classes = 1
+
+        # ---------- tensors ----------
+        device = torch.device("cpu")
+        dtype  = torch.double
+        Xtr = [torch.tensor(X, dtype=dtype, device=device) for X in Xtr_list]
+        Xte = [torch.tensor(X, dtype=dtype, device=device) for X in Xte_list]
+        if is_classification:
+            ytr = [torch.tensor(y.astype(int), dtype=torch.long, device=device) for y in ytr_list]
+            yte = [torch.tensor(y.astype(int), dtype=torch.long, device=device) for y in yte_list]
+        else: # 回帰
+            ytr = [torch.tensor(y, dtype=dtype, device=device) for y in ytr_list]
+            yte = [torch.tensor(y, dtype=dtype, device=device) for y in yte_list]
+        S   = [torch.tensor(Si, dtype=dtype, device=device) for Si in S_list]
+        STS = [torch.tensor(M,  dtype=dtype, device=device) for M in STS_np]
+
+        # ---------- ★ 線形モデルのパラメータ beta を初期化 ----------
+        beta_init = getattr(self, "beta_init", None)
+        beta_shape = (p_hat, num_classes) if num_classes > 1 else (p_hat,)
+        
+        if beta_init is not None and beta_init.shape == beta_shape:
+            beta_np = np.array(beta_init, copy=True)
+        else:
+            beta_np = 0.01 * np.random.randn(*beta_shape)
+        
+        beta = torch.tensor(beta_np, dtype=dtype, device=device, requires_grad=True)
+
+        # ---------- init G & projection ----------
+        G_init = getattr(self, "G_init", None)
+        if G_init is None or G_init.shape != (dtot, p_hat):
+            G_np = 0.01 * np.random.randn(dtot, p_hat)
+        else:
+            G_np = np.array(G_init, copy=True)
+
+        def project_columns(G_np: np.ndarray) -> np.ndarray:
             for j in range(p_hat):
-                gj = G_opt_torch[:, j]
+                vj = G_np[:, j].copy()
+                norm2 = 0.0
+                for k in range(m):
+                    vjk = vj[cum[k]:cum[k+1]]
+                    if orth_ver:
+                        norm2 += float(vjk.T @ vjk)
+                    else:
+                        norm2 += float(vjk.T @ STS_np[k] @ vjk)
+                if norm2 > 1e-9:
+                    G_np[:, j] = vj / np.sqrt(norm2)
+            return G_np
+
+        G_np = project_columns(G_np)
+        G = torch.tensor(G_np, dtype=dtype, device=device, requires_grad=True)
+
+        # ---------- helpers ----------
+        loss_func = nn.CrossEntropyLoss(reduction="sum") if is_classification else nn.MSELoss(reduction="sum")
+
+        def reg_term(G: torch.Tensor) -> torch.Tensor:
+            tot = torch.tensor(0.0, dtype=dtype, device=device)
+            for j in range(p_hat):
+                gj   = G[:, j]
                 term1 = torch.tensor(0.0, dtype=dtype, device=device)
-                sum_Sgj = torch.zeros(rdim, dtype=dtype, device=device)
+                sumS  = torch.zeros(rdim, dtype=dtype, device=device)
                 for k in range(m):
                     gjk = gj[cum[k]:cum[k+1]]
-                    Sk = S[k]         # ★ NumPy配列ではなく、Tensor版のSを使用
-                    SkT_Sk = STS[k]   # ★ 事前計算済みの S^T S を使用
-                    term1 = term1 + (gjk @ SkT_Sk @ gjk)
-                    sum_Sgj = sum_Sgj + (Sk @ gjk)
-                jreg_val = jreg_val + (2.0 * m * term1 - 2.0 * (sum_Sgj @ sum_Sgj))
-        self.config.jreg_gep = f"{jreg_val.item():.6g}"
-        print(f"Jreg (MO) = {self.config.jreg_gep}")
+                    if orth_ver:
+                        term1 = term1 + (gjk @ gjk)
+                    else:
+                        term1 = term1 + (gjk @ (STS[k] @ gjk))
+                    sumS  = sumS  + (S[k] @ gjk)
+                tot = tot + (2.0*m)*term1 - 2.0*(sumS @ sumS)
+            return tot
+
+        def B_times_G(G: torch.Tensor) -> torch.Tensor:
+            blocks = []
+            for k in range(m):
+                Gk = G[cum[k]:cum[k+1], :]
+                blocks.append(STS[k] @ Gk)
+            return torch.vstack(blocks)
+
+        def offdiag_penalty(G: torch.Tensor) -> torch.Tensor:
+            if mu_off == 0.0: return torch.tensor(0.0, dtype=dtype, device=device)
+            M = G.T @ G if orth_ver else G.T @ B_times_G(G)
+            off = M - torch.diag(torch.diag(M))
+            return mu_off * torch.sum(off**2)
+
+        # ---------- optimizer ----------
+        opt = torch.optim.Adam(
+            [{"params": [beta], "lr": lr_beta, "weight_decay": weight_decay},
+             {"params": [G], "lr": lr_G, "weight_decay": 0.0}],
+            betas=betas
+        )
+
+        # ---------- training loop ----------
+        last_obj = None
+        if use_early_stopping:
+            best_val_loss = float('inf')
+            patience_counter = 0
+            best_beta_state = None
+            best_G_state = None
+            print(f"Early stopping is enabled with patience = {early_stopping_patience}.")
+
+        for it in range(1, max_it + 1):
+            opt.zero_grad()
+
+            Jpred = torch.tensor(0.0, dtype=dtype, device=device)
+            for k in range(m):
+                Gk = G[cum[k]:cum[k+1], :]
+                Zk = Xtr[k] @ Gk
+                pred = Zk @ beta
+                if not is_classification: pred = pred.squeeze(-1)
+                Jpred += loss_func(pred, ytr[k])
+
+            Jreg  = reg_term(G)
+            Joff  = offdiag_penalty(G)
+
+            obj = lam_pred * Jpred + Jreg + Joff
+            obj.backward()
+
+            if grad_clip and grad_clip > 0.0:
+                torch.nn.utils.clip_grad_norm_([beta, G], max_norm=grad_clip)
+
+            opt.step()
+
+            with torch.no_grad():
+                G_np = project_columns(G.detach().cpu().numpy())
+                G.data[:] = torch.tensor(G_np, dtype=dtype, device=device)
+
+            if print_every and (it % print_every == 0 or it == 1 or it == max_it):
+                val = float(obj.detach().cpu().numpy())
+                log_msg = ""
+                if last_obj is None:
+                    log_msg = f"iter {it:5d} | J(train)={val:.6g} | λJpred={float(lam_pred*Jpred):.6g} | Jreg={float(Jreg):.6g} | Joff={float(Joff):.6g}"
+                else:
+                    rel = abs(last_obj - val) / (1.0 + abs(last_obj))
+                    log_msg = f"iter {it:5d} | J(train)={val:.6g} | relΔ={rel:.3e} | λJpred={float(lam_pred*Jpred):.6g} | Jreg={float(Jreg):.6g} | Joff={float(Joff):.6g}"
+                    if not use_early_stopping and rel < tol:
+                        print(log_msg); print("Converged by training objective tolerance."); break
+                last_obj = val
+                
+                if use_early_stopping:
+                    with torch.no_grad():
+                        val_loss = torch.tensor(0.0, dtype=dtype, device=device)
+                        for k in range(m):
+                            Gk = G[cum[k]:cum[k+1], :]
+                            Zk_val = Xte[k] @ Gk
+                            pred_val = Zk_val @ beta
+                            if not is_classification: pred_val = pred_val.squeeze(-1)
+                            val_loss += loss_func(pred_val, yte[k])
+                    
+                    val_loss_item = val_loss.item()
+                    log_msg += f" | J(val)={val_loss_item:.6g}"
+                    
+                    if val_loss_item < best_val_loss:
+                        best_val_loss = val_loss_item
+                        patience_counter = 0
+                        best_beta_state = beta.clone().detach()
+                        best_G_state = G.clone().detach()
+                    else:
+                        patience_counter += 1
+                    
+                    if patience_counter >= early_stopping_patience:
+                        print(log_msg); print(f"Early stopping triggered after {patience_counter} checks."); break
+                
+                print(log_msg)
+
+        if use_early_stopping and best_beta_state is not None:
+            print(f"\nRestoring model to the best state with validation loss: {best_val_loss:.6g}")
+            beta.data[:] = best_beta_state
+            G.data[:] = best_G_state
+
+        # ---------- build embeddings ----------
+        G_opt = G.detach().cpu().numpy()
+        Xs_train_integrate, Xs_test_integrate = [], []
+        for k in range(m):
+            Gk = G_opt[cum[k]:cum[k+1], :]
+            Xs_train_integrate.append((self.Xs_train_inter if hasattr(self, "Xs_train_inter") and self.Xs_train_inter else self.Xs_train)[k] @ Gk)
+            Xs_test_integrate.append((self.Xs_test_inter if hasattr(self, "Xs_test_inter") and self.Xs_test_inter else self.Xs_test)[k]   @ Gk)
+
+        self.X_train_integ = np.vstack(Xs_train_integrate)
+        self.X_test_integ  = np.vstack(Xs_test_integrate)
+        self.y_train_integ = np.hstack(self.ys_train)
+        self.y_test_integ  = np.hstack(self.ys_test)
+        self.G_init = G_opt
+        self.beta_init = beta.detach().cpu().numpy()
 
         print("統合表現の次元数:", self.X_train_integ.shape[1])
         self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
@@ -2071,14 +2269,24 @@ class DataCollaborationAnalysis:
         
         # A = 2m B - 2 W^T W
         A_s_tilde = 2 * m * B_s_tilde - 2 * (W_s_tilde.T @ W_s_tilde)
-        print("A_s_tilde", A_s_tilde)
-        print("B_s_tilde", B_s_tilde)
+        #print("A_s_tilde", A_s_tilde)
+        #print("B_s_tilde", B_s_tilde)
 
         # 2. G_opt の各列 v_j について検証
         eigenvalues_from_v = []
         for j in range(p_hat):
             v_j = G_opt[:, j]
             print(f"v_{j}", v_j)
+            
+            if j > 0:
+                v_prev = G_opt[:, j-1]
+                # ユークリッド内積ベースのコサイン類似度
+                cos_sim_vs = (v_j @ v_prev) / (norm(v_j) * norm(v_prev))
+                print(f"v_{j} vs v_{j-1}: ユークリッド コサイン類似度 = {cos_sim_vs:.6f}")
+                
+                # B-内積 (罰則項が0にしようとする値)
+                b_inner_product = v_j.T @ B_s_tilde @ v_prev
+                print(f"v_{j} vs v_{j-1}: B-内積 v_j^T B v_{j-1} = {b_inner_product:.6f} (→0に近いか？)")
 
             # (7)式: v^T B v = 1 の検証
             norm_val = v_j.T @ B_s_tilde @ v_j
@@ -2344,6 +2552,249 @@ class DataCollaborationAnalysis:
         self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
         self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
 
+    def make_integrate_gen_eig_fitting_objective_(self) -> None:
+        """
+        NN(θ) + 統合行列 G を同時最適化（Adam）。
+        目的:  λ*J_pred(θ,V) + tr(V^T Â_s V) + μ ||OffDiag(V^T B̃_s V)||_F^2
+        制約:  diag(V^T B̃_s V) = 1  （列ごと B-ノルム=1 を射影で課す）
+        orth_ver=True の場合、B-ノルム/B-直交の代わりにユークリッドノルム/直交を扱う
+        """
+        import numpy as np
+        import torch
+        import torch.nn as nn
+
+        print("***** 統合表現 (NN + Bノルム制約 + B直交オフ対角罰則) *****")
+
+        # ---------- config ----------
+        m      = int(self.config.num_institution)
+        p_hat  = int(self.config.dim_integrate)
+        
+        # パラメータでバージョンを切り替え
+        orth_ver = bool(getattr(self.config, "orth_ver", None) or False)
+
+        if orth_ver:
+            print("***** 統合表現 (NN + ユークリッドノルム制約 + 直交罰則) *****")
+        else:
+            print("***** 統合表現 (NN + Bノルム制約 + B直交罰則) *****")
+
+        lam_pred   = float(getattr(self.config, "lambda_pred", None) or 0.0)   # 予測損の重み λ
+        mu_off     = float(getattr(self.config, "lambda_b_offdiag", None) or 10000.0)  # B直交(オフ対角)の重み μ
+
+        max_it      = int(getattr(self.config, "gd_max_iter", None) or 2000)
+        lr_theta    = float(getattr(self.config, "gd_lr_theta", None) or getattr(self.config, "gd_lr", None) or 1e-3)
+        lr_G        = float(getattr(self.config, "gd_lr_G", None) or getattr(self.config, "gd_lr", None) or 1e-2)
+        betas       = getattr(self.config, "gd_betas", None) or (0.9, 0.999)
+        weight_decay= float(getattr(self.config, "gd_weight_decay", None) or 0.0)
+        grad_clip   = float(getattr(self.config, "gd_grad_clip", None) or 0.0)
+        tol         = float(getattr(self.config, "gd_tol", None) or 1e-6)
+        print_every = int(getattr(self.config, "gd_print_every", None) or 100)
+        seed        = int(getattr(self.config, "gd_seed", None) or 0)
+
+        torch.manual_seed(seed); np.random.seed(seed)
+
+        # ---------- data (inter を優先) ----------
+        S_list   = getattr(self, "anchors_inter", None) or self.anchors
+        Xtr_list = getattr(self, "Xs_train_inter", None) or self.Xs_train
+        Xte_list = getattr(self, "Xs_test_inter",  None) or self.Xs_test
+        ytr_list = self.ys_train
+        yte_list = self.ys_test
+
+        assert len(S_list)==m and len(Xtr_list)==m and len(Xte_list)==m, "m とリスト長の不一致。"
+        dims = [S.shape[1] for S in S_list]; dtot = int(sum(dims)); cum = np.cumsum([0]+dims)
+        rdim = S_list[0].shape[0]
+        STS_np = [S.T @ S for S in S_list]                        # B_k
+
+        num_classes = int(max(int(y.max()) for y in ytr_list) + 1)
+
+        # ---------- tensors ----------
+        device = torch.device("cpu")
+        dtype  = torch.double
+        Xtr = [torch.tensor(X, dtype=dtype, device=device) for X in Xtr_list]
+        Xte = [torch.tensor(X, dtype=dtype, device=device) for X in Xte_list]
+        ytr = [torch.tensor(y.astype(int), dtype=torch.long, device=device) for y in ytr_list]
+        S   = [torch.tensor(Si, dtype=dtype, device=device) for Si in S_list]
+        STS = [torch.tensor(M,  dtype=dtype, device=device) for M in STS_np]
+
+        # ---------- NN model ----------
+        hidden = getattr(self.config, "nn_hidden", None) or [64, 32]
+        layers, in_dim = [], p_hat
+        for h in hidden:
+            layers += [nn.Linear(in_dim, h, bias=True), nn.ReLU()]
+            in_dim = h
+        layers += [nn.Linear(in_dim, num_classes, bias=True)]
+        model = nn.Sequential(*layers).to(device).double()
+
+        # ---------- init G & projection (Bノルム=1 列ごと) ----------
+        G_init = getattr(self, "G_init", None)
+        if G_init is None or G_init.shape != (dtot, p_hat):
+            G_np = 0.01 * np.random.randn(dtot, p_hat)
+        else:
+            G_np = np.array(G_init, copy=True)
+
+        def project_columns(G_np: np.ndarray) -> np.ndarray:
+            for j in range(p_hat):
+                vj = G_np[:, j].copy()
+                norm2 = 0.0
+                for k in range(m):
+                    vjk = vj[cum[k]:cum[k+1]]
+                    if orth_ver:
+                        norm2 += float(vjk.T @ vjk)
+                    else:
+                        norm2 += float(vjk.T @ STS_np[k] @ vjk)
+                if norm2 > 1e-9:
+                    G_np[:, j] = vj / np.sqrt(norm2)
+            return G_np
+
+        G_np = project_columns(G_np)
+        G = torch.tensor(G_np, dtype=dtype, device=device, requires_grad=True)
+
+        # ---------- helpers ----------
+        ce = nn.CrossEntropyLoss(reduction="sum")
+
+        def reg_term(G: torch.Tensor) -> torch.Tensor:
+            # tr(V^T Â_s V) を明示的和で実装（既存と同じ）
+            tot = torch.tensor(0.0, dtype=dtype, device=device)
+            for j in range(p_hat):
+                gj   = G[:, j]
+                term1 = torch.tensor(0.0, dtype=dtype, device=device)
+                sumS  = torch.zeros(rdim, dtype=dtype, device=device)
+                for k in range(m):
+                    gjk = gj[cum[k]:cum[k+1]]
+                    term1 = term1 + (gjk @ (STS[k] @ gjk))   # g^T B_k g
+                    sumS  = sumS  + (S[k] @ gjk)             # S_k g
+                tot = tot + (2.0*m)*term1 - 2.0*(sumS @ sumS)
+            return tot
+
+        def B_times_G(G: torch.Tensor) -> torch.Tensor:
+            # BG = blkdiag(B_k) @ G
+            blocks = []
+            for k in range(m):
+                Gk = G[cum[k]:cum[k+1], :]
+                blocks.append(STS[k] @ Gk)
+            return torch.vstack(blocks)
+
+        def offdiag_penalty(G: torch.Tensor) -> torch.Tensor:
+            if mu_off == 0.0:
+                return torch.tensor(0.0, dtype=dtype, device=device)
+            
+            if orth_ver:
+                M = G.T @ G
+            else:
+                BG = B_times_G(G)
+                M  = G.T @ BG
+            
+            off = M - torch.diag(torch.diag(M))
+            return mu_off * torch.sum(off**2)
+
+        # ---------- optimizer ----------
+        opt = torch.optim.Adam(
+            [{"params": model.parameters(), "lr": lr_theta, "weight_decay": weight_decay},
+            {"params": [G],               "lr": lr_G,     "weight_decay": 0.0}],
+            betas=betas
+        )
+
+        # ---------- training loop ----------
+        last_obj = None
+        for it in range(1, max_it + 1):
+            opt.zero_grad()
+
+            # J_pred : Σ_k CE( NN(X_k G_k), y_k )
+            Jpred = torch.tensor(0.0, dtype=dtype, device=device)
+            for k in range(m):
+                Gk = G[cum[k]:cum[k+1], :]
+                logits = model(Xtr[k] @ Gk)
+                Jpred += ce(logits, ytr[k])
+
+            Jreg  = reg_term(G)
+            Joff  = offdiag_penalty(G)
+
+            obj = lam_pred * Jpred + Jreg + Joff
+            obj.backward()
+
+            if grad_clip and grad_clip > 0.0:
+                torch.nn.utils.clip_grad_norm_(list(model.parameters()) + [G], max_norm=grad_clip)
+
+            opt.step()
+
+            # 制約: 列ごとに B-ノルム=1 へ射影
+            with torch.no_grad():
+                G_np = project_columns(G.detach().cpu().numpy())
+                G.data[:] = torch.tensor(G_np, dtype=dtype, device=device)
+
+            if print_every and (it % print_every == 0 or it == 1 or it == max_it):
+                val = float(obj.detach().cpu().numpy())
+                if last_obj is None:
+                    print(f"iter {it:5d} | J={val:.6g} | λJpred={float(lam_pred*Jpred):.6g} | Jreg={float(Jreg):.6g} | Joff={float(Joff):.6g}")
+                else:
+                    rel = abs(last_obj - val) / (1.0 + abs(last_obj))
+                    print(f"iter {it:5d} | J={val:.6g} | relΔ={rel:.3e} | λJpred={float(lam_pred*Jpred):.6g} | Jreg={float(Jreg):.6g} | Joff={float(Joff):.6g}")
+                    if rel < tol:
+                        print("Converged by tolerance."); break
+                last_obj = val
+
+        # ---------- build embeddings ----------
+        G_opt = G.detach().cpu().numpy()
+        Xs_train_integrate, Xs_test_integrate = [], []
+        for k in range(m):
+            Gk = G_opt[cum[k]:cum[k+1], :]
+            Xs_train_integrate.append((self.Xs_train_inter if getattr(self, "Xs_train_inter", None) is not None else self.Xs_train)[k] @ Gk)
+            Xs_test_integrate.append((self.Xs_test_inter  if getattr(self, "Xs_test_inter",  None) is not None else self.Xs_test)[k]   @ Gk)
+
+        self.X_train_integ = np.vstack(Xs_train_integrate)
+        self.X_test_integ  = np.vstack(Xs_test_integrate)
+        self.y_train_integ = np.hstack(self.ys_train)
+        self.y_test_integ  = np.hstack(self.ys_test)
+        self.G_init = G_opt
+
+        print("統合表現の次元数:", self.X_train_integ.shape[1])
+        self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
+        self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
+
+    from numpy.linalg import cholesky, inv
+
+    def cca_projection_matrix(S, Y, p_hat, ridge=0.0, rho_x=1e-6, rho_y=1e-6):
+        # 中心化
+        S = S - S.mean(0, keepdims=True)
+        Y = Y - Y.mean(0, keepdims=True)
+
+        Sxx = S.T @ S + rho_x * np.eye(S.shape[1])
+        Syy = Y.T @ Y + rho_y * np.eye(Y.shape[1])
+        Sxy = S.T @ Y
+
+        Lx = cholesky(Sxx); Ly = cholesky(Syy)
+        C  = np.linalg.solve(Lx, Sxy) @ np.linalg.solve(Ly, np.eye(Ly.shape[0])).T
+        # C = Lx^{-1} Sxy Ly^{-T}
+
+        # SVD（対称ではないので普通の SVD でOK）
+        U, sing, Vt = np.linalg.svd(C, full_matrices=False)
+        A = np.linalg.solve(Lx.T, U[:, :p_hat])       # S側重み p x p_hat
+        Uscore = S @ A                                # n x p_hat
+
+        G = Uscore.T @ Uscore + ridge * np.eye(p_hat) # p_hat x p_hat
+        P = Uscore @ np.linalg.solve(G, Uscore.T)     # n x n  （ハット行列）
+        return P, A, Uscore
+
+    def kcca_projection_matrix(Ks, Ky, p_hat, ridge=0.0, kx=1e-3, ky=1e-3):
+        # 二重中心化
+        n = Ks.shape[0]
+        H = np.eye(n) - np.ones((n,n))/n
+        Ks = H @ Ks @ H
+        Ky = H @ Ky @ H
+
+        # ホワイトニング
+        # （数値安定のため固有分解で -1/2 を作ってもOK）
+        from scipy.linalg import fractional_matrix_power
+        Ks_mh = fractional_matrix_power(Ks + kx*np.eye(n), -0.5)
+        Ky_mh = fractional_matrix_power(Ky + ky*np.eye(n), -0.5)
+
+        C = Ks_mh @ Ks @ Ky @ Ky_mh
+        U, sing, Vt = np.linalg.svd(C, full_matrices=False)
+        A = Ks_mh @ U[:, :p_hat]               # n x p_hat（S側の双対係数）
+        Uscore = Ks @ A                        # n x p_hat
+
+        G = Uscore.T @ Uscore + ridge * np.eye(p_hat)
+        P = Uscore @ np.linalg.solve(G, Uscore.T)   # n x n
+        return P, A, Uscore
     
     def visualize_representations(self, save_dir: Optional[str] = None) -> None:
         """
@@ -2444,7 +2895,7 @@ class DataCollaborationAnalysis:
         plt.tight_layout(rect=[0, 0.03, 1, 0.97])
         if save_dir:
             Path(save_dir).mkdir(parents=True, exist_ok=True)
-            plt.savefig(Path(save_dir) / f"_0828_{self.config.lambda_nn_reg}_{self.config.dataset}_{self.config.G_type}.png")
+            plt.savefig(Path(save_dir) / self.config.plot_name)
         """
         # --- テストデータの可視化 ---
         fig_test, axes_test = plt.subplots(num_institutions, 4, figsize=(24, 5 * num_institutions), squeeze=False)
