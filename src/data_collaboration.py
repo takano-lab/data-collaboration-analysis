@@ -118,7 +118,7 @@ class DataCollaborationAnalysis:
 
         print(f"✅ 最適パラメータ saved to: {save_path}")
         
-    def assign_anchor_labels(self, k=5):
+    def assign_anchor_labels(self, k=5): # リークしてる
         """
         self.anchor に対して、self.Xs_train, self.ys_train を使い
         k-NN多数決でラベルを付与し self.anchor_y に格納する
@@ -131,6 +131,66 @@ class DataCollaborationAnalysis:
         knn = KNeighborsClassifier(n_neighbors=k)
         knn.fit(X_train_all, y_train_all)
         self.anchor_y = knn.predict(self.anchor)
+    
+    def build_laplacians_from_anchor_labels(self, gamma: Optional[float] = None) -> None:
+        """
+        アンカーデータとそのラベルを用いて、
+        同ラベル近接ラプラシアン(L_within)と異ラベル分離ラプラシアン(L_between)を構築する。
+        結果は self.L_within と self.L_between に保存される。
+
+        Args:
+            gamma (Optional[float]): RBFカーネルのガンマ値。Noneの場合、1/n_features を使用。
+        """
+        if self.anchor.size == 0 or self.anchor_y.size == 0:
+            self.logger.warning("アンカーデータまたはアンカーラベルが未生成のため、ラプラシアンを構築できません。")
+            return
+
+        print("******************** ラプラシアン行列の構築 ********************")
+        from sklearn.metrics.pairwise import rbf_kernel
+
+        n_anchors = self.anchor.shape[0]
+        y = self.anchor_y
+
+        # 1. アンカー間の類似度行列 W を計算 (RBFカーネルを使用)
+        if gamma is None:
+            gamma = 1.0 / self.anchor.shape[1]  # デフォルトのガンマ値
+        
+        W = rbf_kernel(self.anchor, gamma=gamma)
+        np.fill_diagonal(W, 0) # 対角成分は0にする
+
+        # 2. ラベル情報に基づいて、同ラベルペアと異ラベルペアのマスクを作成
+        # y.reshape(-1, 1) == y.reshape(1, -1) は、(i,j)成分が y_i == y_j かどうかを示すブール行列
+        same_label_mask = (y.reshape(-1, 1) == y.reshape(1, -1))
+        diff_label_mask = ~same_label_mask
+
+        # 3. 同ラベル近接ラプラシアン L_within (L_w) の構築
+        W_within = W * same_label_mask
+        D_within = np.diag(W_within.sum(axis=1))
+        self.L_within = D_within - W_within
+        
+        # 4. 異ラベル分離ラプラシアン L_between (L_b) の構築
+        W_between = W * diff_label_mask
+        D_between = np.diag(W_between.sum(axis=1))
+        self.L_between = D_between - W_between
+
+        # ★★★ ここから追加 ★★★
+        # 5. トレースで正規化
+        trace_Lw = np.trace(self.L_within)
+        if trace_Lw > 1e-9:
+            self.L_within /= trace_Lw
+            self.logger.info(f"L_within をトレース ({trace_Lw:.4g}) で正規化しました。")
+
+        trace_Lb = np.trace(self.L_between)
+        if trace_Lb > 1e-9:
+            self.L_between /= trace_Lb
+            self.logger.info(f"L_between をトレース ({trace_Lb:.4g}) で正規化しました。")
+        # ★★★ ここまで追加 ★★★
+
+        self.logger.info(f"同ラベル近接ラプラシアン (L_within) を構築しました。Shape: {self.L_within.shape}")
+        self.logger.info(f"異ラベル分離ラプラシアン (L_between) を構築しました。Shape: {self.L_between.shape}")
+
+        self.logger.info(f"同ラベル近接ラプラシアン (L_within) を構築しました。Shape: {self.L_within.shape}")
+        self.logger.info(f"異ラベル分離ラプラシアン (L_between) を構築しました。Shape: {self.L_between.shape}")
 
 
     def run(self) -> None:
@@ -150,8 +210,6 @@ class DataCollaborationAnalysis:
         self.anchor = self.produce_anchor(
             num_row=self.config.num_anchor_data, num_col=self.Xs_train[0].shape[1], seed=self.config.seed
         )
-        self.assign_anchor_labels(k=5)
-        
         
         
         # アンカーデータの生成
@@ -178,6 +236,8 @@ class DataCollaborationAnalysis:
         elif self.config.G_type == "ODC": # この分岐を追加
             self.make_integrate_expression_odc()
         elif self.config.G_type  == "nonlinear":
+            self.assign_anchor_labels(k=5)
+            self.build_laplacians_from_anchor_labels()
             self.make_integrate_nonlinear_expression()
         elif self.config.G_type  == "nonlinear_tuning":
             self.make_integrate_nonlinear_expression_tuning()
@@ -908,6 +968,8 @@ class DataCollaborationAnalysis:
         m  = len(self.anchors_inter)              # 機関数
         r  = self.anchors_inter[0].shape[0]       # アンカー行数
         p̂  = self.config.dim_integrate           # 統合表現次元
+        lw_alpha     = float(getattr(self.config, "lw_alpha", None) or 0) # 同ラベル近接ラプラシアンの重み
+        lb_beta      = float(getattr(self.config, "lb_beta", None) or 0) # 異ラベル分離ラプラシアンの重み
 
         Ks, Ps, gammas = [], [], []
         I_r = np.eye(r)
@@ -947,21 +1009,27 @@ class DataCollaborationAnalysis:
             
             Ks.append(K)
             Ps.append(K @ inv(K + lam * I_r))     # 射影
-
-        # --- 2. 固有値問題 → Z (r×p̂ , ‖Z‖_F=1) ---
+        
         M = sum((P - I_r).T @ (P - I_r) for P in Ps)
+        # M 正規化 ラプラシアンなしならしなくてよい
+        trace_M = np.trace(M)
+        if trace_M > 1e-9:
+            M /= trace_M
+        
+        # --- 2. 固有値問題 → Z (r×p̂ , ‖Z‖_F=1) --- 近接ラプラシアンの重みも加える
+        Q = M + lw_alpha * self.L_within - lb_beta * self.L_between
 
         # ❶ ほんのわずかな非対称を切り落とす
-        M = (M + M.T) * 0.5
+        Q = (Q + Q.T) * 0.5
         
         objective_direction_ratio = getattr(self.config, "objective_direction_ratio", 0)
         if objective_direction_ratio < 0:
             print(1)
-            idx, Z, eigvals, eigvecs = self.select_eigvecs_linear_hybrid(M, self.anchor_y, p_hat=p̂, objective_direction_ratio=objective_direction_ratio)
+            idx, Z, eigvals, eigvecs = self.select_eigvecs_linear_hybrid(Q, self.anchor_y, p_hat=p̂, objective_direction_ratio=objective_direction_ratio)
             print(2)
         else:
             # ❷ 実対称用の固有値分解を使う
-            eigvals, eigvecs = np.linalg.eigh(M)
+            eigvals, eigvecs = np.linalg.eigh(Q)
             # ❸ 念のため負の丸め誤差を 0 に
             eigvals[eigvals < 0] = 0.0
             Z = eigvecs[:, eigvals.argsort()[:p̂]]
@@ -1803,6 +1871,7 @@ class DataCollaborationAnalysis:
                         norm2 += float(vjk.T @ STS_np[k] @ vjk)
                 if norm2 > 1e-9:
                     G_np[:, j] = vj / np.sqrt(norm2)
+            #print("cj=", np.sqrt(norm2), "1に近いか？")
             return G_np
 
         G_np = project_columns(G_np)

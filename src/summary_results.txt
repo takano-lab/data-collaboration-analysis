@@ -1,0 +1,5 @@
+Image shape: 32x32, p=1024, anchors=1000
+RBF gamma (median heuristic) = 5.1380e-08
+linear                       k=800  MSE=  1284.035  PSNR= 17.05 dB  -> recon_linearPCA_k800.png
+kernel(RBF)->linear_recon    k=800  MSE= 12757.800  PSNR=  7.07 dB  -> recon_kernelPCA_RBF_linear_believer_k800.png
+Total runtime: 8.6 s

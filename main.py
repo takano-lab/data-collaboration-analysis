@@ -147,16 +147,16 @@ def main_loop():
         "mice",
       "statlog",
         'qsar',
-       "breast_cancer",
+    #   "breast_cancer",
     #   "har",
-        "adult",
+    #    "adult",
     #    "diabetes130",
     #    "bank_marketing", # 性能に変化でない
-    "digits",
-        "concentric_circles",
-     "concentric_three_circles",
-        "two_gaussian_distributions",
-        '3D_gaussian_clusters',
+    #"digits",
+    #    "concentric_circles",
+    # "concentric_three_circles",
+    #    "two_gaussian_distributions",
+    #    '3D_gaussian_clusters',
     #"digits_v2",
     #"housing",
     #"ames",
@@ -170,55 +170,57 @@ def main_loop():
     ]
     MODELS = ["mlp"]#, "mlp"]#"random_forest"]#, "svm_linear_classifier", "mlp"]#"mlp"]#, "svm_linear_classifier"] #"svm_classifier"]#"random_forest"]#, _linear_
     gamma_types = ["X_tuning"] 
-    F_types = ["kernel_pca_svd_mixed", "svd"]#"kernel_pca_svd_mixed", "svd", "kernel_pca_self_tuning"]#, "svd", "kernel_pca_self_tuning"]#"svd", "kernel_pca", "kernel_pca_self_tuning", ] # , "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    G_types = ["fl", 'centralize', 'individual', "ODC", "GEP", "nonlinear", "Imakura", "mlp_objective"]# "nonlinear_tuning"#'centralize_dim', "nonlinear", "Imakura"]#"nonlinear_tuning"]#, "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#["fl", 'centralize', 'individual', "Imakura", "ODC", "GEP", "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#'centralize_dim', "nonlinear", "Imakura"]#
+    F_types = ["kernel_pca_svd_mixed"]#"kernel_pca_svd_mixed", "svd", "kernel_pca_self_tuning"]#, "svd", "kernel_pca_self_tuning"]#"svd", "kernel_pca", "kernel_pca_self_tuning", ] # , "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
+    G_types = ['centralize', 'individual', "Imakura", "GEP", "ODC", "nonlinear"]# "nonlinear_tuning"#'centralize_dim', "nonlinear", "Imakura"]#"nonlinear_tuning"]#, "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#["fl", 'centralize', 'individual', "Imakura", "ODC", "GEP", "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#'centralize_dim', "nonlinear", "Imakura"]#
     # G_types = ["nonlinear"] mlp_objective
     config.F_type = F_types[0]
+    F_type = F_types[0]
+    config.True_F_type = F_types[0]
     config.G_type = G_types[0]
     config.objective_direction_ratio = 0
     config.gamma_type = "X_tuning"
     config.lambda_pred = 10
-    config.lambda_offdiag = 1000
+    config.lambda_offdiag = 100000
     config.h_model = MODELS[0]
     config.nl_lambda = 0.1
-    visualize = False
+    visualize = True
+    data = {}
     for dataset in tqdm(LOADERS):
         config.metrics = "auc"
-        data = {}
         for model in MODELS:
             config.h_model = model
             print(dataset)
             config.dataset = dataset
-            for F_type in F_types:
-                config.F_type = F_type
-                config.True_F_type = F_type
+            for lw_alpha in [0]:
+                config.lw_alpha = lw_alpha
+                config.lb_beta = lw_alpha
                 for G_type in G_types:
                     semi_orth_list = [(False, False)]
-                    if G_type == "GEP":
-                        semi_orth_list = [(False, False), (False, True), (True, False)]
+                    #if G_type == "GEP":
+                    #    semi_orth_list = [(False, False), (False, True), (True, False)]
                     for semi_integ, orth in semi_orth_list:
-                        if G_type != "GEP" :
-                            if [semi_integ, orth] != [False, False]:
-                                continue
+                        #if G_type != "GEP" :
+                            #if [semi_integ, orth] != [False, False]:
+                            #    continue
                         print(G_type, semi_integ, orth)
                         config.semi_integ = semi_integ
                         config.orth_ver = orth
                         config.G_type = G_type
                         metrics = []
-                        for i in range(1, 11):
+                        for i in range(1, 100):
                             config.seed = i
-                            config.plot_name = f"0830_2_{dataset}_{config.G_type}_{semi_integ}_{orth}_{config.lambda_pred}_{config.lambda_offdiag}.png" # {self.config.lambda_pred}_{self.config.dataset}
+                            config.plot_name = f"0831_{dataset}_{config.G_type}_{semi_integ}_{orth}_{config.lambda_pred}_{config.lambda_offdiag}.png" # {self.config.lambda_pred}_{self.config.dataset}
                             metrics.append(main(visualize))
                             config.F_type = config.True_F_type
                         # 平均値を計算
                         metrics_mean = sum(metrics) / len(metrics)
                         metrics_stdev = statistics.stdev(metrics) if len(metrics) > 1 else 0.0
-                        data[f'{dataset}_{model}_{F_type}_{config.G_type}_{semi_integ}_{orth}'] = [dataset, model, F_type, G_type, semi_integ, orth, metrics_mean, metrics_stdev]
+                        data[f'{dataset}_{F_type}_{model}_{config.G_type}_{semi_integ}_{orth}_{lw_alpha}'] = [dataset, model, F_type, G_type, semi_integ, orth, lw_alpha, metrics_mean, metrics_stdev]
 
 
-        # DataFrameに変換
-        df_all = pd.DataFrame.from_dict(data, orient="index", columns=["dataset", "model", "F_type", "G_type", "semi_integ", "orth", "metrics_mean", "metrics_stdev"])
-        df_all.to_csv(output_path / f"result_{dataset}.csv", index=True, encoding="utf-8-sig")
+    # DataFrameに変換
+    df_all = pd.DataFrame.from_dict(data, orient="index", columns=["dataset", "model", "F_type", "G_type", "semi_integ", "orth", "lw_alpha", "metrics_mean", "metrics_stdev"])
+    df_all.to_csv(output_path / f"result.csv", index=True, encoding="utf-8-sig")
 
 def partial_run():
     logger.info(f"データセット: {config.dataset}")

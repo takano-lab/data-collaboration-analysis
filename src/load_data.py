@@ -153,7 +153,7 @@ def _load_two_gaussian_distributions_df() -> pd.DataFrame:
     return df
 
 def _load_3D_gaussian_clusters_df() -> pd.DataFrame:
-    path = Path("input/3D_3_Gaussian_Clusters.csv")
+    path = Path("input/3D_8_Gaussian_Clusters.csv")
     df = pd.read_csv(path)
 
     # "target" 列以外を標準化
@@ -377,7 +377,7 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.num_institution_user = 25
         config.num_institution = 20
         config.num_anchor_data = 396
-        config.metrics = "accuracy"
+        #config.metrics = "accuracy"
     
     elif config.dataset == "adult":
         config.feature_num = 51
@@ -403,7 +403,7 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.num_institution_user = 50
         #config.num_institution = 10
         config.num_anchor_data = 693
-        config.metrics = "accuracy"        
+        #config.metrics = "accuracy"        
 
     elif config.dataset == 'breast_cancer':
         config.feature_num = 15  # 特徴量の数（目的変数を除く）
@@ -411,7 +411,7 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.dim_integrate = config.feature_num-1 # 統合表現の次元数
         config.num_institution_user = 16
         config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
-        config.metrics = "accuracy"
+        #config.metrics = "accuracy"
         
     elif config.dataset == 'digits':
         #feature_num = 15  # 特徴量の数（目的変数を除く）
