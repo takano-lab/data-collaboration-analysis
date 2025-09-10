@@ -136,6 +136,7 @@ def _load_concentric_three_circles_df() -> pd.DataFrame:
     # "target" 列以外を標準化
     scaler = StandardScaler()
     feature_columns = [col for col in df.columns if col != "target"]
+    df = df.sample(frac=1).reset_index(drop=True)
     df[feature_columns] = scaler.fit_transform(df[feature_columns])
 
     return df
@@ -153,12 +154,23 @@ def _load_two_gaussian_distributions_df() -> pd.DataFrame:
     return df
 
 def _load_3D_gaussian_clusters_df() -> pd.DataFrame:
-    path = Path("input/3D_8_Gaussian_Clusters.csv")
+    path = Path("input/3D_3_Gaussian_Clusters.csv")
     df = pd.read_csv(path)
-
     # "target" 列以外を標準化
     scaler = StandardScaler()
     feature_columns = [col for col in df.columns if col != "target"]
+    df = df.sample(frac=1).reset_index(drop=True)
+    df[feature_columns] = scaler.fit_transform(df[feature_columns])
+
+    return df
+
+def _load_3D_8_gaussian_clusters_df() -> pd.DataFrame:
+    path = Path("input/3D_8_Gaussian_Clusters.csv")
+    df = pd.read_csv(path)
+    # "target" 列以外を標準化
+    scaler = StandardScaler()
+    feature_columns = [col for col in df.columns if col != "target"]
+    df = df.sample(frac=1).reset_index(drop=True)
     df[feature_columns] = scaler.fit_transform(df[feature_columns])
 
     return df
@@ -314,6 +326,7 @@ LOADERS = {
     "concentric_three_circles": _load_concentric_three_circles_df,
     "two_gaussian_distributions": _load_two_gaussian_distributions_df,
     "3D_gaussian_clusters": _load_3D_gaussian_clusters_df,
+    "3D_8_gaussian_clusters": _load_3D_8_gaussian_clusters_df,
     "mice": _load_mice_df,
     "housing": _load_housing,
 
@@ -401,8 +414,8 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.dim_intermediate = 46 # 中間表現の次元数
         config.dim_integrate = 46 # 統合表現の次元数
         config.num_institution_user = 50
-        #config.num_institution = 10
-        config.num_anchor_data = 693
+        config.num_institution = 5
+        #config.num_anchor_data = 693
         #config.metrics = "accuracy"        
 
     elif config.dataset == 'breast_cancer':
@@ -435,14 +448,14 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.feature_num = 2
         config.dim_intermediate = 2  # 中間表現の次元数
         config.dim_integrate = 2  # 統合表現の次元数
-        config.num_institution = 4
+        config.num_institution = 2
         config.num_institution_user = int(len(df) / (config.num_institution * 2))                                                              
 
     elif config.dataset == 'concentric_three_circles':
         config.feature_num = 2
         config.dim_intermediate = 2  # 中間表現の次元数
         config.dim_integrate = 2  # 統合表現の次元数
-        config.num_institution = 4
+        config.num_institution = 2
         config.num_institution_user = int(len(df) / (config.num_institution * 2))               
         
     elif config.dataset == 'two_gaussian_distributions':
@@ -456,9 +469,16 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.feature_num = 3
         config.dim_intermediate = 2
         config.dim_integrate = 2
-        config.num_institution = 3
+        config.num_institution = 2
         config.num_institution_user = int(len(df) / (config.num_institution * 2))       
     
+    elif config.dataset == '3D_8_gaussian_clusters':
+        config.feature_num = 3
+        config.dim_intermediate = 2
+        config.dim_integrate = 2
+        config.num_institution = 2
+        config.num_institution_user = int(len(df) / (config.num_institution * 2))     
+            
     elif config.dataset == 'digits_':
         config.feature_num = len(df.columns) - 1
         config.dim_intermediate = 4
@@ -480,6 +500,14 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.num_institution = 10
         config.num_institution_user = 10
         config.metrics = "rmse"
+
+    elif config.dataset == "statlog":
+        config.feature_num = len(df.columns) - 1
+        config.dim_intermediate = config.feature_num - 1
+        config.dim_integrate = config.feature_num - 1
+        config.num_institution_user = 30#, max(config.dim_integrate + 1, 50) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
+        config.num_institution = min(int(len(df) / (config.num_institution_user * 2)), 5)
+        #config.metrics = "auc"
     
     else:
         #config.feature_num = min(len(df.columns) - 1)#, 50)  # 特徴量の数（目的変数を除く）
@@ -492,6 +520,9 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.num_institution = min(int(len(df) / (config.num_institution_user * 2)), 5)
         #config.metrics = "auc"
     
+    #config.num_institution_user *= 3
+    #config.num_institution //= 3
+    #config.num_institution = int(config.num_institution)
     
     # 特徴量だけを取得（target を除外）
     y_name = config.y_name

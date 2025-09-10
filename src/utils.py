@@ -7,9 +7,6 @@ from sklearn.decomposition import PCA, KernelPCA, TruncatedSVD
 from sklearn.neighbors import NearestNeighbors
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-import numpy as np
-from sklearn.neighbors import NearestNeighbors
-from sklearn.preprocessing import StandardScaler
 
 
 class LPPScratch:
@@ -219,7 +216,7 @@ class KCCAScratch:
         self.X_train = None # fit時のX
 
     def _get_kernel(self, X, Y=None, kernel_type='rbf', gamma=None):
-        from sklearn.metrics.pairwise import rbf_kernel, polynomial_kernel, linear_kernel
+        from sklearn.metrics.pairwise import linear_kernel, polynomial_kernel, rbf_kernel
         if kernel_type == 'rbf':
             if gamma is None:
                 gamma = 1.0 / X.shape[1]
@@ -366,9 +363,9 @@ def reduce_dimensions(
 
         # 2. 直交性を崩すためのランダム行列 E を作成
         # 再現性のためにseedを使用
-        rng = np.random.default_rng(config.seed)
-                # 各値が1から2までの一様分布に従うランダム行列を生成
-        E = rng.uniform(size=(n_components, n_components))
+        rng = np.random.default_rng(config.seed+config.f_seed)
+        # 各値が-1から1までの一様分布に従うランダム行列を生成
+        E = rng.uniform(low=-1.0, high=1.0, size=(n_components, n_components))
         # 3. F = F'E を計算
         X_train_F = X_train_F_prime @ E
         X_test_F = X_test_F_prime @ E
@@ -392,7 +389,7 @@ def reduce_dimensions(
             raise ValueError("列直交行列を作るには l <= m が必要です。")
 
         # 1) F' を生成 (列直交行列)
-        rng = np.random.default_rng(seed=config.seed)
+        rng = np.random.default_rng(seed=config.f_seed)
         A = rng.standard_normal(size=(m, l))  # 乱数行列
         Q, R = np.linalg.qr(A, mode="reduced")  # QR 分解
         signs = np.sign(np.diag(R))
@@ -496,6 +493,7 @@ def reduce_dimensions(
 
         return X_train_kcca, X_test_kcca
         
+        
 
     else:
     # --- スケーリング ---
@@ -503,11 +501,12 @@ def reduce_dimensions(
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
         anchor_scaled = scaler.transform(anchor) if anchor is not None else None
+        anchor_test_scaled = scaler.transform(anchor_test) if anchor_test is not None else None
         
         if F_type == "kernel_pca":
             gamma = 1.0 / X_train.shape[1] # har だと 0.001 が精度良い
         elif F_type == "kernel_pca_self_tuning":
-            gamma = self_tuning_gamma(X_train_scaled, standardize=False, k=7, summary='median')
+            gamma = self_tuning_gamma(X_train_scaled, standardize=False, k=7, summary='median')/2
         elif F_type == "kernel_pca_unfixed_gamma":
             gamma = self_tuning_gamma(X_train_scaled, standardize=False, k=7, summary='median')
             if seed % 6 != 0:
@@ -530,10 +529,25 @@ def reduce_dimensions(
         # --- フィッティングと変換 ---
         X_train_svd = model.fit_transform(X_train_scaled)
         X_test_svd = model.transform(X_test_scaled)
+    
+        # --- 平行移動 ---
+        # seed に基づいて、n_components 次元のランダムな平行移動ベクトルを生成
+        #rng = np.random.default_rng(seed)
+        # 例: 標準正規分布に従う乱数を10倍したベクトルで移動
+        #translation_vector = rng.standard_normal(size=n_components) * 10 
+        
+        # スケーリング
+        #anchor_svd = model.transform(anchor_scaled)
+        #anchor_test_scaled_svd = model.transform(anchor_test_scaled)
+        #X_train_svd = X_train_svd + translation_vector
+        #X_test_svd = X_test_svd + translation_vector
+        #anchor_svd = anchor_svd  + translation_vector
+        #anchor_test_scaled_svd = anchor_test_scaled_svd + translation_vector
         
         if anchor_scaled is not None:
-            X_anchor_svd = model.transform(anchor_scaled)
-            return X_train_svd, X_test_svd, X_anchor_svd, None
+            anchor_svd = model.transform(anchor_scaled)
+            anchor_test_scaled_svd = model.transform(anchor_test_scaled)
+            return X_train_svd, X_test_svd, anchor_svd, anchor_test_scaled_svd
 
         return X_train_svd, X_test_svd
 

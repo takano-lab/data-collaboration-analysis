@@ -57,6 +57,7 @@ class DataCollaborationAnalysis:
         #self.ys_test_inter: list[np.ndarray] = []
 
         # 統合表現
+        self.anchors_integ: list[np.ndarray] = []
         self.anchors_test_integ: list[np.ndarray] = []
         self.X_train_integ: np.ndarray = np.array([])
         self.X_test_integ: np.ndarray = np.array([])
@@ -131,7 +132,12 @@ class DataCollaborationAnalysis:
         knn = KNeighborsClassifier(n_neighbors=k)
         knn.fit(X_train_all, y_train_all)
         self.anchor_y = knn.predict(self.anchor)
-    
+        
+        knn_test = KNeighborsClassifier(n_neighbors=k)
+        knn_test.fit(X_train_all, y_train_all)
+        self.anchor_y_test = knn_test.predict(self.anchor_test)
+
+
     def build_laplacians_from_anchor_labels(self, gamma: Optional[float] = None) -> None:
         """
         アンカーデータとそのラベルを用いて、
@@ -236,8 +242,8 @@ class DataCollaborationAnalysis:
         elif self.config.G_type == "ODC": # この分岐を追加
             self.make_integrate_expression_odc()
         elif self.config.G_type  == "nonlinear":
-            self.assign_anchor_labels(k=5)
-            self.build_laplacians_from_anchor_labels()
+            #self.assign_anchor_labels(k=5)
+            #self.build_laplacians_from_anchor_labels()
             self.make_integrate_nonlinear_expression()
         elif self.config.G_type  == "nonlinear_tuning":
             self.make_integrate_nonlinear_expression_tuning()
@@ -345,6 +351,7 @@ class DataCollaborationAnalysis:
                seed=self.config.f_seed,
                config=self.config,)
             self.config.f_seed += 1
+
 
             # そのままで実験  ##########################################
             #X_train_svd = X_train
@@ -454,6 +461,8 @@ class DataCollaborationAnalysis:
         # yもくっつける
         self.y_train_integ = np.hstack(self.ys_train)
         self.y_test_integ = np.hstack(self.ys_test)
+        
+        self.Z = Z
 
         # logにも出力
         self.logger.info(f"統合表現（訓練データ）の数と次元数: {self.X_train_integ.shape}")
@@ -494,21 +503,23 @@ class DataCollaborationAnalysis:
         p_hat = self.config.dim_integrate
         #Z = eigvecs[:, :p_hat]                            # r×p̂  —— 目標行列 Z
         
-        objective_direction_ratio = getattr(self.config, "objective_direction_ratio", 0.1)
-        if objective_direction_ratio < 0:
+        # 目的関数が向上するようなZを選ぶ
+        #objective_direction_ratio = getattr(self.config, "objective_direction_ratio", 0.1)
+        #if objective_direction_ratio < 0:
             # すべての固有値が正か確認
-            is_positive_definite = np.all(eigvals > 0)
-            print(f"C_tildeS is positive definite: {is_positive_definite}")
+        #    is_positive_definite = np.all(eigvals > 0)
+        #    print(f"C_tildeS is positive definite: {is_positive_definite}")
             
-            selected_idx, Z, eigvals_centered, eigvecs, coef = self.select_eigvecs_linear_hybrid(C_tildeS, self.anchor_y, p_hat=p_hat, objective_direction_ratio=objective_direction_ratio)
+        #    selected_idx, Z, eigvals_centered, eigvecs, coef = self.select_eigvecs_linear_hybrid(C_tildeS, self.anchor_y, p_hat=p_hat, objective_direction_ratio=objective_direction_ratio)
             #is_positive_definite = np.all(eigvals > 0)
             #print(f"zzzC_tildeS is positive definite: {is_positive_definite}")
-        else:
-            # ❷ 実対称用の固有値分解を使う
-            eigvals, eigvecs = np.linalg.eigh(C_tildeS)
-            # ❸ 念のため負の丸め誤差を 0 に
-            eigvals[eigvals < 0] = 0.0
-            Z = eigvecs[:, :p_hat]
+        #else:
+        # ❷ 実対称用の固有値分解を使う
+        eigvals, eigvecs = np.linalg.eigh(C_tildeS)
+        # ❸ 念のため負の丸め誤差を 0 に
+        eigvals[eigvals < 0] = 0.0
+        Z = eigvecs[:, :p_hat]
+        
         # --------------------------------------------------
         # 3. 各機関ごとに  g^(k) = (S̃^(k))^† Z   を計算
         #    → 係数行列 G^(k)（d_I × p̂）
@@ -537,6 +548,8 @@ class DataCollaborationAnalysis:
         print("統合表現の次元数:", self.X_train_integ.shape[1])
         self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
         self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
+        
+        self.Z = Z
 
         # 必要なら self.Gs = Gs などで保存しておくと解析に便利
         
@@ -553,7 +566,7 @@ class DataCollaborationAnalysis:
         reg.fit(Z, self.anchor_y)
         y_pred = reg.predict(Z)
         mse = mean_squared_error(self.anchor_y, y_pred)
-        print(f"平均二乗誤差 (MSE)普通: {mse:.4g}")
+        print(f"平均二乗誤差 (MSE) 普通: {mse:.4g}")
         
         reg = LinearRegression()
         Z_ = eigvecs[:, eigvals.argsort()[:p_hat]]
@@ -1011,47 +1024,129 @@ class DataCollaborationAnalysis:
             Ps.append(K @ inv(K + lam * I_r))     # 射影
         
         M = sum((P - I_r).T @ (P - I_r) for P in Ps)
-        # M 正規化 ラプラシアンなしならしなくてよい
+        ## M 正規化 ラプラシアンなしならしなくてよい
         trace_M = np.trace(M)
         if trace_M > 1e-9:
             M /= trace_M
         
         # --- 2. 固有値問題 → Z (r×p̂ , ‖Z‖_F=1) --- 近接ラプラシアンの重みも加える
-        Q = M + lw_alpha * self.L_within - lb_beta * self.L_between
+        Q = M #+ lw_alpha * self.L_within - lb_beta * self.L_between
 
         # ❶ ほんのわずかな非対称を切り落とす
         Q = (Q + Q.T) * 0.5
         
-        objective_direction_ratio = getattr(self.config, "objective_direction_ratio", 0)
-        if objective_direction_ratio < 0:
-            print(1)
-            idx, Z, eigvals, eigvecs = self.select_eigvecs_linear_hybrid(Q, self.anchor_y, p_hat=p̂, objective_direction_ratio=objective_direction_ratio)
-            print(2)
-        else:
-            # ❷ 実対称用の固有値分解を使う
-            eigvals, eigvecs = np.linalg.eigh(Q)
-            # ❸ 念のため負の丸め誤差を 0 に
-            eigvals[eigvals < 0] = 0.0
-            Z = eigvecs[:, eigvals.argsort()[:p̂]]
+        # 目的関数が向上するzを選択
+        #objective_direction_ratio = getattr(self.config, "objective_direction_ratio", 0)
+        #if objective_direction_ratio < 0:
+        #    print(1)
+        #    idx, Z, eigvals, eigvecs = self.select_eigvecs_linear_hybrid(Q, self.anchor_y, p_hat=p̂, objective_direction_ratio=objective_direction_ratio)
+        #    print(2)
+        #else:
+        # ❷ 実対称用の固有値分解を使う
+        eigvals, eigvecs = np.linalg.eigh(Q)
+        # ❸ 念のため負の丸め誤差を 0 に
+        eigvals[eigvals < 0] = 0.0
+        Z = eigvecs[:, eigvals.argsort()[:p̂]]
             
         # 列ごとに ||z_j||_2 = 1 へ
         for j in range(Z.shape[1]):
             nz = np.linalg.norm(Z[:, j])
             if nz > 0:
                 Z[:, j] /= nz
+        
+        # S_hat_list (S_hat_k = P_k @ Z) の計算
+        #S_hat_list = []
+        #for P in Ps:
+        #    S_hat_list.append(P @ Z)
+        #self.anchors_integ = S_hat_list
+        #self.logger.info(f"S_hat_list を計算しました。要素数: {len(self.anchors_integ)}, 各要素のShape: {self.anchors_integ[0].shape}")
+        
+        cul_test = False
+        if cul_test:
+            Ks_test, Ps_test, gammas = [], [], []
+                        # --- 1. Gram 行列と射影行列 ---
+            for i, S̃_test in enumerate(self.anchors_inter_test):             # S̃ : r×d̃_k
+                K_test = rbf_kernel(S̃_test, S̃_test, gamma=gammas[i])       # r×r
+                # (a) カーネル行列（先に作って正規化）
+                mu_max_test = max(eigvalsh(K_test).max(), 1e-12)            # スペクトル半径
+                K_test = K_test / mu_max_test                                # ||K||_2 = 1
+                
+                Ks_test.append(K_test)
+                Ps_test.append(K_test @ inv(K_test + lam * I_r))     # 射影
+
+            M_test = sum((P - I_r).T @ (P - I_r) for P in Ps_test)
+            ## M 正規化 ラプラシアンなしならしなくてよい
+            trace_M = np.trace(M_test)
+            if trace_M > 1e-9:
+                M_test /= trace_M
+
+            # --- 2. 固有値問題 → Z (r×p̂ , ‖Z‖_F=1) --- 近接ラプラシアンの重みも加える
+            Q_test = M_test #+ lw_alpha * self.L_within - lb_beta * self.L_between
+
+            # ❶ ほんのわずかな非対称を切り落とす
+            Q_test = (Q_test + Q_test.T) * 0.5
+            
+            objective_direction_ratio = getattr(self.config, "objective_direction_ratio", 0)
+            if objective_direction_ratio < 0:
+                print(1)
+                idx, Z_test, eigvals_test, eigvecs_test = self.select_eigvecs_linear_hybrid(Q_test, self.anchor_y_test, p_hat=p̂, objective_direction_ratio=objective_direction_ratio)
+                print(2)
+            else:
+                # ❷ 実対称用の固有値分解を使う
+                eigvals_test, eigvecs_test = np.linalg.eigh(Q_test)
+                # ❸ 念のため負の丸め誤差を 0 に
+                eigvals_test[eigvals_test < 0] = 0.0
+                Z_test = eigvecs_test[:, eigvals_test.argsort()[:p̂]]
+
+            # 列ごとに ||z_j||_2 = 1 へ
+            for j in range(Z_test.shape[1]):
+                nz = np.linalg.norm(Z_test[:, j])
+                if nz > 0:
+                    Z_test[:, j] /= nz
+
+            # S_hat_list (S_hat_k = P_k @ Z) の計算
+            S_hat_test_list = []
+            for P in Ps_test:
+                S_hat_test_list.append(P @ Z_test)
+            self.anchors_test_integ = S_hat_test_list
+            self.logger.info(f"S_hat_list を計算しました。要素数: {len(self.anchors_test_integ)}, 各要素のShape: {self.anchors_test_integ[0].shape}")
+
         # --- 3. 各機関の係数 B^(k) とデータ射影 ---
         Xs_train_intg, Xs_test_intg = [], []
-        for K, S̃, γ, X_tr, X_te in zip(Ks, self.anchors_inter, gammas,
-                                        self.Xs_train_inter, self.Xs_test_inter):
-            
+        # zipに self.anchors_test_inter を追加
+        for K, S̃_train, S̃_test, γ, X_tr, X_te in zip(
+            Ks, self.anchors_inter, self.anchors_test_inter, gammas,
+            self.Xs_train_inter, self.Xs_test_inter
+        ):
+            # 学習データから係数 Bk を計算
             Bk  = inv(K + lam * I_r) @ Z          # r×p̂
+            #mu_max = max(eigvalsh(K).max(), 1e-12)
 
-            K_tr = rbf_kernel(X_tr, S̃, gamma=γ)  # n_k×r
-            K_te = rbf_kernel(X_te, S̃, gamma=γ)  # t_k×r
-
+            # (a) 学習データの射影
+            K_tr = rbf_kernel(X_tr, S̃_train, gamma=γ)  # n_k×r
+            #s = np.linalg.svd(K_tr, compute_uv=False)
+            #mu_max = s.max()
+            #K_tr = K_tr / mu_max    
             Xs_train_intg.append(K_tr @ Bk)       # n_k×p̂
+
+            # (b) テストデータの射影
+            K_te = rbf_kernel(X_te, S̃_train, gamma=γ)  # t_k×r
+            #s = np.linalg.svd(K_te, compute_uv=False)
+            #mu_max = s.max()
+            #K_te = K_te / mu_max                             # ||K||_2 = 1
             Xs_test_intg.append(K_te @ Bk)        # t_k×p̂
 
+            # (c) 学習アンカーの射影結果 S_hat (P @ Z と等価)
+            # K(S_train, S_train) は K なので、K @ Bk で計算
+            self.anchors_integ.append(K @ Bk)
+
+            # (d) ★★★ テストアンカーの射影結果 S_hat_test ★★★
+            K_anchor_test = rbf_kernel(S̃_test, S̃_train, gamma=γ) # (r_test, r_train)
+            #mu_max = max(eigvalsh(K_anchor_test).max(), 1e-12)            # スペクトル半径
+            #K_anchor_test = K_anchor_test / mu_max                             # ||K||_2 = 1
+            self.anchors_test_integ.append(K_anchor_test @ Bk)
+
+                
         # --- 4. スタック & 保存 ---
         self.X_train_integ = np.vstack(Xs_train_intg)
         self.X_test_integ  = np.vstack(Xs_test_intg)
@@ -1071,6 +1166,8 @@ class DataCollaborationAnalysis:
 
         # 結果を self.config.g_abs_sum に格納
         self.config.g_abs_sum = f"{sum_lambdas:.4g}"
+        
+        self.Z = Z
 
         # デバッグ用出力
         print(f"固有値 λ の上位 {p̂} 個の総和: {self.config.g_abs_sum}")
@@ -2864,12 +2961,133 @@ class DataCollaborationAnalysis:
         G = Uscore.T @ Uscore + ridge * np.eye(p_hat)
         P = Uscore @ np.linalg.solve(G, Uscore.T)   # n x n
         return P, A, Uscore
+
+    def visualize_anchors(self, save_dir: Optional[str] = None) -> None:
+        """
+        アンカーデータの変換フローを訓練/テストの2部構成で可視化する。
+        上半分(Train): 1.元, 2.中間, 3.射影, 4.統合Z
+        下半分(Test):  1.元, 2.中間, 3.射影
+        """
+        save_dir = save_dir or self.config.output_path / "visualizations"
+        
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        from pathlib import Path
+        from sklearn.decomposition import PCA
+
+        # --- 必要なデータの存在チェック ---
+        train_attrs = ['anchor', 'anchors_inter', 'Z', 'anchors_integ']
+        test_attrs = ['anchor_test', 'anchors_test_inter', 'anchors_test_integ']
+        
+        has_train_data = all(hasattr(self, attr) and getattr(self, attr) is not None and len(getattr(self, attr, [])) > 0 for attr in train_attrs)
+        has_test_data = all(hasattr(self, attr) and getattr(self, attr) is not None and len(getattr(self, attr, [])) > 0 for attr in test_attrs)
+
+        if not has_train_data and not has_test_data:
+            self.logger.warning("可視化に必要な訓練データもテストデータも存在しません。")
+            return
+
+        num_institutions = len(self.anchors_inter) if has_train_data else len(self.anchors_test_inter)
+        if num_institutions == 0: return
+
+        # --- ラベルの準備 ---
+        self.assign_anchor_labels()
+        anchor_labels_train = self.anchor_y if hasattr(self, 'anchor_y') else np.zeros(self.anchor.shape[0] if has_train_data else 0)
+        anchor_labels_test = self.anchor_y_test if hasattr(self, 'anchor_y_test') else np.zeros(self.anchor_test.shape[0] if has_test_data else 0)
+        legend_status = "full" if np.unique(anchor_labels_train).size > 1 else False
+
+        # --- プロットの準備 (Train+Testで2倍の行数) ---
+        fig, axes = plt.subplots(num_institutions * 2, 4, figsize=(24, 6 * num_institutions * 2), squeeze=False)
+        fig.suptitle("Anchor Data Transformation Flow (Top: Train, Bottom: Test)", fontsize=16, y=1.0)
+
+        # --- PCAとスケール計算のためのデータ準備 ---
+        Z_train_plot = self.Z.T if has_train_data and self.Z.shape[0] == self.config.dim_integrate else (self.Z if has_train_data else None)
+
+        col1_data = ([self.anchor] if has_train_data else []) + ([self.anchor_test] if has_test_data else [])
+        col2_data = (self.anchors_inter if has_train_data else []) + (self.anchors_test_inter if has_test_data else [])
+        col3_data = (self.anchors_integ if has_train_data else []) + (self.anchors_test_integ if has_test_data else [])
+        col4_data = [Z_train_plot] if has_train_data else []
+
+        def get_2d_data_and_limits(data_list):
+            if not data_list: return [], ((0,1), (0,1))
+            data_for_pca = [d for d in data_list if d.shape[1] > 2]
+            if not data_for_pca:
+                data_2d = data_list
+            else:
+                pca = PCA(n_components=2).fit(np.vstack(data_for_pca))
+                data_2d = [pca.transform(d) if d.shape[1] > 2 else d for d in data_list]
+            
+            all_data_2d = np.vstack(data_2d)
+            x_min, x_max = all_data_2d[:, 0].min(), all_data_2d[:, 0].max()
+            y_min, y_max = all_data_2d[:, 1].min(), all_data_2d[:, 1].max()
+            x_pad = (x_max - x_min) * 0.05 if x_max > x_min else 0.1
+            y_pad = (y_max - y_min) * 0.05 if y_max > y_min else 0.1
+            limits = ((x_min - x_pad, x_max + x_pad), (y_min - y_pad, y_max + y_pad))
+            return data_2d, limits
+
+        col1_2d, (xlim1, ylim1) = get_2d_data_and_limits(col1_data)
+        col2_2d, (xlim2, ylim2) = get_2d_data_and_limits(col2_data)
+        col3_2d, (xlim3, ylim3) = get_2d_data_and_limits(col3_data)
+        col4_2d, (xlim4, ylim4) = get_2d_data_and_limits(col4_data)
+
+        # --- プロットループ ---
+        for i in range(num_institutions):
+            # --- TRAIN DATA (Top Half) ---
+            if has_train_data:
+                train_row = i
+                sns.scatterplot(x=col1_2d[0][:, 0], y=col1_2d[0][:, 1], hue=anchor_labels_train, palette="coolwarm", ax=axes[train_row, 0], legend=(i==0 and legend_status))
+                axes[train_row, 0].set_title(f"1. Original Anchor (Train)" if i == 0 else "")
+                axes[train_row, 0].set_xlim(xlim1); axes[train_row, 0].set_ylim(ylim1); axes[train_row, 0].set_ylabel(f"Inst {i+1}")
+
+                sns.scatterplot(x=col2_2d[i][:, 0], y=col2_2d[i][:, 1], hue=anchor_labels_train, palette="coolwarm", ax=axes[train_row, 1], legend=False)
+                axes[train_row, 1].set_title(f"2. Intermediate (Train)" if i == 0 else "")
+                axes[train_row, 1].set_xlim(xlim2); axes[train_row, 1].set_ylim(ylim2)
+
+                sns.scatterplot(x=col3_2d[i][:, 0], y=col3_2d[i][:, 1], hue=anchor_labels_train, palette="coolwarm", ax=axes[train_row, 2], legend=False)
+                axes[train_row, 2].set_title(f"3. Projection S_hat (Train)" if i == 0 else "")
+                axes[train_row, 2].set_xlim(xlim3); axes[train_row, 2].set_ylim(ylim3)
+
+                sns.scatterplot(x=col4_2d[0][:, 0], y=col4_2d[0][:, 1], hue=anchor_labels_train, palette="coolwarm", ax=axes[train_row, 3], legend=False)
+                axes[train_row, 3].set_title(f"4. Integrated Z (Train)" if i == 0 else "")
+                axes[train_row, 3].set_xlim(xlim4); axes[train_row, 3].set_ylim(ylim4)
+
+            # --- TEST DATA (Bottom Half) ---
+            if has_test_data:
+                test_row = i + num_institutions
+                train_offset = 1 if has_train_data else 0
+                
+                anchor_test_2d = col1_2d[train_offset]
+                sns.scatterplot(x=anchor_test_2d[:, 0], y=anchor_test_2d[:, 1], hue=anchor_labels_test, palette="viridis", ax=axes[test_row, 0], legend=(i==0 and legend_status))
+                axes[test_row, 0].set_title(f"1. Original Anchor (Test)" if i == 0 else "")
+                axes[test_row, 0].set_xlim(xlim1); axes[test_row, 0].set_ylim(ylim1); axes[test_row, 0].set_ylabel(f"Inst {i+1}")
+
+                sns.scatterplot(x=col2_2d[train_offset * num_institutions + i][:, 0], y=col2_2d[train_offset * num_institutions + i][:, 1], hue=anchor_labels_test, palette="viridis", ax=axes[test_row, 1], legend=False)
+                axes[test_row, 1].set_title(f"2. Intermediate (Test)" if i == 0 else "")
+                axes[test_row, 1].set_xlim(xlim2); axes[test_row, 1].set_ylim(ylim2)
+
+                sns.scatterplot(x=col3_2d[train_offset * num_institutions + i][:, 0], y=col3_2d[train_offset * num_institutions + i][:, 1], hue=anchor_labels_test, palette="viridis", ax=axes[test_row, 2], legend=False)
+                axes[test_row, 2].set_title(f"3. Projection S_hat (Test)" if i == 0 else "")
+                axes[test_row, 2].set_xlim(xlim3); axes[test_row, 2].set_ylim(ylim3)
+                
+                # 4列目は空欄にする
+                axes[test_row, 3].set_visible(False)
+
+        # レイアウト調整と保存
+        plt.tight_layout(rect=[0, 0.03, 1, 0.98])
+        if save_dir:
+            Path(save_dir).mkdir(parents=True, exist_ok=True)
+            save_path = Path(save_dir) / f"anchor_visualization_{self.config.plot_name}"
+            plt.savefig(save_path)
+            self.logger.info(f"✅ アンカーデータの可視化を保存しました: {save_path}")
+    
     
     def visualize_representations(self, save_dir: Optional[str] = None) -> None:
         """
         元データ、中間表現、統合表現（機関ごとと全体）を2次元散布図で可視化する関数。
         訓練データとテストデータをそれぞれ別の図で出力する。
         """
+        self.assign_anchor_labels()
+        self.visualize_anchors() 
+        
         save_dir = save_dir or self.config.output_path / "visualizations"
         if not self.Xs_train or not self.Xs_train_inter or self.X_train_integ.size == 0:
             print("可視化する表現が生成されていません。run()メソッドを実行してください。")
@@ -2965,6 +3183,8 @@ class DataCollaborationAnalysis:
         if save_dir:
             Path(save_dir).mkdir(parents=True, exist_ok=True)
             plt.savefig(Path(save_dir) / self.config.plot_name)
+            
+        
         """
         # --- テストデータの可視化 ---
         fig_test, axes_test = plt.subplots(num_institutions, 4, figsize=(24, 5 * num_institutions), squeeze=False)
