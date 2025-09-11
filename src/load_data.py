@@ -352,7 +352,7 @@ def drop_rare_labels(df, ycol="target", min_count=2):
 # メイン関数                                         #
 # -------------------------------------------------- #
 from sklearn.preprocessing import LabelEncoder
-
+import pandas as pd
 
 def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
     if config.dataset not in LOADERS:
@@ -369,6 +369,7 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
     X = df.drop(columns=["target"])
 
     # ── one-hot encoding（targetは除く）
+    import pandas as pd
     X = pd.get_dummies(X, drop_first=True)
 
     # ── 特徴量を標準化 # one-hot も標準化している点に注意
@@ -387,8 +388,8 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.feature_num = 41
         config.dim_intermediate = 37 # 中間表現の次元数
         config.dim_integrate = 37 # 統合表現の次元数
-        config.num_institution_user = 25
-        config.num_institution = 20
+        config.num_institution_user = int(25 * 2)
+        config.num_institution = int(20 / 2)
         config.num_anchor_data = 396
         #config.metrics = "accuracy"
     
@@ -431,10 +432,10 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         #config.dim_intermediate = 5 # 中間表現の次元数
         #config.dim_integrate = 5 # 統合表現の次元数
         config.feature_num =  len(df.columns) - 1 # 特徴量の数（目的変数を除く）
-        config.dim_intermediate = 50 # 中間表現の次元数
-        config.dim_integrate = 50 # 統合表現の次元数
+        config.dim_intermediate = 15 # 中間表現の次元数
+        config.dim_integrate = 15 # 統合表現の次元数
         config.feature_num = min(len(df.columns) - 1, 51)
-        config.num_institution_user = 120
+        config.num_institution_user = 30
         config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
 
     elif config.dataset == 'mnist' or config.dataset == 'fashion_mnist':
@@ -523,6 +524,8 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
     #config.num_institution_user *= 3
     #config.num_institution //= 3
     #config.num_institution = int(config.num_institution)
+    #config.dim_intermediate = 2
+    #config.dim_integrate = 2
     
     # 特徴量だけを取得（target を除外）
     y_name = config.y_name
@@ -536,7 +539,7 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
     # 制限後のデータフレーム
     df = df[final_columns]
-    df = df[:2*config.num_institution_user*config.num_institution]
+    #df = df[:2*config.num_institution_user*config.num_institution]
 
 
     if config.dataset == "housing":
@@ -557,6 +560,141 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
             shuffle=True,
             stratify=df["target"]
         )
+        
+    # import numpy as np
+    # import pandas as pd
+    # from collections import defaultdict
+
+    # def split_train_test_by_institution(
+    #     df: pd.DataFrame,
+    #     label_col: str,
+    #     num_institution: int,
+    #     num_institution_user: int,
+    #     random_state: int = 42,
+    # ):
+    #     """
+    #     各 institution の train/test それぞれが「全クラスを最低1件ずつ」含むように分割する。
+    #     返す DataFrame は行順が institution 単位にまとまっており、
+    #     先頭から num_institution_user 行ごとが 1 機関に対応する（train/test とも）。
+    #     """
+    #     import numpy as np
+
+    #     rng = np.random.default_rng(random_state)
+
+    #     y = df[label_col].to_numpy()
+    #     classes, counts = np.unique(y, return_counts=True)
+    #     n_classes = classes.size
+
+    #     # 必要条件チェック
+    #     n_per_side = num_institution * num_institution_user
+    #     if 2 * n_per_side > len(df):
+    #         raise ValueError(f"rows={len(df)} < needed(total)={2*n_per_side}")
+    #     if num_institution_user < n_classes:
+    #         raise ValueError(f"num_institution_user({num_institution_user}) < n_classes({n_classes}) -> "
+    #                         f"各機関に各クラス最低1件ずつは不可能です。")
+    #     # 各クラスの最低必要数（両側で各機関1件ずつ）= 2 * num_institution
+    #     need_per_class = 2 * num_institution
+    #     lack = {int(c): int(n) for c, n in zip(classes, counts) if n < need_per_class}
+    #     if lack:
+    #         raise ValueError(f"各クラスの件数不足: {lack} "
+    #                         f"(必要: 各クラス {need_per_class} 件以上)")
+
+    #     # まず「保証割当」: 各クラスから train/test の各機関へ1件ずつ
+    #     N = len(df)
+    #     all_idx = np.arange(N)
+
+    #     train_bins = [[] for _ in range(num_institution)]
+    #     test_bins  = [[] for _ in range(num_institution)]
+
+    #     used = set()
+
+    #     for c in classes:
+    #         idx_c = np.flatnonzero(y == c)
+    #         rng.shuffle(idx_c)
+    #         # 先頭 num_institution を train に1件ずつ
+    #         for i in range(num_institution):
+    #             tr_id = idx_c[i]
+    #             train_bins[i].append(tr_id)
+    #             used.add(int(tr_id))
+    #         # 次の num_institution を test に1件ずつ
+    #         for i in range(num_institution):
+    #             te_id = idx_c[num_institution + i]
+    #             test_bins[i].append(te_id)
+    #             used.add(int(te_id))
+    #         # 残りは未使用プールへ自然に落ちる
+
+    #     # 残りプール
+    #     remain = np.array([idx for idx in all_idx if idx not in used], dtype=int)
+    #     rng.shuffle(remain)
+
+    #     # 片側の残り必要数
+    #     remain_train_need = n_per_side - sum(len(b) for b in train_bins)
+    #     remain_test_need  = n_per_side - sum(len(b) for b in test_bins)
+    #     if remain_train_need < 0 or remain_test_need < 0:
+    #         raise RuntimeError("内部計算エラー: 残り必要数が負になりました。")
+
+    #     if remain.size < (remain_train_need + remain_test_need):
+    #         raise ValueError("残りサンプルが不足しています。パラメータを見直してください。")
+
+    #     train_pool = remain[:remain_train_need]
+    #     test_pool  = remain[remain_train_need: remain_train_need + remain_test_need]
+
+    #     # プールを各機関に均等配分して、各 bin を num_institution_user 件に揃える
+    #     def distribute(pool, bins, target_size):
+    #         pool = list(pool)
+    #         p = 0
+    #         for i in range(len(bins)):
+    #             need = target_size - len(bins[i])
+    #             if need <= 0:
+    #                 continue
+    #             take = min(need, len(pool) - p)
+    #             if take > 0:
+    #                 bins[i].extend(pool[p:p+take])
+    #                 p += take
+    #         # まだ満たない bin があればラウンドロビンで埋める
+    #         i = 0
+    #         while any(len(b) < target_size for b in bins) and p < len(pool):
+    #             if len(bins[i]) < target_size:
+    #                 bins[i].append(pool[p]); p += 1
+    #             i = (i + 1) % len(bins)
+    #         if any(len(b) < target_size for b in bins):
+    #             raise ValueError("配分サンプル不足で各 bin を target_size に揃えられません。")
+    #         return bins
+
+    #     train_bins = distribute(train_pool, train_bins, num_institution_user)
+    #     test_bins  = distribute(test_pool,  test_bins,  num_institution_user)
+
+    #     # institution 順に結合（各 bin 内はシャッフルしておく）
+    #     for b in train_bins:
+    #         rng.shuffle(b)
+    #     for b in test_bins:
+    #         rng.shuffle(b)
+
+    #     train_idx = np.concatenate([np.array(b, dtype=int) for b in train_bins])
+    #     test_idx  = np.concatenate([np.array(b, dtype=int) for b in test_bins])
+
+    #     train_df = df.iloc[train_idx].reset_index(drop=True)
+    #     test_df  = df.iloc[test_idx].reset_index(drop=True)
+
+    #     # 検証（各機関の train/test が全クラスを含むか）
+    #     def check(df_side, name):
+    #         ok = True
+    #         for i in range(num_institution):
+    #             part = df_side.iloc[i*num_institution_user:(i+1)*num_institution_user]
+    #             have = np.unique(part[label_col].to_numpy())
+    #             if len(np.intersect1d(have, classes)) != n_classes:
+    #                 ok = False
+    #                 # 必要ならログ: print(f"[WARN] {name} inst#{i}: classes={sorted(have)}")
+    #         return ok
+    #     assert check(train_df, "train") and check(test_df, "test"), \
+    #         "内部検証エラー: 条件を満たせていません。"
+
+    #     return train_df, test_df
+
+    # # 使い方例
+    # train_df, test_df = split_train_test_by_institution(df, "target", config.num_institution, config.num_institution_user)
+    #result["institution_0"]["train"], result["institution_0"]["test"] などで取得
+
     
     # ── 行数制約でカット（デモ用）
     lim = config.num_institution * config.num_institution_user
@@ -564,9 +702,9 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
     test_df = test_df.iloc[:lim].reset_index(drop=True)
 
     # ── 保存
-    config.output_path.mkdir(parents=True, exist_ok=True)
-    train_df.to_csv(config.output_path / "train.csv", index=False)
-    test_df.to_csv(config.output_path / "test.csv", index=False)
+    #config.output_path.mkdir(parents=True, exist_ok=True)
+    #train_df.to_csv(config.output_path / "train.csv", index=False)
+    #test_df.to_csv(config.output_path / "test.csv", index=False)
 
     return train_df, test_df
 

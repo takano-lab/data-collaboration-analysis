@@ -4,7 +4,7 @@ import argparse
 from logging import INFO, FileHandler, getLogger
 import statistics
 import pandas as pd
-
+import numpy as np  # 追加
 import yaml
 from tqdm import tqdm 
 from config.config import Config
@@ -109,17 +109,66 @@ def main(visualize):
         metrics_dict['fl'] = metrics_fl
         return metrics_fl
     else:
-        metrics = dca_analysis(
-                        X_train_integ=data_collaboration.X_train_integ,
-                        X_test_integ=data_collaboration.X_test_integ,
-                        y_train_integ=data_collaboration.y_train_integ,
-                        y_test_integ=data_collaboration.y_test_integ,
-                        config=config,
-                        logger=logger,
-                    )
-        #metrics_dict[f'{config.F_type}_{config.G_type}'] = 
-        return metrics
-    
+        # config.num_institution
+        # config.num_institution_user
+        # metrics = dca_analysis(
+        #                 X_train_integ=data_collaboration.X_train_integ,
+        #                 X_test_integ=data_collaboration.X_test_integ,
+        #                 y_train_integ=data_collaboration.y_train_integ,
+        #                 y_test_integ=data_collaboration.y_test_integ,
+        #                 config=config,
+        #                 logger=logger,
+        #             )
+        # return metrics
+        config.num_institution
+        config.num_institution_user
+        # --- ここから機関ごとの metrics を算出 ---
+        # 各機関のサンプル数（元リスト）から、統合後配列のスライス境界を作る
+        train_counts = [len(y) for y in data_collaboration.ys_train]
+        test_counts  = [len(y) for y in data_collaboration.ys_test]
+        n_inst = min(config.num_institution, len(train_counts))
+
+        train_cum = np.concatenate(([0], np.cumsum(train_counts)))
+        test_cum  = np.concatenate(([0], np.cumsum(test_counts)))
+
+        inst_metrics = []
+        for i in range(n_inst):
+            # 各機関の訓練・テストから num_institution_user 件だけ使用
+            tr_start, tr_end = int(train_cum[i]), int(train_cum[i+1])
+            te_start, te_end = int(test_cum[i]),  int(test_cum[i+1])
+
+            tr_take = min(config.num_institution_user, tr_end - tr_start)
+            te_take = min(config.num_institution_user, te_end - te_start)
+
+            X_tr_i = data_collaboration.X_train_integ[tr_start: tr_start + tr_take, :]
+            y_tr_i = data_collaboration.y_train_integ[tr_start: tr_start + tr_take]
+            X_te_i = data_collaboration.X_test_integ[te_start:  te_start  + te_take,  :]
+            y_te_i = data_collaboration.y_test_integ[te_start:  te_start  + te_take]
+
+
+            metric_i = dca_analysis(
+                X_train_integ=data_collaboration.X_train_integ,
+                X_test_integ=X_te_i,
+                y_train_integ=data_collaboration.y_train_integ,
+                y_test_integ=y_te_i,
+                config=config,
+                logger=logger,
+            )
+            inst_metrics.append(metric_i)
+
+        # 平均・最小・最大を算出して出力
+        inst_metrics = np.array(inst_metrics, dtype=float)
+        mean_val = float(inst_metrics.mean())
+        min_val  = float(inst_metrics.min())
+        max_val  = float(inst_metrics.max())
+
+        print(f"機関ごとの {config.metrics}: {np.round(inst_metrics, 4).tolist()}")
+        print(f"平均: {mean_val:.4f}, 最小: {min_val:.4f}, 最大: {max_val:.4f}")
+        logger.info(f"機関ごとの {config.metrics}: {inst_metrics.tolist()}")
+        logger.info(f"平均: {mean_val:.6f}, 最小: {min_val:.6f}, 最大: {max_val:.6f}")
+
+        # main_loop の集計用に平均値を返す
+        return mean_val    
     
     
     # 個別解析
@@ -146,7 +195,7 @@ def main(visualize):
 
 def main_loop():
     LOADERS = [
-        "mice",
+    #    "mice",
     #  "statlog",
         'qsar',
     #   "breast_cancer",
@@ -174,8 +223,8 @@ def main_loop():
     MODELS = ["mlp"]#, "mlp"]#"random_forest"]#, "svm_linear_classifier", "mlp"]#"mlp"]#, "svm_linear_classifier"] #"svm_classifier"]#"random_forest"]#, _linear_
     gamma_types = ["X_tuning"] 
     F_types = ["kernel_pca_svd_mixed"]#"kernel_pca_svd_mixed", "svd", "kernel_pca_self_tuning"]#, "svd", "kernel_pca_self_tuning"]#"svd", "kernel_pca", "kernel_pca_self_tuning", ] # , "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    G_types = ["nonlinear", "Imakura"]# "nonlinear_tuning"#'centralize_dim', "nonlinear", "Imakura"]#"nonlinear_tuning"]#, "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#["fl", 'centralize', 'individual', "Imakura", "ODC", "GEP", "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#'centralize_dim', "nonlinear", "Imakura"]#
-    # G_types = ["nonlinear"] mlp_objective
+    G_types = ["Imakura", "ODC", "nonlinear"]# "nonlinear_tuning"#'centralize_dim', "nonlinear", "Imakura"]#"nonlinear_tuning"]#, "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#["fl", 'centralize', 'individual', "Imakura", "ODC", "GEP", "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#'centralize_dim', "nonlinear", "Imakura"]#
+    # G_types = ["nonlinear"] mlp_objective # "individual", "Imakura", "ODC",
     config.F_type = F_types[0]
     F_type = F_types[0]
     config.True_F_type = F_types[0]
@@ -190,6 +239,7 @@ def main_loop():
     data = {}
     model = MODELS[0]
     for dataset in tqdm(LOADERS):
+        config.now = "f"
         for met in ["auc"]:#, "accuracy"
             config.metrics = met
             config.h_model = model
@@ -220,10 +270,11 @@ def main_loop():
                         #config.semi_integ = semi_integ
                         #config.orth_ver = orth
                         metrics = []
-                        for i in range(8, 20):
+                        for i in range(5, 10):
                             config.seed = i
                             #config.f_seed = i
-                            config.plot_name = f"_8_0909_lw_alpha{lw_alpha}_{dataset}_{config.G_type}_{semi_integ}_{orth}_{config.lambda_pred}_{config.lambda_offdiag}.png" # {self.config.lambda_pred}_{self.config.dataset}
+                            config.plot_name = f"_0911_{dataset}_{G_type}.png" # {self.config.lambda_pred}_{self.config.dataset}
+                            print("i", i, "G_type:", G_type)
                             metrics.append(main(visualize))
                             config.F_type = config.True_F_type
                         # 平均値を計算
@@ -234,7 +285,7 @@ def main_loop():
 
     # DataFrameに変換
     df_all = pd.DataFrame.from_dict(data, orient="index", columns=["dataset", "model", "F_type", "G_type", "lw_alpha", "metrics", "metrics_mean", "metrics_stdev"])
-    df_all.to_csv(output_path / f"result_low_user_mlp_3.csv", index=True, encoding="utf-8-sig")
+    df_all.to_csv(output_path / f"result.csv", index=True, encoding="utf-8-sig")
 
 def partial_run():
     logger.info(f"データセット: {config.dataset}")

@@ -341,7 +341,6 @@ def reduce_dimensions(
 ) -> Tuple[np.ndarray, ...]:
     # --- SVD / KernelPCA の選択 ---
     # USE_KERNEL = n_components >= X_train.shape[1]
-    
     if F_type == "svd":
         model = SVDScratch(n_components=n_components, center=True)
         # --- フィッティングと変換 ---
@@ -502,11 +501,14 @@ def reduce_dimensions(
         X_test_scaled = scaler.transform(X_test)
         anchor_scaled = scaler.transform(anchor) if anchor is not None else None
         anchor_test_scaled = scaler.transform(anchor_test) if anchor_test is not None else None
-        
         if F_type == "kernel_pca":
             gamma = 1.0 / X_train.shape[1] # har だと 0.001 が精度良い
         elif F_type == "kernel_pca_self_tuning":
-            gamma = self_tuning_gamma(X_train_scaled, standardize=False, k=7, summary='median')/2
+            gamma = self_tuning_gamma(X_train_scaled, standardize=False, k=7, summary='median')#/2
+            #print("gamma")
+            #print(gamma)
+            #gamma = 0.1
+
         elif F_type == "kernel_pca_unfixed_gamma":
             gamma = self_tuning_gamma(X_train_scaled, standardize=False, k=7, summary='median')
             if seed % 6 != 0:

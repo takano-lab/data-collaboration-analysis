@@ -227,7 +227,7 @@ class DataCollaborationAnalysis:
         # 中間表現の生成
         self.make_intermediate_expression()
         #self.make_intermediate_expression(USE_KERNEL=True)
-
+        self.config.now = "g"
         # 統合表現の生成
         if self.config.G_type == "Imakura":
             self.make_integrate_expression()
@@ -332,8 +332,10 @@ class DataCollaborationAnalysis:
                 self.config.f_seed_2 += 1
                 if self.config.f_seed_2 % 2 == 0:
                     self.config.F_type = "svd"
+                    #print("svd")
                 else:
                     self.config.F_type = "kernel_pca_self_tuning"
+                    #print("kpca")
             elif unfixed_mixed:
                 self.config.f_seed_2 += 1
                 if self.config.f_seed_2 % 6 == 0:
@@ -363,6 +365,28 @@ class DataCollaborationAnalysis:
             self.Xs_test_inter.append(X_test_svd)
             self.anchors_inter.append(anchor_svd)
             self.anchors_test_inter.append(anchor_test_svd)
+            
+            
+            # 標準化 # qsar だと欠損になる
+            
+            # # SVDを適用したデータをリストに格納
+            # scaler = StandardScaler()
+
+            # # 訓練データの標準化
+            # X_train_svd = scaler.fit_transform(X_train_svd)
+            # self.Xs_train_inter.append(X_train_svd)
+
+            # # テストデータの標準化
+            # X_test_svd = scaler.transform(X_test_svd)
+            # self.Xs_test_inter.append(X_test_svd)
+
+            # # アンカーデータの標準化
+            # anchor_svd = scaler.fit_transform(anchor_svd)
+            # self.anchors_inter.append(anchor_svd)
+
+            # # テスト用アンカーデータの標準化
+            # anchor_test_svd = scaler.transform(anchor_test_svd)
+            # self.anchors_test_inter.append(anchor_test_svd)
 
         print("中間表現の次元数: ", self.Xs_train_inter[0].shape[1])
 
@@ -423,8 +447,8 @@ class DataCollaborationAnalysis:
         # 擬似逆行列の絶対値総和を計算するための変数を初期化
         total_g_abs_sum = 0.0
 
-        for X_train_inter, X_test_inter, anchor_inter in zip(
-            tqdm(self.Xs_train_inter), self.Xs_test_inter, self.anchors_inter
+        for X_train_inter, X_test_inter, anchor_inter, anchor_test_inter in zip(
+            tqdm(self.Xs_train_inter), self.Xs_test_inter, self.anchors_inter, self.anchors_test_inter
         ):
             # 各機関のアンカーデータの中間表現を転置して、擬似逆行列を求める
             pseudo_inverse = np.linalg.pinv(anchor_inter.T)  # \hat{X}^{anc}+
@@ -439,14 +463,18 @@ class DataCollaborationAnalysis:
             # 統合関数で各機関の中間表現を統合表現に変換
             X_train_integrate = np.dot(integrate_function, X_train_inter.T)
             X_test_integrate = np.dot(integrate_function, X_test_inter.T)
-
+            anchor_integ = np.dot(integrate_function, anchor_inter.T)
+            anchor_test_integ = np.dot(integrate_function, anchor_test_inter.T)
             # そのままで実験 ##########################################
-            # X_train_integrate = X_train_inter.T
+            # X_train _integrate = X_train_inter.T
             # X_test_integrate = X_test_inter.T
 
             # 統合表現をリストに格納
             Xs_train_integrate.append(X_train_integrate.T)
             Xs_test_integrate.append(X_test_integrate.T)
+            
+            self.anchors_integ.append(anchor_integ.T)
+            self.anchors_test_integ.append(anchor_test_integ.T)
 
         # 計算した総和をconfigに保存
         self.config.g_abs_sum = total_g_abs_sum
@@ -736,10 +764,10 @@ class DataCollaborationAnalysis:
         Xs_test_integrate = []
 
         # 2. 各機関 k についてループ
-        for anchor_k, X_tr_k, X_te_k in zip(
-            self.anchors_inter, self.Xs_train_inter, self.Xs_test_inter
+        for anchor_k, X_tr_k, X_te_k, anchor_inter, anchor_test_inter in zip(
+            self.anchors_inter, self.Xs_train_inter, self.Xs_test_inter, self.anchors_inter, self.anchors_test_inter
         ):
-            # 3. M_k = A_k^T @ A_1 を計算
+            # 3. M_k = A_k^T @ A_1 を計算　Oはなし
             M_k = anchor_k.T @ anchor_1
 
             # 4. M_k を特異値分解(SVD)
@@ -753,6 +781,10 @@ class DataCollaborationAnalysis:
             # これにより、全機関の表現が anchor_1 と同じ次元数に変換される
             Xs_train_integrate.append(X_tr_k @ G_k)
             Xs_test_integrate.append(X_te_k @ G_k)
+            self.anchors_integ.append(anchor_inter @ G_k)
+            self.anchors_test_integ.append(anchor_test_inter @ G_k)
+
+        self.Z = anchor_1
 
         # 7. スタックして最終データを保持
         self.X_train_integ = np.vstack(Xs_train_integrate)
@@ -1124,16 +1156,16 @@ class DataCollaborationAnalysis:
 
             # (a) 学習データの射影
             K_tr = rbf_kernel(X_tr, S̃_train, gamma=γ)  # n_k×r
-            #s = np.linalg.svd(K_tr, compute_uv=False)
-            #mu_max = s.max()
-            #K_tr = K_tr / mu_max    
+            s = np.linalg.svd(K_tr, compute_uv=False)
+            mu_max = s.max()
+            K_tr = K_tr / mu_max    
             Xs_train_intg.append(K_tr @ Bk)       # n_k×p̂
 
             # (b) テストデータの射影
             K_te = rbf_kernel(X_te, S̃_train, gamma=γ)  # t_k×r
-            #s = np.linalg.svd(K_te, compute_uv=False)
-            #mu_max = s.max()
-            #K_te = K_te / mu_max                             # ||K||_2 = 1
+            s = np.linalg.svd(K_te, compute_uv=False)
+            mu_max = s.max()
+            K_te = K_te / mu_max                             # ||K||_2 = 1
             Xs_test_intg.append(K_te @ Bk)        # t_k×p̂
 
             # (c) 学習アンカーの射影結果 S_hat (P @ Z と等価)
@@ -1142,8 +1174,8 @@ class DataCollaborationAnalysis:
 
             # (d) ★★★ テストアンカーの射影結果 S_hat_test ★★★
             K_anchor_test = rbf_kernel(S̃_test, S̃_train, gamma=γ) # (r_test, r_train)
-            #mu_max = max(eigvalsh(K_anchor_test).max(), 1e-12)            # スペクトル半径
-            #K_anchor_test = K_anchor_test / mu_max                             # ||K||_2 = 1
+            mu_max = max(eigvalsh(K_anchor_test).max(), 1e-12)            # スペクトル半径
+            K_anchor_test = K_anchor_test / mu_max                             # ||K||_2 = 1
             self.anchors_test_integ.append(K_anchor_test @ Bk)
 
                 

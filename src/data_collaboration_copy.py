@@ -199,8 +199,10 @@ class DataCollaborationAnalysis:
                 self.config.f_seed_2 += 1
                 if self.config.f_seed_2 % 2 == 0:
                     self.config.F_type = "svd"
+                    print("svd")
                 else:
                     self.config.F_type = "kernel_pca_self_tuning"
+                    print("kernel")
             elif unfixed_mixed:
                 self.config.f_seed_2 += 1
                 if self.config.f_seed_2 % 6 == 0:
