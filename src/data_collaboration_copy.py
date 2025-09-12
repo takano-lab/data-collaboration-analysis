@@ -168,13 +168,53 @@ class DataCollaborationAnalysis:
 
         return Xs_train, Xs_test, ys_train, ys_test
 
-    @staticmethod
-    def produce_anchor(num_row: int, num_col: int, seed: int = 0) -> np.ndarray:
+   # @staticmethod
+    #def produce_anchor(num_row: int, num_col: int, seed: int = 0) -> np.ndarray:
+    #    """
+    #    アンカーデータを生成する関数
+    #    """
+    #    np.random.seed(seed=seed)
+    #    anchor = np.random.randn(num_row, num_col)
+    #    return anchor
+    
+    def produce_anchor(self, num_row: int, num_col: int, seed: int = 0) -> np.ndarray:
         """
-        アンカーデータを生成する関数
+        train_df の各特徴量の [min, max] から一様乱数でアンカーを生成する。
+        y 列（config.y_name）は除外。
         """
-        np.random.seed(seed=seed)
-        anchor = np.random.randn(num_row, num_col)
+        rng = np.random.default_rng(seed)
+        y_name = getattr(self.config, "y_name", "target")
+
+        # 特徴量行列の取得（y を除外）
+        if y_name in self.train_df.columns:
+            X_df = self.train_df.drop(columns=[y_name])
+        else:
+            # フォールバック（分割済みがある場合）
+            if self.Xs_train:
+                X_df = pd.DataFrame(np.vstack(self.Xs_train))
+            else:
+                # 何も無ければ [-1,1] の一様
+                return rng.uniform(-1.0, 1.0, size=(num_row, num_col))
+
+        X_vals = X_df.values
+        # 列数は num_col に合わせる（超過分は切り詰め）
+        if X_vals.shape[1] < num_col:
+            num_col = X_vals.shape[1]
+        X_vals = X_vals[:, :num_col]
+
+        # 列ごとの min/max（NaN 無視）
+        col_min = np.nanmin(X_vals, axis=0)
+        col_max = np.nanmax(X_vals, axis=0)
+
+        # 無効値はデフォルト [-1,1] に置換
+        invalid = ~np.isfinite(col_min) | ~np.isfinite(col_max)
+        col_min = np.where(invalid, -1.0, col_min)
+        col_max = np.where(invalid,  1.0, col_max)
+
+        # 一様サンプリング（幅0の列は定数になる）
+        width = np.clip(col_max - col_min, 0.0, None)
+        U = rng.random((num_row, num_col))
+        anchor = col_min + U * width
         return anchor
 
     def make_intermediate_expression(self) -> None:

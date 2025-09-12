@@ -492,6 +492,7 @@ def reduce_dimensions(
 
         return X_train_kcca, X_test_kcca
         
+    #elif F_type == "UMAP":
         
 
     else:
@@ -504,7 +505,7 @@ def reduce_dimensions(
         if F_type == "kernel_pca":
             gamma = 1.0 / X_train.shape[1] # har だと 0.001 が精度良い
         elif F_type == "kernel_pca_self_tuning":
-            gamma = self_tuning_gamma(X_train_scaled, standardize=False, k=7, summary='median')#/2
+            gamma = self_tuning_gamma(X_train_scaled, standardize=False, k=7, summary='median') * config.gamma_ratio
             #print("gamma")
             #print(gamma)
             #gamma = 0.1

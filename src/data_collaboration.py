@@ -258,6 +258,8 @@ class DataCollaborationAnalysis:
         self.logger.info(f"{self.config.dim_integrate}:次元")
         self.logger.info(f"{self.config.num_institution_user} 機関人数")
         self.logger.info(f"{self.config.num_institution} 機関数")
+        
+        self.integrate_metrics()
 
 
     @staticmethod
@@ -309,6 +311,46 @@ class DataCollaborationAnalysis:
         np.random.seed(seed=seed)
         anchor = np.random.randn(num_row, num_col)
         return anchor
+
+    # def produce_anchor(self, num_row: int, num_col: int, seed: int = 0) -> np.ndarray:
+    #     """
+    #     train_df の各特徴量の [min, max] から一様乱数でアンカーを生成する。
+    #     y 列（config.y_name）は除外。
+    #     """
+    #     rng = np.random.default_rng(seed)
+    #     y_name = getattr(self.config, "y_name", "target")
+
+    #     # 特徴量行列の取得（y を除外）
+    #     if y_name in self.train_df.columns:
+    #         X_df = self.train_df.drop(columns=[y_name])
+    #     else:
+    #         # フォールバック（分割済みがある場合）
+    #         if self.Xs_train:
+    #             X_df = pd.DataFrame(np.vstack(self.Xs_train))
+    #         else:
+    #             # 何も無ければ [-1,1] の一様
+    #             return rng.uniform(-1.0, 1.0, size=(num_row, num_col))
+
+        # X_vals = X_df.values
+        # # 列数は num_col に合わせる（超過分は切り詰め）
+        # if X_vals.shape[1] < num_col:
+        #     num_col = X_vals.shape[1]
+        # X_vals = X_vals[:, :num_col]
+
+        # # 列ごとの min/max（NaN 無視）
+        # col_min = np.nanmin(X_vals, axis=0)
+        # col_max = np.nanmax(X_vals, axis=0)
+
+        # # 無効値はデフォルト [-1,1] に置換
+        # invalid = ~np.isfinite(col_min) | ~np.isfinite(col_max)
+        # col_min = np.where(invalid, -1.0, col_min)
+        # col_max = np.where(invalid,  1.0, col_max)
+
+        # # 一様サンプリング（幅0の列は定数になる）
+        # width = np.clip(col_max - col_min, 0.0, None)
+        # U = rng.random((num_row, num_col))
+        # anchor = col_min + U * width
+        # return anchor
 
     def make_intermediate_expression(self) -> None:
         print("********************中間表現の生成********************")
@@ -3343,3 +3385,80 @@ class DataCollaborationAnalysis:
         df_integrated_all.to_csv(integrated_save_path, index=False)
         self.logger.info(f"✅ 統合表現をCSVに保存しました: {integrated_save_path}")
 
+    def integrate_metrics(self, which: str = "test") -> dict:
+        """
+        anchors_[test_]integ の機関間ペアごとに:
+          D_{ij} = A_i - A_j（行: サンプル, 列: 次元）
+          行ごとの L2 距離 ||D_{ij}[n,:]||_2 を合計（sum, mean, maxも記録）
+        結果を self.config.integ_metrics に保存して返す。
+        
+        Args:
+            which: "test" -> self.anchors_test_integ を対象
+                   "train"-> self.anchors_integ を対象
+        Returns:
+            dict: {"pairs": [...], "summary": {...}}
+        """
+        import numpy as np
+        from itertools import combinations
+
+        anchors_list = self.anchors_test_integ if which == "test" else self.anchors_integ
+
+        if not anchors_list or len(anchors_list) < 2:
+            self.logger.warning("integrate_metrics: 対象のアンカー統合表現が不足しています。")
+            metrics = {"pairs": [], "summary": {}}
+            self.config.integ_metrics = 100000
+            return metrics
+
+        results = []
+        for i, j in combinations(range(len(anchors_list)), 2):
+            Ai = anchors_list[i]
+            Aj = anchors_list[j]
+
+            if Ai is None or Aj is None or Ai.size == 0 or Aj.size == 0:
+                self.logger.warning(f"integrate_metrics: 空の配列をスキップ (i={i}, j={j})")
+                continue
+
+            # 行数が異なる場合は小さい方に合わせる
+            n = min(Ai.shape[0], Aj.shape[0])
+            if (Ai.shape[0] != Aj.shape[0]) or (Ai.shape[1] != Aj.shape[1]):
+                self.logger.warning(
+                    f"integrate_metrics: 形状不一致 i={i}{Ai.shape}, j={j}{Aj.shape} -> "
+                    f"先頭 {n} 行・共通次元に合わせて比較します。"
+                )
+            dmin = min(Ai.shape[1], Aj.shape[1])
+            Di = Ai[:n, :dmin] - Aj[:n, :dmin]  # 行対応の差分
+            row_dists = np.linalg.norm(Di, axis=1)  # 各サンプルの距離
+            res = {
+                "i": i,
+                "j": j,
+                "sum": float(row_dists.sum()),
+                "mean": float(row_dists.mean()),
+                "max": float(row_dists.max()),
+                "n_rows_used": int(n),
+                "dim_used": int(dmin),
+            }
+            results.append(res)
+
+        if not results:
+            metrics = {"pairs": [], "summary": {}}
+            self.config.integ_metrics = 100000
+            return metrics
+
+        sums = np.array([r["sum"] for r in results], dtype=float)
+        summary = {
+            "pair_count": int(len(results)),
+            "sum_mean": float(sums.mean()),
+            "sum_min": float(sums.min()),
+            "sum_max": float(sums.max()),
+        }
+
+        metrics = {"pairs": results, "summary": summary}
+        self.config.integ_metrics = float(sums.mean())  # ← ここに保存
+        self.config.integ_metrics = round(self.config.integ_metrics, 1)
+        # 簡易出力
+        print(f"[integrate_metrics/{which}] ペア数={summary['pair_count']}, "
+              f"sum_mean={summary['sum_mean']:.6g}, "
+              f"min={summary['sum_min']:.6g}, max={summary['sum_max']:.6g}")
+        self.logger.info(f"[integrate_metrics/{which}] {summary}")
+
+        return metrics

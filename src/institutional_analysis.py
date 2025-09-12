@@ -45,7 +45,7 @@ def centralize_analysis(config: Config, logger: logger, y_name) -> None:
     
     
     logger.info(f"集中解析の評価値: {metrics:.4f}")
-    record_value_to_cfg(config, "集中解析", metrics)
+    #record_value_to_cfg(config, "集中解析", metrics)
     return metrics
 
 def centralize_analysis_with_dimension_reduction(config: Config, logger: logger, y_name) -> None:
@@ -70,7 +70,7 @@ def centralize_analysis_with_dimension_reduction(config: Config, logger: logger,
                 )
 
     logger.info(f"集中解析（次元削減）の評価値: {metrics:.4f}")
-    record_value_to_cfg(config, "集中解析（次元削減）", metrics)
+    #record_value_to_cfg(config, "集中解析（次元削減）", metrics)
     return metrics
 
 # ----------------------------------------------------------------------
@@ -96,8 +96,8 @@ def individual_analysis(
         break
         
     logger.info(f"個別解析の評価値: {np.mean(losses):.4f}")
-    record_value_to_cfg(config, "個別解析", np.mean(losses))
-    return metrics
+    #record_value_to_cfg(config, "個別解析", np.mean(losses))
+    return np.mean(losses)
 
 # ----------------------------------------------------------------------
 # 個別解析
@@ -114,15 +114,23 @@ def individual_analysis_with_dimension_reduction(
     
     model_runner = ModelRunner(config)
 
-    for X_tr, X_te, y_tr, y_te in zip(Xs_train, Xs_test, ys_train, ys_test):
+    even_losses = []    
+    odd_losses = []
+    for i, (X_tr, X_te, y_tr, y_te) in enumerate(zip(Xs_train, Xs_test, ys_train, ys_test)):
         X_tr_svd, X_te_svd = reduce_dimensions(X_tr, X_te, n_components=config.dim_intermediate)
         metrics = model_runner.run(X_tr_svd, y_tr, X_te_svd, y_te)
         losses.append(metrics)
-        break
-        
+        if i % 2 == 0:
+            even_losses.append(metrics)
+        else:
+            odd_losses.append(metrics)
+
+    config.losses_even_ind = round(sum(even_losses)/len(even_losses), 4)
+    config.losses_odd_ind = round(sum(odd_losses)/len(odd_losses), 4)
+    config.losses_ind = round(sum(losses)/len(losses), 4)
     logger.info(f"個別解析の評価値: {np.mean(losses):.4f}")
-    record_value_to_cfg(config, "個別解析（次元削減）", np.mean(losses))
-    return metrics
+    #record_value_to_cfg(config, "個別解析（次元削減）", np.mean(losses))
+    return config.losses_ind
 
 
 # ----------------------------------------------------------------------
@@ -181,7 +189,7 @@ def fl_analysis(
     )
 
     logger.info(f"FL解析 (Scratch) の最終評価値: {final_auc:.4f}")
-    record_value_to_cfg(config, "FL解析", final_auc)
+    #record_value_to_cfg(config, "FL解析", final_auc)
     return final_auc
 
 
@@ -205,6 +213,6 @@ def dca_analysis(
         y_test=y_test_integ,
     )
     logger.info(f"提案手法の評価値: {metrics:.4f}")
-    record_value_to_cfg(config, "提案手法", metrics)
+    #record_value_to_cfg(config, "提案手法", metrics)
     return metrics
 

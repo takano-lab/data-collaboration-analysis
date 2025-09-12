@@ -74,17 +74,23 @@ def main(visualize):
         print(1111)
     #data_collaboration.save_representations_to_csv()
         # 提案手法
-    record_config_to_cfg(config)
+    #record_config_to_cfg(config)
     if config.G_type == 'centralize':
                 # 集中解析
         metrics_cen = centralize_analysis(config, logger, y_name=config.y_name)
         metrics_dict['centralize'] = metrics_cen
+        record_config_to_cfg(config)
+        record_value_to_cfg(config, "評価値", metrics_cen)
         return metrics_cen
+    
     elif config.G_type == 'centralize_dim':
         # 集中解析 with 次元削減
         metrics_cen_dim = centralize_analysis_with_dimension_reduction(config, logger, y_name=config.y_name)
         metrics_dict['centralize_dim'] = metrics_cen_dim
+        record_config_to_cfg(config)
+        record_value_to_cfg(config, "評価値", metrics_cen_dim)
         return metrics_cen_dim
+    
     elif config.G_type == 'individual':
         # 個別解析
         metrics_ind = individual_analysis(
@@ -96,7 +102,24 @@ def main(visualize):
             ys_test=data_collaboration.ys_test,
         )
         #metrics_dict['individual'] = metrics_ind
+        record_config_to_cfg(config)
+        record_value_to_cfg(config, "評価値", metrics_ind)
         return metrics_ind
+    
+    elif config.G_type == 'individual_dim':
+        # 個別解析 with 次元削減
+        metrics_ind_dim = individual_analysis_with_dimension_reduction(
+            config=config,
+            logger=logger,
+            Xs_train=data_collaboration.Xs_train,
+            ys_train=data_collaboration.ys_train,
+            Xs_test=data_collaboration.Xs_test,
+            ys_test=data_collaboration.ys_test,
+        )
+        record_config_to_cfg(config)
+        record_value_to_cfg(config, "評価値", metrics_ind_dim)
+        return metrics_ind_dim
+    
     elif config.G_type == 'fl':
         metrics_fl = fl_analysis(
             config=config,
@@ -107,10 +130,19 @@ def main(visualize):
             ys_test=data_collaboration.ys_test,
         )
         metrics_dict['fl'] = metrics_fl
+        record_config_to_cfg(config)
+        record_value_to_cfg(config, "評価値", metrics_fl)
         return metrics_fl
     else:
-        # config.num_institution
-        # config.num_institution_user
+        metrics_ind_dim = individual_analysis_with_dimension_reduction(
+            config=config,
+            logger=logger,
+            Xs_train=data_collaboration.Xs_train,
+            ys_train=data_collaboration.ys_train,
+            Xs_test=data_collaboration.Xs_test,
+            ys_test=data_collaboration.ys_test,
+        )
+
         # metrics = dca_analysis(
         #                 X_train_integ=data_collaboration.X_train_integ,
         #                 X_test_integ=data_collaboration.X_test_integ,
@@ -119,29 +151,34 @@ def main(visualize):
         #                 config=config,
         #                 logger=logger,
         #             )
-        # return metrics
-        config.num_institution
-        config.num_institution_user
+        # record_config_to_cfg(config)
+        # record_value_to_cfg(config, "評価値", metrics)
+        # print("評価値", metrics)
+        #return metrics
+        
         # --- ここから機関ごとの metrics を算出 ---
         # 各機関のサンプル数（元リスト）から、統合後配列のスライス境界を作る
-        train_counts = [len(y) for y in data_collaboration.ys_train]
+        #train_counts = [len(y) for y in data_collaboration.ys_train]
         test_counts  = [len(y) for y in data_collaboration.ys_test]
-        n_inst = min(config.num_institution, len(train_counts))
+        test_counts  = [config.num_institution_user for y in data_collaboration.ys_test]
+        n_inst = config.num_institution
 
-        train_cum = np.concatenate(([0], np.cumsum(train_counts)))
+        #train_cum = np.concatenate(([0], np.cumsum(train_counts)))
         test_cum  = np.concatenate(([0], np.cumsum(test_counts)))
 
-        inst_metrics = []
+        inst_losses = []
+        even_losses = []
+        odd_losses = []
+        
         for i in range(n_inst):
             # 各機関の訓練・テストから num_institution_user 件だけ使用
-            tr_start, tr_end = int(train_cum[i]), int(train_cum[i+1])
+            #tr_start, tr_end = int(train_cum[i]), int(train_cum[i+1])
             te_start, te_end = int(test_cum[i]),  int(test_cum[i+1])
-
-            tr_take = min(config.num_institution_user, tr_end - tr_start)
-            te_take = min(config.num_institution_user, te_end - te_start)
-
-            X_tr_i = data_collaboration.X_train_integ[tr_start: tr_start + tr_take, :]
-            y_tr_i = data_collaboration.y_train_integ[tr_start: tr_start + tr_take]
+            #tr_take = min(config.num_institution_user, tr_end - tr_start)
+            #te_take = min(config.num_institution_user, te_end - te_start)
+            te_take = config.num_institution_user
+            #X_tr_i = data_collaboration.X_train_integ[tr_start: tr_start + tr_take, :]
+            #y_tr_i = data_collaboration.y_train_integ[tr_start: tr_start + tr_take]
             X_te_i = data_collaboration.X_test_integ[te_start:  te_start  + te_take,  :]
             y_te_i = data_collaboration.y_test_integ[te_start:  te_start  + te_take]
 
@@ -154,17 +191,32 @@ def main(visualize):
                 config=config,
                 logger=logger,
             )
-            inst_metrics.append(metric_i)
+            inst_losses.append(metric_i)
+            
+            if i % 2 == 0:
+                even_losses.append(metric_i)
+            else:
+                odd_losses.append(metric_i)
 
         # 平均・最小・最大を算出して出力
-        inst_metrics = np.array(inst_metrics, dtype=float)
-        mean_val = float(inst_metrics.mean())
-        min_val  = float(inst_metrics.min())
-        max_val  = float(inst_metrics.max())
-
-        print(f"機関ごとの {config.metrics}: {np.round(inst_metrics, 4).tolist()}")
+        inst_losses = np.array(inst_losses, dtype=float)
+        mean_val = float(inst_losses.mean())
+        min_val  = float(inst_losses.min())
+        max_val  = float(inst_losses.max())
+        
+        config.losses_mean = round(mean_val, 4)
+        config.losses_even =  round(sum(even_losses)/len(even_losses), 4)
+        config.losses_odd = round(sum(odd_losses)/len(odd_losses), 4)
+        #record_config_to_cfg(config)
+        
+        print("評価値2", mean_val)
+        record_config_to_cfg(config)
+        record_value_to_cfg(config, "評価値", mean_val)
+        #print("評価値", mean_val)
+        print("config.losses_mean", config.losses_mean)
+        print(f"機関ごとの {config.metrics}: {np.round(inst_losses, 4).tolist()}")
         print(f"平均: {mean_val:.4f}, 最小: {min_val:.4f}, 最大: {max_val:.4f}")
-        logger.info(f"機関ごとの {config.metrics}: {inst_metrics.tolist()}")
+        logger.info(f"機関ごとの {config.metrics}: {inst_losses.tolist()}")
         logger.info(f"平均: {mean_val:.6f}, 最小: {min_val:.6f}, 最大: {max_val:.6f}")
 
         # main_loop の集計用に平均値を返す
@@ -191,21 +243,21 @@ def main(visualize):
     #     Xs_test=data_collaboration.Xs_test_inter,
     #     ys_test=data_collaboration.ys_test,
     # )
-    return metrics_dict 
+    #return metrics_dict 
 
 def main_loop():
     LOADERS = [
+    #    "concentric_three_circles",
     #    "mice",
     #  "statlog",
         'qsar',
     #   "breast_cancer",
-    #   "har",
     #    "adult",
+    #    "digits",
+    #    "concentric_circles",
+    #    "har",
     #    "diabetes130",
     #    "bank_marketing", # 性能に変化でない
-    #"digits",
-    #    "concentric_circles",
-    # "concentric_three_circles",
     #    "two_gaussian_distributions",
     #    '3D_gaussian_clusters',
     #    "3D_8_gaussian_clusters",
@@ -223,8 +275,8 @@ def main_loop():
     MODELS = ["mlp"]#, "mlp"]#"random_forest"]#, "svm_linear_classifier", "mlp"]#"mlp"]#, "svm_linear_classifier"] #"svm_classifier"]#"random_forest"]#, _linear_
     gamma_types = ["X_tuning"] 
     F_types = ["kernel_pca_svd_mixed"]#"kernel_pca_svd_mixed", "svd", "kernel_pca_self_tuning"]#, "svd", "kernel_pca_self_tuning"]#"svd", "kernel_pca", "kernel_pca_self_tuning", ] # , "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    G_types = ["Imakura", "ODC", "nonlinear"]# "nonlinear_tuning"#'centralize_dim', "nonlinear", "Imakura"]#"nonlinear_tuning"]#, "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#["fl", 'centralize', 'individual', "Imakura", "ODC", "GEP", "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#'centralize_dim', "nonlinear", "Imakura"]#
-    # G_types = ["nonlinear"] mlp_objective # "individual", "Imakura", "ODC",
+   #G_types = ['centralize', "individual", "Imakura", "GEP",  "ODC", "nonlinear"]#, 'centralize', "individual", "Imakura", "GEP",  "ODC", "nonlinear"]# "nonlinear_tuning"#'centralize_dim', "nonlinear", "Imakura"]#"nonlinear_tuning"]#, "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#["fl", 'centralize', 'individual', "Imakura", "ODC", "GEP", "nonlinear", "nonlinear_tuning", "nonlinear_linear"]#'centralize_dim', "nonlinear", "Imakura"]#
+    G_types = ["nonlinear"] # "nonlinear", "Imakura", "GEP",  
     config.F_type = F_types[0]
     F_type = F_types[0]
     config.True_F_type = F_types[0]
@@ -238,6 +290,13 @@ def main_loop():
     visualize = False
     data = {}
     model = MODELS[0]
+    config.losses_even_ind = 0
+    config.losses_odd_ind = 0
+    config.losses_ind = 0
+    config.losses_mean = 0
+    config.losses_even = 0
+    config.losses_odd = 0
+    config.integ_metrics = 0
     for dataset in tqdm(LOADERS):
         config.now = "f"
         for met in ["auc"]:#, "accuracy"
@@ -245,7 +304,9 @@ def main_loop():
             config.h_model = model
             print(dataset)
             config.dataset = dataset
-            for F_type in F_types:
+            for gamma_ratio in [1]:#0.1, 1, 5]: # [0.01, 0.1, 1, 10, 100]
+                F_type = F_types[0]
+                config.gamma_ratio = gamma_ratio
                 config.F_type = F_type
                 config.True_F_type = F_type
                 for G_type in G_types:
@@ -253,75 +314,99 @@ def main_loop():
                     for lw_alpha in [0]:
                         config.lw_alpha = lw_alpha
                         config.lb_beta = lw_alpha
-                        if G_type != "nonlinear" and lw_alpha != 0:
-                            continue
                         semi_integ = False
                         orth = False
                         config.semi_integ = semi_integ
                         config.orth_ver = orth
-                    #semi_orth_list = [(False, False)]
-                    #if G_type == "GEP":
-                    #    semi_orth_list = [(False, False), (False, True), (True, False)]
-                    #for semi_integ, orth in semi_orth_list:
-                        #if G_type != "GEP" :
-                            #if [semi_integ, orth] != [False, False]:
-                            #    continue
-                        #print(G_type, semi_integ, orth)
-                        #config.semi_integ = semi_integ
-                        #config.orth_ver = orth
                         metrics = []
-                        for i in range(5, 10):
+                        losses_even_ind_list = []
+                        losses_odd_ind_list = []
+                        losses_ind_list = []
+                        losses_mean_list = []
+                        losses_even_list = []
+                        losses_odd_list = []
+                        integ_metrics_list = []
+                        
+                        if G_type == "centralize" or  "individual":
+                            losses_even_ind_list = [0]
+                            losses_odd_ind_list = [0]
+                            losses_ind_list = [0]
+                            losses_mean_list = [0]
+                            losses_even_list = [0]
+                            losses_odd_list = [0]
+                            integ_metrics_list = [0]
+
+                        for i in range(3, 5):
                             config.seed = i
                             #config.f_seed = i
-                            config.plot_name = f"_0911_{dataset}_{G_type}.png" # {self.config.lambda_pred}_{self.config.dataset}
+                            config.plot_name = f"_0912_{dataset}_{G_type}.png" # {self.config.lambda_pred}_{self.config.dataset}
                             print("i", i, "G_type:", G_type)
                             metrics.append(main(visualize))
+                            losses_even_ind_list.append(config.losses_even_ind)
+                            losses_odd_ind_list.append(config.losses_odd_ind)
+                            losses_ind_list.append(config.losses_ind)
+                            losses_mean_list.append(config.losses_mean)
+                            losses_even_list.append(config.losses_even)
+                            losses_odd_list.append(config.losses_odd)
+                            integ_metrics_list.append(config.integ_metrics)
                             config.F_type = config.True_F_type
                         # 平均値を計算
                         metrics_mean = sum(metrics) / len(metrics)
                         metrics_stdev = statistics.stdev(metrics) if len(metrics) > 1 else 0.0
-                        data[f'{dataset}_{F_type}_{model}_{config.G_type}_{lw_alpha}_{met}'] = [dataset, model, F_type, G_type, lw_alpha, met, metrics_mean, metrics_stdev]
+                        losses_even_ind_mean = sum(losses_even_ind_list) / len(losses_even_ind_list)
+                        losses_odd_ind_mean = sum(losses_odd_ind_list) / len(losses_odd_ind_list)
+                        losses_ind_mean = sum(losses_ind_list) / len(losses_ind_list)
+                        losses_mean_mean = sum(losses_mean_list) / len(losses_mean_list)
+                        losses_even_mean = sum(losses_even_list) / len(losses_even_list)
+                        losses_odd_mean = sum(losses_odd_list) / len(losses_odd_list)
+                        integ_metrics_mean = sum(integ_metrics_list) / len(integ_metrics_list)
+                        losses_even_ind_stdev = statistics.stdev(losses_even_ind_list) if len(losses_even_ind_list) > 1 else 0.0
+                        losses_odd_ind_stdev = statistics.stdev(losses_odd_ind_list) if len(losses_odd_ind_list) > 1 else 0.0
+                        losses_ind_stdev = statistics.stdev(losses_ind_list) if len(losses_ind_list) > 1 else 0.0
+                        losses_mean_stdev = statistics.stdev(losses_mean_list) if len(losses_mean_list) > 1 else 0.0
+                        losses_even_stdev = statistics.stdev(losses_even_list) if len(losses_even_list) > 1 else 0.0
+                        losses_odd_stdev = statistics.stdev(losses_odd_list) if len(losses_odd_list) > 1 else 0.0
+                        integ_metrics_stdev = statistics.stdev(integ_metrics_list) if len(integ_metrics_list) > 1 else 0.0
+                        data[f'{dataset}_{F_type}_{model}_{config.G_type}_{gamma_ratio}_{met}'] = [dataset, model, F_type, G_type, gamma_ratio, met, metrics_mean, metrics_stdev, losses_even_ind_mean, losses_even_ind_stdev, losses_odd_ind_mean, losses_odd_ind_stdev, losses_ind_mean, losses_ind_stdev, losses_mean_mean, losses_mean_stdev, losses_even_mean, losses_even_stdev, losses_odd_mean, losses_odd_stdev, integ_metrics_mean, integ_metrics_stdev]
 
 
-    # DataFrameに変換
-    df_all = pd.DataFrame.from_dict(data, orient="index", columns=["dataset", "model", "F_type", "G_type", "lw_alpha", "metrics", "metrics_mean", "metrics_stdev"])
-    df_all.to_csv(output_path / f"result.csv", index=True, encoding="utf-8-sig")
+        # DataFrameに変換
+        df_all = pd.DataFrame.from_dict(data, orient="index", columns=["dataset", "model", "F_type", "G_type", "gamma_ratio", "metrics", "metrics_mean", "metrics_stdev", "even_ind_mean", "even_ind_stdev", "odd_ind_mean", "odd_ind_stdev", "ind_mean", "ind_stdev", "mean_mean", "mean_stdev", "even_mean", "even_stdev", "odd_mean", "odd_stdev", "integ_metrics_mean", "integ_metrics_stdev"])
+        df_all.to_csv(output_path / f"result_{dataset}_0912.csv", index=True, encoding="utf-8-sig")
 
-def partial_run():
-    logger.info(f"データセット: {config.dataset}")
+# def partial_run():
+#     logger.info(f"データセット: {config.dataset}")
     
-    # datasetの読み込み
-    train_df, test_df = load_data(config=config)
+#     # datasetの読み込み
+#     train_df, test_df = load_data(config=config)
     
-    metrics_dict = {}
-    # dim_intermediate,dim_integrate
-    F_types =["kernel_pca"]#["svd", "kernel_pca"]
-    G_types = []#, "targetvec", "GEP", "GEP_weighted"]
-    config.lambda_gen_eigen = 0.00001
-    #for F_type in F_types:
-    dim_intermediate = config.dim_intermediate
-    for dim_intermediate in range(1, dim_intermediate + 1, 5):
-        config.dim_intermediate = dim_intermediate
-        config.dim_integrate = config.dim_intermediate
-        for G_type in G_types:
-            config.F_type = F_types[0]
-            config.G_type = G_type
-            if config.F_type == "kernel_pca" and config.G_type == "GEP_weighted":
-                # GEP_weightedはUSE_KERNELがTrueのときのみ実行
-                return
-            if config.F_type == "kernel_pca" and config.G_type == "GEP":
-                # GEP_weightedはUSE_KERNELがTrueのときのみ実行
-                return
-            # インスタンスの生成
-            data_collaboration = DataCollaborationAnalysis(config=config, logger=logger, train_df=train_df, test_df=test_df)
-            # データ分割 -> 統合表現の獲得まで一気に実行
-            data_collaboration.run()
+#     metrics_dict = {}
+#     # dim_intermediate,dim_integrate
+#     F_types =["kernel_pca"]#["svd", "kernel_pca"]
+#     G_types = []#, "targetvec", "GEP", "GEP_weighted"]
+#     config.lambda_gen_eigen = 0.00001
+#     #for F_type in F_types:
+#     dim_intermediate = config.dim_intermediate
+#     for dim_intermediate in range(1, dim_intermediate + 1, 5):
+#         config.dim_intermediate = dim_intermediate
+#         config.dim_integrate = config.dim_intermediate
+#         for G_type in G_types:
+#             config.F_type = F_types[0]
+#             config.G_type = G_type
+#             if config.F_type == "kernel_pca" and config.G_type == "GEP_weighted":
+#                 # GEP_weightedはUSE_KERNELがTrueのときのみ実行
+#                 return
+#             if config.F_type == "kernel_pca" and config.G_type == "GEP":
+#                 # GEP_weightedはUSE_KERNELがTrueのときのみ実行
+#                 return
+#             # インスタンスの生成
+#             data_collaboration = DataCollaborationAnalysis(config=config, logger=logger, train_df=train_df, test_df=test_df)
+#             # データ分割 -> 統合表現の獲得まで一気に実行
+#             data_collaboration.run()
     
 if __name__ == "__main__":
     name = "main_loop"
     if name == "main_loop":
         main_loop()
-    elif name == "partial_run":
-        partial_run()
     else:
         main()

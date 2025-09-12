@@ -42,7 +42,7 @@ def _load_qsar() -> pd.DataFrame:
     ]
 
     # データ読み込み（区切り文字は ';'）
-    df = pd.read_csv("input/qsar+biodegradation/biodeg.csv", header=None, sep=";")
+    df = pd.read_csv(r"C:\Users\sueya\Git-Repositories\takano_labo\dca_yanagi\input\qsar+biodegradation\biodeg.csv", header=None, sep=";")
     df.columns = columns
 
     # ターゲット変換：RB → 1（ready biodeg）、NRB → 0（not ready）
@@ -388,8 +388,8 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.feature_num = 41
         config.dim_intermediate = 37 # 中間表現の次元数
         config.dim_integrate = 37 # 統合表現の次元数
-        config.num_institution_user = int(25 * 2)
-        config.num_institution = int(20 / 2)
+        config.num_institution_user = 25 # 100
+        config.num_institution = 20#int(len(df) / (config.num_institution_user * 2))                                                            #20
         config.num_anchor_data = 396
         #config.metrics = "accuracy"
     
@@ -397,9 +397,9 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.feature_num = 51
         config.dim_intermediate = 50 # 中間表現の次元数
         config.dim_integrate = 50 # 統合表現の次元数
-        config.num_institution_user = 50
+        config.num_institution_user = 150#50
         config.num_institution = 10
-        config.num_anchor_data = 693          
+        #config.num_anchor_data = 693          
 
     elif config.dataset == "diabetes130":
         config.feature_num = 200
@@ -407,14 +407,14 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.dim_integrate = 100 # 統合表現の次元数
         config.num_institution_user = 500
         config.num_institution = 10
-        config.num_anchor_data = 693  
+        #config.num_anchor_data = 693  
     
     
     elif config.dataset == 'mice':
         config.feature_num = 77
         config.dim_intermediate = 46 # 中間表現の次元数
         config.dim_integrate = 46 # 統合表現の次元数
-        config.num_institution_user = 50
+        config.num_institution_user = 50 # 50
         config.num_institution = 5
         #config.num_anchor_data = 693
         #config.metrics = "accuracy"        
@@ -423,7 +423,7 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.feature_num = 15  # 特徴量の数（目的変数を除く）
         config.dim_intermediate = config.feature_num-1 # 中間表現の次元数
         config.dim_integrate = config.feature_num-1 # 統合表現の次元数
-        config.num_institution_user = 16
+        config.num_institution_user = 60#16
         config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
         #config.metrics = "accuracy"
         
@@ -435,15 +435,15 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.dim_intermediate = 15 # 中間表現の次元数
         config.dim_integrate = 15 # 統合表現の次元数
         config.feature_num = min(len(df.columns) - 1, 51)
-        config.num_institution_user = 30
-        config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
+        config.num_institution_user = 100#30
+        config.num_institution = 10#min(100, int(len(df) / (config.num_institution_user * 2)))
 
     elif config.dataset == 'mnist' or config.dataset == 'fashion_mnist':
         config.feature_num = len(df.columns) - 1  # 特徴量の数（目的変数を除く）
         config.dim_intermediate = 10 # 中間表現の次元数
         config.dim_integrate = 10 # 統合表現の次元数
-        config.num_institution = 10
         config.num_institution_user = 50
+        config.num_institution = 10
                                                                       
     elif config.dataset == 'concentric_circles':
         config.feature_num = 2
@@ -506,7 +506,7 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.feature_num = len(df.columns) - 1
         config.dim_intermediate = config.feature_num - 1
         config.dim_integrate = config.feature_num - 1
-        config.num_institution_user = 30#, max(config.dim_integrate + 1, 50) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
+        config.num_institution_user = 200# 30#, max(config.dim_integrate + 1, 50) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
         config.num_institution = min(int(len(df) / (config.num_institution_user * 2)), 5)
         #config.metrics = "auc"
     
