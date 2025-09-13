@@ -225,6 +225,7 @@ class DataCollaborationAnalysis:
         print(self.config)
         print("self.config.dim_intermediate", self.config.dim_intermediate)
         print()
+        self.config.f_seed = 0
         self.config.f_seed_2 = 0
         mixed = False
         unfixed_mixed = False

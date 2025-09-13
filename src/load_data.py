@@ -310,6 +310,151 @@ def _load_har() -> pd.DataFrame:
     
     return df
 
+def _load_wine_quality() -> pd.DataFrame:
+    """
+    UCI Wine Quality (red/white)。セミコロン区切り。
+    例:
+      input/winequality/winequality-red.csv
+      input/winequality/winequality-white.csv
+      input/wine+quality/winequality-red.csv など
+    'quality' を 3クラスにビニング（low/mid/high）。不足時は 2クラスへフォールバック。
+    """
+    folder_candidates = [
+        Path("input/winequality"),
+        Path("input/wine+quality"),
+        Path("input/wine_quality"),
+        Path("input/wine"),
+    ]
+    red = None
+    white = None
+    for f in folder_candidates:
+        if (f / "winequality-red.csv").exists():
+            red = f / "winequality-red.csv"
+        if (f / "winequality-white.csv").exists():
+            white = f / "winequality-white.csv"
+
+    if not red and not white:
+        raise FileNotFoundError("Wine Quality の CSV が見つかりません。例: input/winequality/winequality-red.csv")
+
+    frames = []
+    if red:
+        df_r = pd.read_csv(red, sep=";")
+        df_r["wine_type"] = "red"
+        frames.append(df_r)
+    if white:
+        df_w = pd.read_csv(white, sep=";")
+        df_w["wine_type"] = "white"
+        frames.append(df_w)
+
+    df = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+
+    # quality を 3クラスへ（多くの研究で使われる簡便な分割）
+    # low: <=5, mid: ==6, high: >=7
+    q = df["quality"].astype(int)
+    bins3 = pd.Series(np.where(q <= 5, "low", np.where(q >= 7, "high", "mid")))
+    df = df.drop(columns=["quality"])
+    df = df.rename(columns={"quality": "quality_orig"}) if "quality" in df.columns else df
+    df["target"] = bins3
+
+    # クラス数チェック → 足りなければ 2値へ（<=5: bad, >=6: good）
+    vc = df["target"].value_counts()
+    if (vc < 10).any():
+        df["target"] = np.where(q >= 6, "good", "bad")
+
+    return df
+
+
+def _load_glass() -> pd.DataFrame:
+    """
+    UCI Glass Identification。ヘッダ無し CSV。
+    例:
+      input/glass+identification/glass.data
+      input/glass/glass.data
+    最初の列は ID なので落とし、最後の Type を 'target' に。
+    """
+    candidates = [
+        Path("input/glass+identification/glass.data"),
+        Path("input/glass/glass.data"),
+        Path("input/glass.data"),
+        Path("input/glass/glass.csv"),
+        Path("input/glass.csv"),
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is None:
+        raise FileNotFoundError("Glass データが見つかりません。例: input/glass+identification/glass.data")
+
+    columns = ["Id", "RI", "Na", "Mg", "Al", "Si", "K", "Ca", "Ba", "Fe", "target"]
+    df = pd.read_csv(path, header=None, names=columns)
+    df = df.drop(columns=["Id"])
+    return df
+
+
+def _load_seeds() -> pd.DataFrame:
+    """
+    UCI Seeds。空白区切り or CSV。
+    例:
+      input/seeds/seeds_dataset.txt
+      input/seeds/seeds_dataset.csv
+      input/seeds_dataset.txt
+    最後の列(1..3)を 'target' に。
+    """
+    candidates = [
+        Path("input/seeds/seeds_dataset.txt"),
+        Path("input/seeds/seeds_dataset.csv"),
+        Path("input/seeds_dataset.txt"),
+        Path("input/seeds_dataset.csv"),
+        Path("input/seeds/seeds.data"),
+        Path("input/seeds/seeds.data.txt"),
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is None:
+        raise FileNotFoundError("Seeds データが見つかりません。例: input/seeds/seeds_dataset.txt")
+
+    columns = [
+        "area",
+        "perimeter",
+        "compactness",
+        "length_of_kernel",
+        "width_of_kernel",
+        "asymmetry_coefficient",
+        "length_of_kernel_groove",
+        "target",
+    ]
+    if path.suffix.lower() in [".txt", ".data"]:
+        df = pd.read_csv(path, sep=r"\s+", header=None, names=columns)
+    else:
+        df = pd.read_csv(path, header=None, names=columns)
+    return df
+
+
+def _load_letter_recognition() -> pd.DataFrame:
+    """
+    UCI Letter Recognition。先頭列が A..Z のラベル。
+    例:
+      input/letter+recognition/letter-recognition.data
+      input/letter-recognition/letter-recognition.data
+    """
+    candidates = [
+        Path("input/letter+recognition/letter-recognition.data"),
+        Path("input/letter-recognition/letter-recognition.data"),
+        Path("input/letter_recognition/letter-recognition.data"),
+        Path("input/letter-recognition.csv"),
+        Path("input/letter_recognition.csv"),
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is None:
+        raise FileNotFoundError("Letter Recognition データが見つかりません。例: input/letter+recognition/letter-recognition.data")
+
+    columns = [
+        "target",
+        "x-box", "y-box", "width", "high", "onpix",
+        "x-bar", "y-bar", "x2bar", "y2bar", "xybar",
+        "x2ybr", "xy2br", "x-ege", "xegvy", "y-ege", "yegvx",
+    ]
+    df = pd.read_csv(path, header=None, names=columns)
+    return df
+
+
 LOADERS = {
     "qsar":_load_qsar,
     "breast_cancer":_load_breast_cancer,
@@ -329,6 +474,12 @@ LOADERS = {
     "3D_8_gaussian_clusters": _load_3D_8_gaussian_clusters_df,
     "mice": _load_mice_df,
     "housing": _load_housing,
+    
+    # UCI: 追加
+    "wine_quality": _load_wine_quality,
+    "glass": _load_glass,
+    "seeds": _load_seeds,
+    "letter_recognition": _load_letter_recognition,
 
     # === TDC datasets ===
     "ames": lambda: load_tdc_dataset("AMES"),
@@ -382,145 +533,169 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
     # ── 再結合
     df = pd.concat([X, y.reset_index(drop=True)], axis=1)
 
-
-
-    if config.dataset == 'qsar':
-        config.feature_num = 41
-        config.dim_intermediate = 37 # 中間表現の次元数
-        config.dim_integrate = 37 # 統合表現の次元数
-        config.num_institution_user = 25 # 100
-        config.num_institution = 20#int(len(df) / (config.num_institution_user * 2))                                                            #20
-        config.num_anchor_data = 396
-        #config.metrics = "accuracy"
+    # if config.dataset == 'qsar':
+    #     config.feature_num = 41
+    #     config.dim_intermediate = 37 # 中間表現の次元数
+    #     config.dim_integrate = 37 # 統合表現の次元数
+    #     config.num_institution_user = 25 # 100
+    #     config.num_institution = 20#int(len(df) / (config.num_institution_user * 2))                                                            #20
+    #     #config.num_anchor_data = 396
+    #     #config.metrics = "accuracy"
     
-    elif config.dataset == "adult":
-        config.feature_num = 51
-        config.dim_intermediate = 50 # 中間表現の次元数
-        config.dim_integrate = 50 # 統合表現の次元数
-        config.num_institution_user = 150#50
-        config.num_institution = 10
-        #config.num_anchor_data = 693          
+    # elif config.dataset == "adult":
+    #     config.feature_num = 51
+    #     config.dim_intermediate = 50 # 中間表現の次元数
+    #     config.dim_integrate = 50 # 統合表現の次元数
+    #     config.num_institution_user = 150#50
+    #     config.num_institution = 10
+    #     #config.num_anchor_data = 693          
 
-    elif config.dataset == "diabetes130":
-        config.feature_num = 200
-        config.dim_intermediate = 100 # 中間表現の次元数
-        config.dim_integrate = 100 # 統合表現の次元数
-        config.num_institution_user = 500
-        config.num_institution = 10
-        #config.num_anchor_data = 693  
+    # elif config.dataset == "diabetes130":
+    #     config.feature_num = 200
+    #     config.dim_intermediate = 100 # 中間表現の次元数
+    #     config.dim_integrate = 100 # 統合表現の次元数
+    #     config.num_institution_user = 500
+    #     config.num_institution = 10
+    #     #config.num_anchor_data = 693  
     
     
-    elif config.dataset == 'mice':
-        config.feature_num = 77
-        config.dim_intermediate = 46 # 中間表現の次元数
-        config.dim_integrate = 46 # 統合表現の次元数
-        config.num_institution_user = 50 # 50
-        config.num_institution = 5
-        #config.num_anchor_data = 693
-        #config.metrics = "accuracy"        
+    # elif config.dataset == 'mice':
+    #     config.feature_num = 77
+    #     config.dim_intermediate = 46 # 中間表現の次元数
+    #     config.dim_integrate = 46 # 統合表現の次元数
+    #     config.num_institution_user = 50 # 50
+    #     config.num_institution = 5
+    #     #config.num_anchor_data = 693
+    #     #config.metrics = "accuracy"        
 
-    elif config.dataset == 'breast_cancer':
-        config.feature_num = 15  # 特徴量の数（目的変数を除く）
-        config.dim_intermediate = config.feature_num-1 # 中間表現の次元数
-        config.dim_integrate = config.feature_num-1 # 統合表現の次元数
-        config.num_institution_user = 60#16
-        config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
-        #config.metrics = "accuracy"
+    # elif config.dataset == 'breast_cancer':
+    #     config.feature_num = 15  # 特徴量の数（目的変数を除く）
+    #     config.dim_intermediate = config.feature_num-1 # 中間表現の次元数
+    #     config.dim_integrate = config.feature_num-1 # 統合表現の次元数
+    #     config.num_institution_user = 60#16
+    #     config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
+    #     #config.metrics = "accuracy"
         
-    elif config.dataset == 'digits':
-        #feature_num = 15  # 特徴量の数（目的変数を除く）
-        #config.dim_intermediate = 5 # 中間表現の次元数
-        #config.dim_integrate = 5 # 統合表現の次元数
-        config.feature_num =  len(df.columns) - 1 # 特徴量の数（目的変数を除く）
-        config.dim_intermediate = 15 # 中間表現の次元数
-        config.dim_integrate = 15 # 統合表現の次元数
-        config.feature_num = min(len(df.columns) - 1, 51)
-        config.num_institution_user = 100#30
-        config.num_institution = 10#min(100, int(len(df) / (config.num_institution_user * 2)))
+    # elif config.dataset == 'digits':
+    #     config.feature_num =  len(df.columns) - 1 # 特徴量の数（目的変数を除く）
+    #     config.dim_intermediate = 15 # 中間表現の次元数
+    #     config.dim_integrate = 15 # 統合表現の次元数
+    #     config.feature_num = min(len(df.columns) - 1, 51)
+    #     config.num_institution_user = 100#30
+    #     config.num_institution = 10#min(100, int(len(df) / (config.num_institution_user * 2)))
 
-    elif config.dataset == 'mnist' or config.dataset == 'fashion_mnist':
-        config.feature_num = len(df.columns) - 1  # 特徴量の数（目的変数を除く）
-        config.dim_intermediate = 10 # 中間表現の次元数
-        config.dim_integrate = 10 # 統合表現の次元数
-        config.num_institution_user = 50
-        config.num_institution = 10
+    # elif config.dataset == 'mnist' or config.dataset == 'fashion_mnist':
+    #     config.feature_num = len(df.columns) - 1  # 特徴量の数（目的変数を除く）
+    #     config.dim_intermediate = 10 # 中間表現の次元数
+    #     config.dim_integrate = 10 # 統合表現の次元数
+    #     config.num_institution_user = 50
+    #     config.num_institution = 10
                                                                       
-    elif config.dataset == 'concentric_circles':
-        config.feature_num = 2
-        config.dim_intermediate = 2  # 中間表現の次元数
-        config.dim_integrate = 2  # 統合表現の次元数
-        config.num_institution = 2
-        config.num_institution_user = int(len(df) / (config.num_institution * 2))                                                              
+    # elif config.dataset == 'concentric_circles':
+    #     config.feature_num = 2
+    #     config.dim_intermediate = 2  # 中間表現の次元数
+    #     config.dim_integrate = 2  # 統合表現の次元数
+    #     config.num_institution = 2
+    #     config.num_institution_user = int(len(df) / (config.num_institution * 2))                                                              
 
-    elif config.dataset == 'concentric_three_circles':
-        config.feature_num = 2
-        config.dim_intermediate = 2  # 中間表現の次元数
-        config.dim_integrate = 2  # 統合表現の次元数
-        config.num_institution = 2
-        config.num_institution_user = int(len(df) / (config.num_institution * 2))               
+    # elif config.dataset == 'concentric_three_circles':
+    #     config.feature_num = 2
+    #     config.dim_intermediate = 2  # 中間表現の次元数
+    #     config.dim_integrate = 2  # 統合表現の次元数
+    #     config.num_institution = 2
+    #     config.num_institution_user = int(len(df) / (config.num_institution * 2))               
         
-    elif config.dataset == 'two_gaussian_distributions':
-        config.feature_num = 2
-        config.dim_intermediate = 2
-        config.dim_integrate = 2
-        config.num_institution_user = 50
-        config.num_institution = 5
+    # elif config.dataset == 'two_gaussian_distributions':
+    #     config.feature_num = 2
+    #     config.dim_intermediate = 2
+    #     config.dim_integrate = 2
+    #     config.num_institution_user = 50
+    #     config.num_institution = 5
     
-    elif config.dataset == '3D_gaussian_clusters':
-        config.feature_num = 3
-        config.dim_intermediate = 2
-        config.dim_integrate = 2
-        config.num_institution = 2
-        config.num_institution_user = int(len(df) / (config.num_institution * 2))       
+    # elif config.dataset == '3D_gaussian_clusters':
+    #     config.feature_num = 3
+    #     config.dim_intermediate = 2
+    #     config.dim_integrate = 2
+    #     config.num_institution = 2
+    #     config.num_institution_user = int(len(df) / (config.num_institution * 2))       
     
-    elif config.dataset == '3D_8_gaussian_clusters':
-        config.feature_num = 3
-        config.dim_intermediate = 2
-        config.dim_integrate = 2
-        config.num_institution = 2
-        config.num_institution_user = int(len(df) / (config.num_institution * 2))     
+    # elif config.dataset == '3D_8_gaussian_clusters':
+    #     config.feature_num = 3
+    #     config.dim_intermediate = 2
+    #     config.dim_integrate = 2
+    #     config.num_institution = 2
+    #     config.num_institution_user = int(len(df) / (config.num_institution * 2))     
             
-    elif config.dataset == 'digits_':
-        config.feature_num = len(df.columns) - 1
-        config.dim_intermediate = 4
-        config.dim_integrate = 4
-        config.num_institution = 10
-        config.num_institution_user = 100    
+    # elif config.dataset == 'digits_':
+    #     config.feature_num = len(df.columns) - 1
+    #     config.dim_intermediate = 4
+    #     config.dim_integrate = 4
+    #     config.num_institution = 10
+    #     config.num_institution_user = 100    
     
-    elif config.dataset == 'digits_v2':
-        config.feature_num = len(df.columns) - 1
-        config.dim_intermediate = 30
-        config.dim_integrate = 30
-        config.num_institution = 29
-        config.num_institution_user = 30
+    # elif config.dataset == 'digits_v2':
+    #     config.feature_num = len(df.columns) - 1
+    #     config.dim_intermediate = 30
+    #     config.dim_integrate = 30
+    #     config.num_institution = 29
+    #     config.num_institution_user = 30
 
-    elif config.dataset == 'housing':
-        config.feature_num = len(df.columns) - 1
-        config.dim_intermediate = config.feature_num - 1
-        config.dim_integrate = config.feature_num - 1
-        config.num_institution = 10
-        config.num_institution_user = 10
-        config.metrics = "rmse"
+    # elif config.dataset == 'housing':
+    #     config.feature_num = len(df.columns) - 1
+    #     config.dim_intermediate = config.feature_num - 1
+    #     config.dim_integrate = config.feature_num - 1
+    #     config.num_institution = 10
+    #     config.num_institution_user = 10
+    #     config.metrics = "rmse"
 
-    elif config.dataset == "statlog":
-        config.feature_num = len(df.columns) - 1
-        config.dim_intermediate = config.feature_num - 1
-        config.dim_integrate = config.feature_num - 1
-        config.num_institution_user = 200# 30#, max(config.dim_integrate + 1, 50) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
-        config.num_institution = min(int(len(df) / (config.num_institution_user * 2)), 5)
-        #config.metrics = "auc"
+    # elif config.dataset == "statlog":
+    #     config.feature_num = len(df.columns) - 1
+    #     config.dim_intermediate = config.feature_num - 1
+    #     config.dim_integrate = config.feature_num - 1
+    #     config.num_institution_user = 200# 30#, max(config.dim_integrate + 1, 50) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
+    #     config.num_institution = min(int(len(df) / (config.num_institution_user * 2)), 5)
+    #     #config.metrics = "auc"
     
-    else:
-        #config.feature_num = min(len(df.columns) - 1)#, 50)  # 特徴量の数（目的変数を除く）
-        #config.dim_intermediate = config.feature_num-1 # 中間表現の次元数
-        #config.dim_integrate = config.feature_num-1 # 統合表現の次元数
-        config.feature_num = len(df.columns) - 1
-        config.dim_intermediate = config.feature_num - 1
-        config.dim_integrate = config.feature_num - 1
-        config.num_institution_user = 30#, max(config.dim_integrate + 1, 50) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
-        config.num_institution = min(int(len(df) / (config.num_institution_user * 2)), 5)
-        #config.metrics = "auc"
+    print("config.feature_num", config.feature_num)
     
+    # else: のフォールバックを安全に（None/"undefined"/<=0 を未設定扱い）
+    import numpy as np
+    
+    def _is_undefined(v):
+        return (
+            v is None
+            or (isinstance(v, str) and v.strip().lower() in ("undefined", "none", ""))
+            or (isinstance(v, (int, float)) and v <= 0)
+        )
+    if _is_undefined(config.feature_num):
+        config.feature_num = len(df.columns) - 1
+
+    if _is_undefined(config.dim_intermediate):
+        config.dim_intermediate = config.feature_num - 1
+    if _is_undefined(config.dim_integrate):
+        config.dim_integrate = config.dim_intermediate
+    # num_institution_user が未設定ならグローバルDEFAULTSで与える想定だが、最後の砦として50
+    if _is_undefined(config.num_institution_user):
+        config.num_institution_user = 50
+    if _is_undefined(config.num_institution):
+        # クラス分布を考慮して安全に決める
+        y = df["target"].to_numpy()
+        classes, counts = np.unique(y, return_counts=True)
+        n_classes = len(classes)
+
+        # 機関あたりのユーザ数は、最低でもクラス数を満たす
+        if _is_undefined(config.num_institution_user) or config.num_institution_user < n_classes:
+            config.num_institution_user = max(int(config.num_institution_user or 0), n_classes)
+
+        # 総件数による上限
+        max_by_total = len(df) // (2 * config.num_institution_user)
+        # クラス頻度による上限（各クラスにつき train/test に1件ずつ必要 → 2*num_institution）
+        max_by_class = int(np.min(counts) // 2)
+
+        safe_num_inst = max(1, min(max_by_total, max_by_class))
+        config.num_institution = safe_num_inst
+    print(f"num_institution_user={config.num_institution_user}, num_institution={config.num_institution}")
+    print("config.feature_num", config.feature_num, "config.dim_intermediate", config.dim_intermediate, "config.dim_integrate", config.dim_integrate)
     #config.num_institution_user *= 3
     #config.num_institution //= 3
     #config.num_institution = int(config.num_institution)
@@ -561,150 +736,149 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
             stratify=df["target"]
         )
         
-    # import numpy as np
-    # import pandas as pd
-    # from collections import defaultdict
+    import numpy as np
+    import pandas as pd
+    from collections import defaultdict
 
-    # def split_train_test_by_institution(
-    #     df: pd.DataFrame,
-    #     label_col: str,
-    #     num_institution: int,
-    #     num_institution_user: int,
-    #     random_state: int = 42,
-    # ):
-    #     """
-    #     各 institution の train/test それぞれが「全クラスを最低1件ずつ」含むように分割する。
-    #     返す DataFrame は行順が institution 単位にまとまっており、
-    #     先頭から num_institution_user 行ごとが 1 機関に対応する（train/test とも）。
-    #     """
-    #     import numpy as np
+    def split_train_test_by_institution(
+        df: pd.DataFrame,
+        label_col: str,
+        num_institution: int,
+        num_institution_user: int,
+        random_state: int = 42,
+    ):
+        """
+        各 institution の train/test それぞれが「全クラスを最低1件ずつ」含むように分割する。
+        返す DataFrame は行順が institution 単位にまとまっており、
+        先頭から num_institution_user 行ごとが 1 機関に対応する（train/test とも）。
+        """
+        import numpy as np
 
-    #     rng = np.random.default_rng(random_state)
+        rng = np.random.default_rng(random_state)
 
-    #     y = df[label_col].to_numpy()
-    #     classes, counts = np.unique(y, return_counts=True)
-    #     n_classes = classes.size
+        y = df[label_col].to_numpy()
+        classes, counts = np.unique(y, return_counts=True)
+        n_classes = classes.size
 
-    #     # 必要条件チェック
-    #     n_per_side = num_institution * num_institution_user
-    #     if 2 * n_per_side > len(df):
-    #         raise ValueError(f"rows={len(df)} < needed(total)={2*n_per_side}")
-    #     if num_institution_user < n_classes:
-    #         raise ValueError(f"num_institution_user({num_institution_user}) < n_classes({n_classes}) -> "
-    #                         f"各機関に各クラス最低1件ずつは不可能です。")
-    #     # 各クラスの最低必要数（両側で各機関1件ずつ）= 2 * num_institution
-    #     need_per_class = 2 * num_institution
-    #     lack = {int(c): int(n) for c, n in zip(classes, counts) if n < need_per_class}
-    #     if lack:
-    #         raise ValueError(f"各クラスの件数不足: {lack} "
-    #                         f"(必要: 各クラス {need_per_class} 件以上)")
+        # 必要条件チェック
+        n_per_side = num_institution * num_institution_user
+        if 2 * n_per_side > len(df):
+            raise ValueError(f"rows={len(df)} < needed(total)={2*n_per_side}")
+        if num_institution_user < n_classes:
+            raise ValueError(f"num_institution_user({num_institution_user}) < n_classes({n_classes}) -> "
+                            f"各機関に各クラス最低1件ずつは不可能です。")
+        # 各クラスの最低必要数（両側で各機関1件ずつ）= 2 * num_institution
+        need_per_class = 2 * num_institution
+        lack = {int(c): int(n) for c, n in zip(classes, counts) if n < need_per_class}
+        if lack:
+            raise ValueError(f"各クラスの件数不足: {lack} "
+                            f"(必要: 各クラス {need_per_class} 件以上)")
 
-    #     # まず「保証割当」: 各クラスから train/test の各機関へ1件ずつ
-    #     N = len(df)
-    #     all_idx = np.arange(N)
+        # まず「保証割当」: 各クラスから train/test の各機関へ1件ずつ
+        N = len(df)
+        all_idx = np.arange(N)
 
-    #     train_bins = [[] for _ in range(num_institution)]
-    #     test_bins  = [[] for _ in range(num_institution)]
+        train_bins = [[] for _ in range(num_institution)]
+        test_bins  = [[] for _ in range(num_institution)]
 
-    #     used = set()
+        used = set()
 
-    #     for c in classes:
-    #         idx_c = np.flatnonzero(y == c)
-    #         rng.shuffle(idx_c)
-    #         # 先頭 num_institution を train に1件ずつ
-    #         for i in range(num_institution):
-    #             tr_id = idx_c[i]
-    #             train_bins[i].append(tr_id)
-    #             used.add(int(tr_id))
-    #         # 次の num_institution を test に1件ずつ
-    #         for i in range(num_institution):
-    #             te_id = idx_c[num_institution + i]
-    #             test_bins[i].append(te_id)
-    #             used.add(int(te_id))
-    #         # 残りは未使用プールへ自然に落ちる
+        for c in classes:
+            idx_c = np.flatnonzero(y == c)
+            rng.shuffle(idx_c)
+            # 先頭 num_institution を train に1件ずつ
+            for i in range(num_institution):
+                tr_id = idx_c[i]
+                train_bins[i].append(tr_id)
+                used.add(int(tr_id))
+            # 次の num_institution を test に1件ずつ
+            for i in range(num_institution):
+                te_id = idx_c[num_institution + i]
+                test_bins[i].append(te_id)
+                used.add(int(te_id))
+            # 残りは未使用プールへ自然に落ちる
 
-    #     # 残りプール
-    #     remain = np.array([idx for idx in all_idx if idx not in used], dtype=int)
-    #     rng.shuffle(remain)
+        # 残りプール
+        remain = np.array([idx for idx in all_idx if idx not in used], dtype=int)
+        rng.shuffle(remain)
 
-    #     # 片側の残り必要数
-    #     remain_train_need = n_per_side - sum(len(b) for b in train_bins)
-    #     remain_test_need  = n_per_side - sum(len(b) for b in test_bins)
-    #     if remain_train_need < 0 or remain_test_need < 0:
-    #         raise RuntimeError("内部計算エラー: 残り必要数が負になりました。")
+        # 片側の残り必要数
+        remain_train_need = n_per_side - sum(len(b) for b in train_bins)
+        remain_test_need  = n_per_side - sum(len(b) for b in test_bins)
+        if remain_train_need < 0 or remain_test_need < 0:
+            raise RuntimeError("内部計算エラー: 残り必要数が負になりました。")
 
-    #     if remain.size < (remain_train_need + remain_test_need):
-    #         raise ValueError("残りサンプルが不足しています。パラメータを見直してください。")
+        if remain.size < (remain_train_need + remain_test_need):
+            raise ValueError("残りサンプルが不足しています。パラメータを見直してください。")
 
-    #     train_pool = remain[:remain_train_need]
-    #     test_pool  = remain[remain_train_need: remain_train_need + remain_test_need]
+        train_pool = remain[:remain_train_need]
+        test_pool  = remain[remain_train_need: remain_train_need + remain_test_need]
 
-    #     # プールを各機関に均等配分して、各 bin を num_institution_user 件に揃える
-    #     def distribute(pool, bins, target_size):
-    #         pool = list(pool)
-    #         p = 0
-    #         for i in range(len(bins)):
-    #             need = target_size - len(bins[i])
-    #             if need <= 0:
-    #                 continue
-    #             take = min(need, len(pool) - p)
-    #             if take > 0:
-    #                 bins[i].extend(pool[p:p+take])
-    #                 p += take
-    #         # まだ満たない bin があればラウンドロビンで埋める
-    #         i = 0
-    #         while any(len(b) < target_size for b in bins) and p < len(pool):
-    #             if len(bins[i]) < target_size:
-    #                 bins[i].append(pool[p]); p += 1
-    #             i = (i + 1) % len(bins)
-    #         if any(len(b) < target_size for b in bins):
-    #             raise ValueError("配分サンプル不足で各 bin を target_size に揃えられません。")
-    #         return bins
+        # プールを各機関に均等配分して、各 bin を num_institution_user 件に揃える
+        def distribute(pool, bins, target_size):
+            pool = list(pool)
+            p = 0
+            for i in range(len(bins)):
+                need = target_size - len(bins[i])
+                if need <= 0:
+                    continue
+                take = min(need, len(pool) - p)
+                if take > 0:
+                    bins[i].extend(pool[p:p+take])
+                    p += take
+            # まだ満たない bin があればラウンドロビンで埋める
+            i = 0
+            while any(len(b) < target_size for b in bins) and p < len(pool):
+                if len(bins[i]) < target_size:
+                    bins[i].append(pool[p]); p += 1
+                i = (i + 1) % len(bins)
+            if any(len(b) < target_size for b in bins):
+                raise ValueError("配分サンプル不足で各 bin を target_size に揃えられません。")
+            return bins
 
-    #     train_bins = distribute(train_pool, train_bins, num_institution_user)
-    #     test_bins  = distribute(test_pool,  test_bins,  num_institution_user)
+        train_bins = distribute(train_pool, train_bins, num_institution_user)
+        test_bins  = distribute(test_pool,  test_bins,  num_institution_user)
 
-    #     # institution 順に結合（各 bin 内はシャッフルしておく）
-    #     for b in train_bins:
-    #         rng.shuffle(b)
-    #     for b in test_bins:
-    #         rng.shuffle(b)
+        # institution 順に結合（各 bin 内はシャッフルしておく）
+        for b in train_bins:
+            rng.shuffle(b)
+        for b in test_bins:
+            rng.shuffle(b)
 
-    #     train_idx = np.concatenate([np.array(b, dtype=int) for b in train_bins])
-    #     test_idx  = np.concatenate([np.array(b, dtype=int) for b in test_bins])
+        train_idx = np.concatenate([np.array(b, dtype=int) for b in train_bins])
+        test_idx  = np.concatenate([np.array(b, dtype=int) for b in test_bins])
 
-    #     train_df = df.iloc[train_idx].reset_index(drop=True)
-    #     test_df  = df.iloc[test_idx].reset_index(drop=True)
+        train_df = df.iloc[train_idx].reset_index(drop=True)
+        test_df  = df.iloc[test_idx].reset_index(drop=True)
 
-    #     # 検証（各機関の train/test が全クラスを含むか）
-    #     def check(df_side, name):
-    #         ok = True
-    #         for i in range(num_institution):
-    #             part = df_side.iloc[i*num_institution_user:(i+1)*num_institution_user]
-    #             have = np.unique(part[label_col].to_numpy())
-    #             if len(np.intersect1d(have, classes)) != n_classes:
-    #                 ok = False
-    #                 # 必要ならログ: print(f"[WARN] {name} inst#{i}: classes={sorted(have)}")
-    #         return ok
-    #     assert check(train_df, "train") and check(test_df, "test"), \
-    #         "内部検証エラー: 条件を満たせていません。"
+        # 検証（各機関の train/test が全クラスを含むか）
+        def check(df_side, name):
+            ok = True
+            for i in range(num_institution):
+                part = df_side.iloc[i*num_institution_user:(i+1)*num_institution_user]
+                have = np.unique(part[label_col].to_numpy())
+                if len(np.intersect1d(have, classes)) != n_classes:
+                    ok = False
+                    # 必要ならログ: print(f"[WARN] {name} inst#{i}: classes={sorted(have)}")
+            return ok
+        assert check(train_df, "train") and check(test_df, "test"), \
+            "内部検証エラー: 条件を満たせていません。"
 
-    #     return train_df, test_df
+        return train_df, test_df
 
-    # # 使い方例
-    # train_df, test_df = split_train_test_by_institution(df, "target", config.num_institution, config.num_institution_user)
-    #result["institution_0"]["train"], result["institution_0"]["test"] などで取得
+    # 使い方例
+    train_df, test_df = split_train_test_by_institution(df, "target", config.num_institution, config.num_institution_user)
 
     
     # ── 行数制約でカット（デモ用）
-    lim = config.num_institution * config.num_institution_user
-    train_df = train_df.iloc[:lim].reset_index(drop=True)
-    test_df = test_df.iloc[:lim].reset_index(drop=True)
+    # lim = config.num_institution * config.num_institution_user
+    # train_df = train_df.iloc[:lim].reset_index(drop=True)
+    # test_df = test_df.iloc[:lim].reset_index(drop=True)
 
     # ── 保存
-    #config.output_path.mkdir(parents=True, exist_ok=True)
-    #train_df.to_csv(config.output_path / "train.csv", index=False)
-    #test_df.to_csv(config.output_path / "test.csv", index=False)
+    config.output_path.mkdir(parents=True, exist_ok=True)
+    train_df.to_csv(config.output_path / "train.csv", index=False)
+    test_df.to_csv(config.output_path / "test.csv", index=False)
 
     return train_df, test_df
 

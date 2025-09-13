@@ -21,33 +21,7 @@ from src.institutional_analysis import (
 from src.load_data import load_data
 from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 
-# 引数の設定
-parser = argparse.ArgumentParser()
-parser.add_argument("name", type=str, default="exp001")
-args = parser.parse_args()
-
-# yaml のパスと出力先パス
-cfg_path    = CONFIG_DIR / f"{args.name}.yaml"
-output_path = OUTPUT_DIR / args.name
-
-# UTF-8 で読み込んで Config を生成
-with cfg_path.open(encoding="utf-8") as f:
-    cfg_dict = yaml.safe_load(f)
-
-config = Config(**cfg_dict,
-                output_path=output_path,
-                input_path=INPUT_DIR)
-
-# 出力ディレクトリ作成
-output_path.mkdir(parents=True, exist_ok=True)
-
-# ログの設定
-logger = getLogger(__name__)
-logger.setLevel(INFO)
-handler = FileHandler(filename=config.output_path / "result.log", encoding="utf-8")
-logger.addHandler(handler)
-
-def main(visualize):
+def run_onec_(visualize):
     logger.info(f"データセット: {config.dataset}")
     print(f"データセット:{config.dataset}")
     config.f_seed = 0
@@ -71,7 +45,6 @@ def main(visualize):
     data_collaboration.run()
     if visualize:
         data_collaboration.visualize_representations()
-        print(1111)
     #data_collaboration.save_representations_to_csv()
         # 提案手法
     #record_config_to_cfg(config)
@@ -79,16 +52,16 @@ def main(visualize):
                 # 集中解析
         metrics_cen = centralize_analysis(config, logger, y_name=config.y_name)
         metrics_dict['centralize'] = metrics_cen
-        record_config_to_cfg(config)
-        record_value_to_cfg(config, "評価値", metrics_cen)
+        #record_config_to_cfg(config)
+        #record_value_to_cfg(config, "評価値", metrics_cen)
         return metrics_cen
     
     elif config.G_type == 'centralize_dim':
         # 集中解析 with 次元削減
         metrics_cen_dim = centralize_analysis_with_dimension_reduction(config, logger, y_name=config.y_name)
         metrics_dict['centralize_dim'] = metrics_cen_dim
-        record_config_to_cfg(config)
-        record_value_to_cfg(config, "評価値", metrics_cen_dim)
+        #record_config_to_cfg(config)
+        #record_value_to_cfg(config, "評価値", metrics_cen_dim)
         return metrics_cen_dim
     
     elif config.G_type == 'individual':
@@ -102,8 +75,8 @@ def main(visualize):
             ys_test=data_collaboration.ys_test,
         )
         #metrics_dict['individual'] = metrics_ind
-        record_config_to_cfg(config)
-        record_value_to_cfg(config, "評価値", metrics_ind)
+        #record_config_to_cfg(config)
+        #record_value_to_cfg(config, "評価値", metrics_ind)
         return metrics_ind
     
     elif config.G_type == 'individual_dim':
@@ -116,8 +89,8 @@ def main(visualize):
             Xs_test=data_collaboration.Xs_test,
             ys_test=data_collaboration.ys_test,
         )
-        record_config_to_cfg(config)
-        record_value_to_cfg(config, "評価値", metrics_ind_dim)
+        #record_config_to_cfg(config)
+        #record_value_to_cfg(config, "評価値", metrics_ind_dim)
         return metrics_ind_dim
     
     elif config.G_type == 'fl':
@@ -130,10 +103,11 @@ def main(visualize):
             ys_test=data_collaboration.ys_test,
         )
         metrics_dict['fl'] = metrics_fl
-        record_config_to_cfg(config)
-        record_value_to_cfg(config, "評価値", metrics_fl)
+        #record_config_to_cfg(config)
+        #record_value_to_cfg(config, "評価値", metrics_fl)
         return metrics_fl
     else:
+        config.f_seed = 0
         metrics_ind_dim = individual_analysis_with_dimension_reduction(
             config=config,
             logger=logger,
@@ -142,7 +116,6 @@ def main(visualize):
             Xs_test=data_collaboration.Xs_test,
             ys_test=data_collaboration.ys_test,
         )
-
         # metrics = dca_analysis(
         #                 X_train_integ=data_collaboration.X_train_integ,
         #                 X_test_integ=data_collaboration.X_test_integ,
@@ -170,6 +143,7 @@ def main(visualize):
         even_losses = []
         odd_losses = []
         
+        config.f_seed = 0
         for i in range(n_inst):
             # 各機関の訓練・テストから num_institution_user 件だけ使用
             #tr_start, tr_end = int(train_cum[i]), int(train_cum[i+1])
@@ -210,8 +184,8 @@ def main(visualize):
         #record_config_to_cfg(config)
         
         print("評価値2", mean_val)
-        record_config_to_cfg(config)
-        record_value_to_cfg(config, "評価値", mean_val)
+        #record_config_to_cfg(config)
+        #record_value_to_cfg(config, "評価値", mean_val)
         #print("評価値", mean_val)
         print("config.losses_mean", config.losses_mean)
         print(f"機関ごとの {config.metrics}: {np.round(inst_losses, 4).tolist()}")
@@ -336,12 +310,12 @@ def main_loop():
                             losses_odd_list = [0]
                             integ_metrics_list = [0]
 
-                        for i in range(3, 5):
+                        for i in range(3, 4):
                             config.seed = i
                             #config.f_seed = i
                             config.plot_name = f"_0912_{dataset}_{G_type}.png" # {self.config.lambda_pred}_{self.config.dataset}
                             print("i", i, "G_type:", G_type)
-                            metrics.append(main(visualize))
+                            metrics.append(run_once(visualize))
                             losses_even_ind_list.append(config.losses_even_ind)
                             losses_odd_ind_list.append(config.losses_odd_ind)
                             losses_ind_list.append(config.losses_ind)
@@ -374,39 +348,297 @@ def main_loop():
         df_all = pd.DataFrame.from_dict(data, orient="index", columns=["dataset", "model", "F_type", "G_type", "gamma_ratio", "metrics", "metrics_mean", "metrics_stdev", "even_ind_mean", "even_ind_stdev", "odd_ind_mean", "odd_ind_stdev", "ind_mean", "ind_stdev", "mean_mean", "mean_stdev", "even_mean", "even_stdev", "odd_mean", "odd_stdev", "integ_metrics_mean", "integ_metrics_stdev"])
         df_all.to_csv(output_path / f"result_{dataset}_0912.csv", index=True, encoding="utf-8-sig")
 
-# def partial_run():
-#     logger.info(f"データセット: {config.dataset}")
-    
-#     # datasetの読み込み
-#     train_df, test_df = load_data(config=config)
-    
-#     metrics_dict = {}
-#     # dim_intermediate,dim_integrate
-#     F_types =["kernel_pca"]#["svd", "kernel_pca"]
-#     G_types = []#, "targetvec", "GEP", "GEP_weighted"]
-#     config.lambda_gen_eigen = 0.00001
-#     #for F_type in F_types:
-#     dim_intermediate = config.dim_intermediate
-#     for dim_intermediate in range(1, dim_intermediate + 1, 5):
-#         config.dim_intermediate = dim_intermediate
-#         config.dim_integrate = config.dim_intermediate
-#         for G_type in G_types:
-#             config.F_type = F_types[0]
-#             config.G_type = G_type
-#             if config.F_type == "kernel_pca" and config.G_type == "GEP_weighted":
-#                 # GEP_weightedはUSE_KERNELがTrueのときのみ実行
-#                 return
-#             if config.F_type == "kernel_pca" and config.G_type == "GEP":
-#                 # GEP_weightedはUSE_KERNELがTrueのときのみ実行
-#                 return
-#             # インスタンスの生成
-#             data_collaboration = DataCollaborationAnalysis(config=config, logger=logger, train_df=train_df, test_df=test_df)
-#             # データ分割 -> 統合表現の獲得まで一気に実行
-#             data_collaboration.run()
+# runners/runner_grid.py
+from itertools import product
+from collections import OrderedDict
+import statistics
+import pandas as pd
+from typing import Any, Dict, List
+from experiments.experiment import run_once  # ←元main改名
+from config.config import Config
+
+# ====== ユーザーが編集するのはここだけ ======
+
+# 1) 全探索したいパラメータ（config.◯◯に代入）
+PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
+    "dataset": [
+    "mice",
+    "statlog",
+    "qsar",
+    "breast_cancer",
+    "adult",
+    "digits",
+    "glass", "seeds", "letter_recognition",
+    "wine_quality",
+    "har",
+    "diabetes130",
+    "bank_marketing",
+    "mnist",
+    "fashion_mnist",
+],#"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
+    "h_model": ["svm_linear_classifier"],             # 例: ["mlp","random_forest"] svm_linear_classifier
+    "F_type": ["kernel_pca_svd_mixed"],
+    "G_type": ["Imakura", "GEP",  "ODC"],#'centralize', "individual", "Imakura", "GEP",  "ODC", "nonlinear"],
+    "gamma_type": ["X_tuning"],
+    "gamma_ratio": [0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
+    "gamma_ratio_krr": [0.2, 1],
+    "num_anchor_data": [100, 1000],
+    "nl_lambda": [0.1, 0.00001],        # LOCKで止められる
+    "lw_alpha": [0],
+    "lambda_pred": [0],
+    "lambda_offdiag": [0],
+    "metrics": ["auc"],
+    "visualize": [False],
+    "dim_intermediate": [20, 10, 5, 2],
+    "num_institution_user": [50, 100, 150, 200, 400],
+    "num_institution_user": [2],
+})
+
+# 2) ループ回数（seed を 0..loop_num-1 で回します）
+LOOP_NUM = 2
+
+# 3) DataFrameに保持したい「パラメータ列」（順序もこの通り）
+PARAM_COLUMNS: List[str] = [
+    "dataset", "h_model", "F_type", "G_type", "gamma_type", "gamma_ratio", "gamma_ratio_krr",
+    "num_anchor_data", "nl_lambda", "dim_intermediate", "num_institution_user"
+]
+
+# 4) 条件ルール
+#    - LOCK: 条件一致時に指定パラメータを固定（そのキーは“ループしない”）
+#    - SKIP: 条件一致の組合せを丸ごとスキップ
+DEFAULTS = {
+    "y_name": "target",
+    "nl_lambda": 0.1,
+    "gamma_ratio": 1,
+    "gamma_ratio_krr": 1,
+    "num_institution_user": 50,
+    "feature_num": None,
+    "dim_intermediate": None,
+    "dim_integrate": None,
+    "num_institution": None,
+    "lambda_gen_eigen": 0,
+    "orth_ver": False,
+}
+
+# --- 追加: dataset ごとのデフォルト適用（定数のみ。動的は未設定）---
+_DATASET_DEFAULTS = {
+    "qsar":                 {"feature_num": 41},#, "dim_intermediate": 37, "dim_integrate": 37, "num_institution_user": 25, "num_institution": 20},
+    "adult":                {"feature_num": 51},#, "dim_intermediate": 50, "dim_integrate": 50, "num_institution_user": 150, "num_institution": 10},
+    "diabetes130":          {"feature_num": 200},#, "dim_intermediate": 100, "dim_integrate": 100, "num_institution_user": 500, "num_institution": 10},
+    "mice":                 {"feature_num": 77},#, "dim_intermediate": 46, "dim_integrate": 46, "num_institution_user": 50, "num_institution": 5},
+    "breast_cancer":        {"feature_num": 15},#, "num_institution_user": 60},
+    #"digits":               {"dim_intermediate": 15, "dim_integrate": 15, "num_institution_user": 100, "num_institution": 10},
+    #"mnist":                {"dim_intermediate": 10, "dim_integrate": 10, "num_institution_user": 50, "num_institution": 10},
+    #"fashion_mnist":        {"dim_intermediate": 10, "dim_integrate": 10, "num_institution_user": 50, "num_institution": 10},
+    "concentric_circles":   {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution": 2},
+    "concentric_three_circles": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution": 2},
+    "two_gaussian_distributions": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 50, "num_institution": 5},
+    "3D_gaussian_clusters": {"feature_num": 3, "dim_intermediate": 2, "dim_integrate": 2, "num_institution": 2},
+    "3D_8_gaussian_clusters": {"feature_num": 3, "dim_intermediate": 2, "dim_integrate": 2, "num_institution": 2},
+    "digits_":             {"dim_intermediate": 4, "dim_integrate": 4, "num_institution": 10, "num_institution_user": 100},
+    "digits_v2":           {"dim_intermediate": 30, "dim_integrate": 30, "num_institution": 29, "num_institution_user": 30},
+    "housing":             {"num_institution": 10, "num_institution_user": 10},
+    #"statlog":             {"num_institution_user": 200},
+    "wine_quality":       {"feature_num": 11},#, "dim_intermediate": 8},
+    "glass":              {"feature_num": 9},#,  "dim_intermediate": 6},
+    "seeds":              {"feature_num": 7},#,  "dim_intermediate": 5},
+    "letter_recognition": {"feature_num": 16},#, "dim_intermediate": 12},
+}
+
+RULES: List[Dict[str, Any]] = [
+    {"type": "LOCK", "when": {"G_type": ["centralize", "individual"]}, "lock": {"gamma_ratio": DEFAULTS["gamma_ratio"]}},
+    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"nl_lambda": DEFAULTS["nl_lambda"]}},
+    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"gamma_ratio_krr": DEFAULTS["gamma_ratio_krr"]}},
+    #{"type": "SKIP", "when": {"F_type": ["kernel_pca"], "G_type": ["GEP_weighted"]}},
+]
+# ============================================
+
+
+def _match(cond: Dict[str, List[Any]], combo: Dict[str, Any]) -> bool:
+    return all(k in combo and combo[k] in vals for k, vals in cond.items())
+
+def _apply_lock_rules(combo: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(combo)
+    for r in RULES:
+        if r.get("type") == "LOCK" and _match(r.get("when", {}), out):
+            out.update(r.get("lock", {}))
+    return out
+
+def _skip_by_rules(combo: Dict[str, Any]) -> bool:
+    for r in RULES:
+        if r.get("type") == "SKIP" and _match(r.get("when", {}), combo):
+            return True
+    return False
+
+def _apply_dataset_defaults(cfg: Config, dataset: str) -> None:
+    d = _DATASET_DEFAULTS.get(dataset, {})
+    for k, v in d.items():
+        cur = getattr(cfg, k, None)
+        if cur is None or (isinstance(cur, (int, float)) and cur <= 0):
+            setattr(cfg, k, v)
+
+def _is_empty(v) -> bool:
+    return (
+        v is None or
+        (isinstance(v, (int, float)) and v < 0) or
+        (isinstance(v, str) and v.strip().lower() in ("", "undefined", "none"))
+    )
+
+def _apply_defaults(cfg: Config, dataset: str, combo: dict | None = None) -> None:
+    """
+    優先順位:
+      1) ユーザ指定（PARAM_GRIDで明示）→ 上書きしない
+      2) _DATASET_DEFAULTS（優先して適用）
+      3) DEFAULTS（残りを埋める）
+    """
+    # 2) dataset固有（ユーザ明示は尊重）
+    ds = _DATASET_DEFAULTS.get(dataset, {})
+    for k, v in ds.items():
+        if combo and (k in combo):
+            continue
+        cur = getattr(cfg, k, None)
+        if _is_empty(cur) and not _is_empty(v):
+            setattr(cfg, k, v)
+
+    # 3) グローバル既定（残りのみ、undefined/None は適用しない）
+    for k, v in DEFAULTS.items():
+        cur = getattr(cfg, k, None)
+        if _is_empty(cur) and not _is_empty(v):
+            setattr(cfg, k, v)
+
+def _generate_unique_combos(grid: Dict[str, List[Any]]):
+    keys = list(grid.keys())
+    seen = set()
+    for tup in product(*(grid[k] for k in keys)):
+        base = {k: v for k, v in zip(keys, tup)}
+        after = _apply_lock_rules(base)
+        if _skip_by_rules(after):
+            continue
+        norm = tuple((k, after.get(k)) for k in keys)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        yield after
+
+def _set_config_from_combo(cfg: Config, combo: Dict[str, Any]) -> None:
+    """dataset/metrics/visualize以外は config に流し込む。 ???"""
+    for k, v in combo.items():
+        if k in ("dataset", "metrics"):
+            continue
+        setattr(cfg, k, v)
+    # True_F_type を常に同期
+    if hasattr(cfg, "F_type"):
+        cfg.True_F_type = cfg.F_type
+
+def run_grid(config: Config) -> pd.DataFrame:
+    rows = []
+    all_columns = PARAM_COLUMNS + [
+        "loop_num", "score_mean", "score_stdev",
+        "even_ind_mean", "odd_ind_mean", "ind_mean",
+        "mean_mean", "even_mean", "odd_mean", "integ_metrics_mean"
+    ]
+
+    # 外で決めた固定値（ここだけ引き継ぐ）
+    base_paths = dict(output_path=config.output_path, input_path=INPUT_DIR)
+
+    for combo in _generate_unique_combos(PARAM_GRID):
+        dataset = combo["dataset"]
+        metrics_name = combo["metrics"]
+
+        # combo ごとに Config をリセット
+        cfg = Config(**base_paths)
+
+        vals = []
+        print(f"[pattern] { {k: combo[k] for k in PARAM_COLUMNS if k in combo} }")
+
+        for i in range(LOOP_NUM):
+            # 以降は cfg を使用（元の config は触らない）
+            cfg.seed = i
+            cfg.dataset = dataset
+            cfg.metrics = metrics_name
+            cfg.plot_name = f"_0913_{dataset}_{combo.get('G_type','-')}_{metrics_name}.png"
+
+            _set_config_from_combo(cfg, combo)
+            _apply_defaults(cfg, dataset, combo)
+            
+            # val = run_once(cfg, logger)
+            # vals.append(float(val))
+            # record_config_to_cfg(cfg)
+            # record_value_to_cfg(cfg, "評価値", val)
+
+            try:
+                val = run_once(cfg, logger)
+                vals.append(float(val))
+                record_config_to_cfg(cfg)
+                record_value_to_cfg(cfg, "評価値", val)
+            except Exception as e:
+                msg = f"[skip] seed={i}, dataset={dataset}, G_type={combo.get('G_type')}, reason={e}"
+                print(msg)
+                try:
+                    logger.exception(msg)
+                except Exception:
+                    pass
+                try:
+                    record_value_to_cfg(cfg, "error", str(e))
+                except Exception:
+                    pass
+                continue
+
+        mean_val = sum(vals) / len(vals) if vals else 0.0
+        stdev_val = statistics.stdev(vals) if len(vals) > 1 else 0.0
+
+        row = {k: combo.get(k, None) for k in PARAM_COLUMNS}
+        row.update({
+            "loop_num": LOOP_NUM,
+            "score_mean": mean_val,
+            "score_stdev": stdev_val,
+        })
+        row.update({
+            "even_ind_mean": getattr(cfg, "losses_even_ind", 0),
+            "odd_ind_mean": getattr(cfg, "losses_odd_ind", 0),
+            "ind_mean": getattr(cfg, "losses_ind", 0),
+            "mean_mean": getattr(cfg, "losses_mean", 0),
+            "even_mean": getattr(cfg, "losses_even", 0),
+            "odd_mean": getattr(cfg, "losses_odd", 0),
+            "integ_metrics_mean": getattr(cfg, "integ_metrics", 0),
+        })
+
+        out_path = cfg.output_path / f"result_grid_{dataset}.csv"
+        one = pd.DataFrame([row], columns=all_columns)
+        header_needed = not out_path.exists()
+        one.to_csv(out_path, mode="a", header=header_needed, index=False, encoding="utf-8-sig")
+        print(f"[saved] {out_path}")
+
+        rows.append(row)
+
+    df_all = pd.DataFrame(rows, columns=all_columns)
+    return df_all
+
+
+# run.py
+import argparse, yaml
+from config.config import Config
+from src.paths import CONFIG_DIR, OUTPUT_DIR, INPUT_DIR
     
 if __name__ == "__main__":
-    name = "main_loop"
-    if name == "main_loop":
-        main_loop()
-    else:
-        main()
+    # 引数処理はここだけ（デフォルトは 0912）
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-name", type=str, default="0913")
+    args = parser.parse_args()
+
+    # 出力先を決定
+    output_path = OUTPUT_DIR / args.run_name
+
+    # Config/Logger をここでだけ作成
+    config = Config(output_path=output_path, input_path=INPUT_DIR)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    logger = getLogger(__name__)
+    logger.setLevel(INFO)
+    logger.handlers.clear()  # 重複防止
+    handler = FileHandler(filename=config.output_path / "result.log", encoding="utf-8")
+    logger.addHandler(handler)
+
+    # 実行
+    df = run_grid(config)
+    df.to_csv(config.output_path / "result_grid_all.csv", index=False, encoding="utf-8-sig")

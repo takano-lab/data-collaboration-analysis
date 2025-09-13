@@ -116,8 +116,34 @@ def individual_analysis_with_dimension_reduction(
 
     even_losses = []    
     odd_losses = []
+    
+    config.f_seed = 0
+    config.f_seed_2 = 0
+    mixed = False
+    if config.True_F_type == "kernel_pca_svd_mixed": #
+        mixed = True
+        
     for i, (X_tr, X_te, y_tr, y_te) in enumerate(zip(Xs_train, Xs_test, ys_train, ys_test)):
-        X_tr_svd, X_te_svd = reduce_dimensions(X_tr, X_te, n_components=config.dim_intermediate)
+        
+        if mixed:
+            if config.f_seed_2 % 2 == 0:
+                config.F_type = "kernel_pca_self_tuning"
+                #print("svd")
+            else:
+                config.F_type = "svd"
+                #print("kernel")    
+            config.f_seed_2 += 1    
+        
+        X_tr_svd, X_te_svd = reduce_dimensions(
+            X_tr,
+            X_te,
+            n_components=config.dim_intermediate,
+            F_type=config.F_type,
+            seed=config.f_seed,
+            config=config,
+        )
+
+        config.f_seed += 1
         metrics = model_runner.run(X_tr_svd, y_tr, X_te_svd, y_te)
         losses.append(metrics)
         if i % 2 == 0:

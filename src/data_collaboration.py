@@ -360,24 +360,25 @@ class DataCollaborationAnalysis:
         print(self.config)
         print("self.config.dim_intermediate", self.config.dim_intermediate)
         print()
+        self.config.f_seed = 0
         self.config.f_seed_2 = 0
         mixed = False
         unfixed_mixed = False
-        if self.config.F_type == "kernel_pca_svd_mixed": #
+        if self.config.True_F_type == "kernel_pca_svd_mixed": #
             mixed = True
-        elif self.config.F_type == "kernel_pca_unfixed_mixed":
+        elif self.config.True_F_type == "kernel_pca_unfixed_mixed":
             unfixed_mixed = True
             # kernel_pca_unfixed_gamma
         for X_train, X_test in zip(tqdm(self.Xs_train), self.Xs_test):
             # 各機関の訓練データ, テストデータおよびアンカーデータを取得し、svdを適用
             if mixed:
-                self.config.f_seed_2 += 1
                 if self.config.f_seed_2 % 2 == 0:
-                    self.config.F_type = "svd"
+                    self.config.F_type = "kernel_pca_self_tuning"
                     #print("svd")
                 else:
-                    self.config.F_type = "kernel_pca_self_tuning"
+                    self.config.F_type = "svd"
                     #print("kpca")
+                self.config.f_seed_2 += 1
             elif unfixed_mixed:
                 self.config.f_seed_2 += 1
                 if self.config.f_seed_2 % 6 == 0:
@@ -674,6 +675,7 @@ class DataCollaborationAnalysis:
         p_hat   = self.config.dim_integrate           # ← 共通表現次元
         r       = self.config.num_anchor_data
         lambda_gen = getattr(self.config, 'lambda_gen_eigen', 0)
+        print("lambda_gen", lambda_gen)
         orth_ver = bool(getattr(self.config, "orth_ver", None) or False)
         #use_w   = getattr(self.config, "use_eigen_weighting", False)   # ★
 
@@ -1071,6 +1073,7 @@ class DataCollaborationAnalysis:
                 # gamma を計算
                 # gamma を計算
                 gamma = self_tuning_gamma(X_train_inter, standardize=False, k=3, summary='median')
+                gamma *= self.config.gamma_ratio_krr
                 gammas.append(gamma)
         
         elif self.config.gamma_type == "same_as_f":
