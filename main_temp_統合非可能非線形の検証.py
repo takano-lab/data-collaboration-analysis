@@ -365,48 +365,43 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "dataset": [
     #"mice",
     #"statlog",
-    "qsar",
+    #"qsar",
     #"breast_cancer",
     #"adult",
-    #"digits",
-    #"glass", "seeds", "letter_recognition",
-    #"wine_quality",
-    #"har",
-    #"diabetes130",
-    #"bank_marketing",
-    #"mnist",
-    #"fashion_mnist",
-    #'3D_gaussian_clusters',
-    # "concentric_three_circles",
+    "digits",
+    "glass", "seeds", "letter_recognition",
+    "wine_quality",
+    "har",
+    "diabetes130",
+    "bank_marketing",
+    "mnist",
+    "fashion_mnist",
 ],#"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
-    "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "F_type": [ "svd"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": [ "nonlinear",], # 'centralize', "individual", "Imakura", "GEP",  "ODC", 
+    "h_model": ["svm_linear_classifier"],             # 例: ["mlp","random_forest"] svm_linear_classifier
+    "F_type": ["kernel_pca_svd_mixed"],
+    "G_type": ["nonlinear", "Imakura", "ODC"], # 'centralize', "individual", "Imakura", "GEP",  "ODC",
     "gamma_type": ["X_tuning"],
-    "gamma_ratio": [1],#[0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
-    "gamma_ratio_krr": [1],
-    "num_anchor_data": [1000],
-    "nl_lambda": [0.1],        # LOCKで止められる, 0.00001
+    "gamma_ratio": [],#[0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
+    "gamma_ratio_krr": [0.04, 0.2, 1],
+    "num_anchor_data": [100],
+    "nl_lambda": [0.1, 0.00001],        # LOCKで止められる
     "lw_alpha": [0],
     "lambda_pred": [0],
     "lambda_offdiag": [0],
     "metrics": ["auc"],
     "visualize": [False],
-    "feature_num": [41],
-    "dim_intermediate": [40],#[20, 10, 5, 2],
-    "num_institution_user": [50],#[50, 100, 200, 400],
-    "num_institution": [10],
-    "K_normalization":[True],
-    "anchor_method":["gaussian"],
+    "dim_intermediate": [],#[20, 10, 5, 2],
+    "num_institution_user": [],#[50, 100, 200, 400],
+    "num_institution": [2],
 })
 
 # 2) ループ回数（seed を 0..loop_num-1 で回します）
-LOOP_NUM = 5
+LOOP_NUM = 3
 
 # 3) DataFrameに保持したい「パラメータ列」（順序もこの通り）
 PARAM_COLUMNS: List[str] = [
     "dataset", "h_model", "F_type", "G_type", "gamma_type", "gamma_ratio", "gamma_ratio_krr",
-    "num_anchor_data", "nl_lambda", "dim_intermediate", "num_institution_user", "K_normalization", "anchor_method"
+    "num_anchor_data", "nl_lambda", "dim_intermediate", "num_institution_user"
 ]
 
 # 4) 条件ルール
@@ -417,14 +412,13 @@ DEFAULTS = {
     "nl_lambda": 0.1,
     "gamma_ratio": 1,
     "gamma_ratio_krr": 1,
-    #"num_institution_user": 50,
+    "num_institution_user": 50,
     "feature_num": None,
     "dim_intermediate": None,
     "dim_integrate": None,
     "num_institution": None,
     "lambda_gen_eigen": 0,
     "orth_ver": False,
-    "K_normalization":True,
 }
 
 # --- 追加: dataset ごとのデフォルト適用（定数のみ。動的は未設定）---
@@ -645,29 +639,30 @@ def _set_config_from_combo(cfg: Config, combo: Dict[str, Any]) -> None:
     if hasattr(cfg, "F_type"):
         cfg.True_F_type = cfg.F_type
 
-def run_grid(config: Config, use_csv: bool = True) -> pd.DataFrame:
+def run_grid(config: Config) -> pd.DataFrame:
     rows = []
     all_columns = PARAM_COLUMNS + [
         "loop_num", "score_mean", "score_stdev",
         "even_ind_mean", "odd_ind_mean", "ind_mean",
         "mean_mean", "even_mean", "odd_mean", "integ_metrics_mean"
     ]
-    base_paths = dict(output_path=config.output_path, input_path=INPUT_DIR)
 
-    if use_csv and CSV_OVERRIDE_MAP:
-        csv_iter = _iter_csv_combos(PARAM_GRID, CSV_COMBO_PATH, CSV_OVERRIDE_MAP) or iter(())
-        def_iter = _iter_default_combos_excluding(PARAM_GRID, set(CSV_OVERRIDE_MAP.keys()))
-        combos_iter = chain(csv_iter, def_iter)
-    else:
-        # CSVを使わず従来通り PARAM_GRID だけ
-        combos_iter = _generate_unique_combos(PARAM_GRID)
+    # 外で決めた固定値（ここだけ引き継ぐ）
+    base_paths = dict(output_path=config.output_path, input_path=INPUT_DIR)
+    
+    # ↓ 変更: CSV 由来のコンボ + 通常グリッド（CSVで上書き対象G_typeは除外）
+    csv_iter = _iter_csv_combos(PARAM_GRID, CSV_COMBO_PATH, CSV_OVERRIDE_MAP)
+    def_iter = _iter_default_combos_excluding(PARAM_GRID, set(CSV_OVERRIDE_MAP.keys()))
+    combos_iter = chain(csv_iter, def_iter)
 
     # ここを combos_iter に変更（CSV固定＋PARAM_GRID総当りを実行）
     for combo in combos_iter:
         dataset = combo["dataset"]
         metrics_name = combo["metrics"]
+
         # combo ごとに Config をリセット
         cfg = Config(**base_paths)
+
         vals = []
         print(f"[pattern] { {k: combo[k] for k in PARAM_COLUMNS if k in combo} }")
 
@@ -676,7 +671,7 @@ def run_grid(config: Config, use_csv: bool = True) -> pd.DataFrame:
             cfg.seed = i
             cfg.dataset = dataset
             cfg.metrics = metrics_name
-            cfg.plot_name = f"_0913_{dataset}_{combo.get('G_type','-')}_{combo.get('K_normalization','-')}.png"
+            cfg.plot_name = f"_0913_{dataset}_{combo.get('G_type','-')}_{metrics_name}.png"
 
             _set_config_from_combo(cfg, combo)
             _apply_defaults(cfg, dataset, combo)
@@ -744,7 +739,6 @@ if __name__ == "__main__":
     # 引数処理はここだけ（デフォルトは 0912）
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-name", type=str, default="0913")
-    parser.add_argument("--use_csv", action="store_true", help="CSV由来のコンボを使わず、PARAM_GRIDのみで総当りする")
     args = parser.parse_args()
 
     # 出力先を決定
@@ -761,5 +755,5 @@ if __name__ == "__main__":
     logger.addHandler(handler)
 
     # 実行
-    df = run_grid(config, use_csv=(args.use_csv))
+    df = run_grid(config)
     df.to_csv(config.output_path / "result_grid_all.csv", index=False, encoding="utf-8-sig")
