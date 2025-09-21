@@ -1,42 +1,48 @@
-[tool.poetry]
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
 name = "datacollaborationanalysis"
 version = "0.1.0"
-description = ""
-authors = ["tomos7231 <tomobake0023@icloud.com>"]
+description = "Data Collaboration Analysis"
+readme = "README.md"
+requires-python = ">=3.9.2,<3.13"
+license = { text = "Proprietary" }
+authors = [{ name = "suetake89", email = "suetake89@gmail.com" }]
+# 旧 [tool.poetry.dependencies] を移行（python 行は削除）
+dependencies = [
+  "pandas>=2.0.1,<3.0.0",
+  "numpy>=1.24.3,<2.0.0",
+  "seaborn>=0.12.2,<0.13.0",
+  "tqdm>=4.65.0,<5.0.0",
+  "category-encoders>=2.6.0,<3.0.0",
+  "optuna>=3.1.1,<4.0.0",
+  "scikit-learn>=1.2.2,<2.0.0",
+  "matplotlib>=3.7.1,<4.0.0",
+  "pyyaml>=6.0,<7.0",
+  "scipy>=1.11.2,<2.0.0",
+  "notebook>=7.4.3,<8.0.0",
+  "ipykernel>=6.29.5,<7.0.0",
+  "xlrd>=2.0.2,<3.0.0",
+  "pytdc==0.3.6",
+  "torch>=2.8.0,<3.0.0",
+  "mlflow>=3.1.4",
+  "hydra-core>=1.3,<2.0",
+  "pytest>=8.4.2",
+]
 
-[tool.poetry.dependencies]
-# gurobipy は PyPI にないため pip install を使って別途インストールしてください
-#gurobipy = "*"  # ← 実際には機能しない
-python = ">=3.9.2,<3.13"
-pandas = "^2.0.1"
-numpy = "^1.24.3"
-seaborn = "^0.12.2"
-lightgbm = "^3.3.5"
-xgboost = "^1.7.5"
-catboost = "^1.1.1"
-tqdm = "^4.65.0"
-# surprise = "^0.1"
-category-encoders = "^2.6.0"
-optuna = "^3.1.1"
-pathlib = "^1.0.1"
-scikit-learn = "^1.2.2"
-matplotlib = "^3.7.1"
-PyYAML = "^6.0"
-Cython = "^0.29.34"
-# pyfm = "^0.2.4"
-scipy = "^1.11.2"
-notebook = "^7.4.3"
-ipykernel = "^6.29.5"
-xlrd = "^2.0.2"
-pytdc = "0.3.6"
-torch = "^2.8.0"
-
-[tool.poetry.group.dev.dependencies]
-ipykernel = "^6.22.0"
-isort = "^5.12.0"
-flake8 = "^6.0.0"
-autoflake = "^2.1.1"
-black = "^23.3.0"
+[project.optional-dependencies]
+# 旧 [tool.poetry.group.dev.dependencies] と [dependency-groups].dev を統合
+dev = [
+  "pytest>=8.4.2",
+  "isort>=5.12.0,<6.0.0",
+  "flake8>=6.0.0,<7.0.0",
+  "autoflake>=2.1.1,<3.0.0",
+  "black>=23.3.0,<24.0.0",
+  "ruff>=0.6.0",       # ← 追加
+  "pre-commit>=3.0.0", # ← 追加
+]
 
 [tool.black]
 line-length = 120
@@ -45,6 +51,5 @@ line-length = 120
 line_length = 120
 profile = "black"
 
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+[tool.hatch.build.targets.wheel]
+packages = ["datacollaborationanalysis"]
