@@ -69,7 +69,7 @@ def test_run_once_qsar_matches_reference_3dp(tmp_path, g_type):
     cfg.feature_num = 41
     cfg.dim_intermediate = 40
     cfg.num_institution_user = 50
-    cfg.num_institution = 10git 
+    cfg.num_institution = 10
     cfg.K_normalization = True
     cfg.anchor_method = "gaussian"
     cfg.y_name = "target"
