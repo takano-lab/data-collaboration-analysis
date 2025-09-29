@@ -48,6 +48,10 @@ wget https://archive.ics.uci.edu/ml/machine-learning-databases/00240/UCI%20HAR%2
 unzip UCI\ HAR\ Dataset.zip
 ```
 
+4. テストを実行
+```
+uv run -m pytest -q
+```
 
 # コードフォーマット
 isort, black, autoflakeによる整形

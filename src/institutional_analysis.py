@@ -60,7 +60,7 @@ def centralize_analysis_with_dimension_reduction(config: Config, logger: logger,
     X_test = test_df.values
 
     # SVD
-    X_tr_svd, X_te_svd = reduce_dimensions(X_train, X_test, n_components=config.dim_integrate, seed=config.f_seed)
+    X_tr_svd, X_te_svd, _, _ = reduce_dimensions(X_train, X_test, n_components=config.dim_integrate, seed=config.f_seed)
     model_runner = ModelRunner(config)
     metrics = model_runner.run(
                     X_train=X_tr_svd,
@@ -132,9 +132,9 @@ def individual_analysis_with_dimension_reduction(
             else:
                 config.F_type = "svd"
                 #print("kernel")    
-            config.f_seed_2 += 1    
-        
-        X_tr_svd, X_te_svd = reduce_dimensions(
+            config.f_seed_2 += 1
+
+        X_tr_svd, X_te_svd, _, _= reduce_dimensions(
             X_tr,
             X_te,
             n_components=config.dim_intermediate,

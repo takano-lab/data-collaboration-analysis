@@ -33,15 +33,14 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"har",
     #"diabetes130",
     #"bank_marketing",
-    #"mnist",
+    "mnist",
     #"fashion_mnist",
     #'3D_gaussian_clusters',
     #"concentric_three_circles",
 ],#"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
-    "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "F_type": ["kernel_pca_svd_mixed"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC", "nonlinear"], # 'centralize', "individual", "Imakura", "GEP",  "ODC",
-    "gamma_type": ["X_tuning"],
+    "h_model": ["svm_linear_classifier"],             # 例: ["mlp","random_forest"] svm_linear_classifier
+    "F_type": [ "ae", "umap"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
+    "G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC", "nonlinear" ], # 'centralize', "individual", "Imakura", "GEP",  "ODC"
     "gamma_ratio": [1],#[0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
     "gamma_ratio_krr": [1],
     "num_anchor_data": [100],
@@ -51,10 +50,10 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "lambda_offdiag": [0],
     "metrics": ["auc"],
     "visualize": [False],
-    "feature_num": [41],
-    "dim_intermediate": [40],#[20, 10, 5, 2],
-    "num_institution_user": [50],#[50, 100, 200, 400],
-    "num_institution": [10],
+    #"feature_num": [41],
+    #"dim_intermediate": [40],#[20, 10, 5, 2],
+    #"num_institution_user": [50],#[50, 100, 200, 400],
+    #"num_institution": [10],
     "K_normalization":[True],
     "anchor_method":["gaussian"],
 })
@@ -94,7 +93,8 @@ _DATASET_DEFAULTS = {
     "mice":                 {"feature_num": 77},#, "dim_intermediate": 46, "dim_integrate": 46, "num_institution_user": 50, "num_institution": 5},
     "breast_cancer":        {"feature_num": 15},#, "num_institution_user": 60},
     #"digits":               {"dim_intermediate": 15, "dim_integrate": 15, "num_institution_user": 100, "num_institution": 10},
-    #"mnist":                {"dim_intermediate": 10, "dim_integrate": 10, "num_institution_user": 50, "num_institution": 10},
+    # "mnist":                {"dim_intermediate": 10, "dim_integrate": 10, "num_institution_user": 50, "num_institution": 10},
+    "mnist":                {"dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 200, "num_institution": 4},
     #"fashion_mnist":        {"dim_intermediate": 10, "dim_integrate": 10, "num_institution_user": 50, "num_institution": 10},
     "concentric_circles":   {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
     "concentric_three_circles": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
@@ -352,23 +352,23 @@ def run_grid(
             _set_config_from_combo(cfg, combo)
             _apply_defaults(cfg, dataset, combo)
 
-            try:
-                val = run_once(cfg, log)
-                vals.append(float(val))
-                record_config_to_cfg(cfg)
-                record_value_to_cfg(cfg, "評価値", val)
-            except Exception as e:
-                msg = f"[skip] seed={i}, dataset={dataset}, G_type={combo.get('G_type')}, reason={e}"
-                print(msg)
-                try:
-                    log.exception(msg)
-                except Exception:
-                    pass
-                try:
-                    record_value_to_cfg(cfg, "error", str(e))
-                except Exception:
-                    pass
-                continue
+            #try:
+            val = run_once(cfg, log)
+            vals.append(float(val))
+            record_config_to_cfg(cfg)
+            record_value_to_cfg(cfg, "評価値", val)
+            # except Exception as e:
+            #     msg = f"[skip] seed={i}, dataset={dataset}, G_type={combo.get('G_type')}, reason={e}"
+            #     print(msg)
+            #     try:
+            #         log.exception(msg)
+            #     except Exception:
+            #         pass
+            #     try:
+            #         record_value_to_cfg(cfg, "error", str(e))
+            #     except Exception:
+            #         pass
+            #     continue
 
         mean_val = sum(vals) / len(vals) if vals else 0.0
         stdev_val = statistics.stdev(vals) if len(vals) > 1 else 0.0

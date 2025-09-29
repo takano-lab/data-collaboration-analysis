@@ -64,19 +64,21 @@ def run_once(config, logger):
         # GEP_weightedはUSE_KERNELがTrueのときのみ実行
     #    return
     config.log(logger, exclude_keys=["output_path", "input_path", "name", "seed", "y_name"])
-    # インスタンスの生成
-    data_collaboration = DataCollaborationAnalysis(config=config, logger=logger, train_df=train_df, test_df=test_df)
-    # データ分割 -> 統合表現の獲得まで一気に実行
-    #data_collaboration.save_optimal_params()
-    data_collaboration.run()
-    if config.visualize:
-        data_collaboration.visualize_representations()
-        print(1111)
-    #data_collaboration.save_representations_to_csv()
-        # 提案手法
-    #record_config_to_cfg(config)
+    if config.G_type != "centralize":
+        # インスタンスの生成
+        data_collaboration = DataCollaborationAnalysis(config=config, logger=logger, train_df=train_df, test_df=test_df)
+        # データ分割 -> 統合表現の獲得まで一気に実行
+        #data_collaboration.save_optimal_params()
+        data_collaboration.run()
+        if config.visualize:
+            data_collaboration.visualize_representations()
+            print(1111)
+        #data_collaboration.save_representations_to_csv()
+            # 提案手法
+        #record_config_to_cfg(config)
     if config.G_type == 'centralize':
-                # 集中解析
+        # 集中解析
+        print(22222222222)
         metrics_cen = centralize_analysis(config, logger, y_name=config.y_name)
         metrics_dict['centralize'] = metrics_cen
         #record_config_to_cfg(config)
@@ -136,6 +138,7 @@ def run_once(config, logger):
         #record_value_to_cfg(config, "評価値", metrics_fl)
         return metrics_fl
     else:
+        print(11111111111)
         config.f_seed = 0
         metrics_ind_dim = individual_analysis_with_dimension_reduction(
             config=config,
