@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple, Dict, Any
+from typing import Any, Dict, Optional, Tuple
+
 import numpy as np
 from scipy.linalg import eigh
-from sklearn.decomposition import KernelPCA, PCA, TruncatedSVD
+from sklearn.decomposition import PCA, KernelPCA, TruncatedSVD
+from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
 
@@ -474,6 +476,152 @@ def _run_umap(
     Xat = model.transform(Xats) if Xats is not None else None
     return _to_tuple4(Xt, Xv, Xa, Xat)
 
+
+# 追加: Diffusion Maps ランナー（Nyström 拡張付き）
+def _run_dm(
+    X_train, X_test, n_components, *, config=None, anchor=None, anchor_test=None, **kwargs
+):
+    def _median_gamma(X: np.ndarray) -> float:
+        D = pairwise_distances(X, metric="euclidean")
+        vals = D[D > 0]
+        med = np.median(vals) if vals.size else 1.0
+        if not np.isfinite(med) or med <= 0:
+            return 1.0
+        return 1.0 / (2.0 * (med ** 2))
+
+    scaler = StandardScaler()
+    Xts = scaler.fit_transform(X_train)
+    Xvs = scaler.transform(X_test)
+    Xas = scaler.transform(anchor) if anchor is not None else None
+    Xats = scaler.transform(anchor_test) if anchor_test is not None else None
+
+    gamma = _cfg_float(config, "dm_gamma", -1.0)
+    if gamma is None or gamma <= 0:
+        gamma = _median_gamma(Xts)
+    t = _cfg_float(config, "dm_t", 1.0)
+
+    # K, P を学習データ上で構築
+    D2 = pairwise_distances(Xts, metric="sqeuclidean")
+    K = np.exp(-gamma * D2)
+    np.fill_diagonal(K, 0.0)
+    d = K.sum(axis=1, keepdims=True)
+    d[d == 0] = 1.0
+    P = K / d
+
+    w, V = np.linalg.eig(P)
+    # 実部へ
+    w = np.real(w)
+    V = np.real(V)
+    order = np.argsort(-np.abs(w))
+    w = w[order]
+    V = V[:, order]
+    # 先頭(λ≈1)は無視して次の n_components を使用
+    start = 1 if V.shape[1] > 1 else 0
+    k = min(n_components, max(0, V.shape[1] - start))
+    eigvals_sel = w[start:start + k]
+    eigvecs_sel = V[:, start:start + k]
+    # 拡散距離スケール（t乗）
+    if k > 0:
+        scale = np.power(np.abs(eigvals_sel), t)
+        Xt = eigvecs_sel * scale
+    else:
+        Xt = np.zeros((Xts.shape[0], 0))
+
+    def _embed_new(Xnew: np.ndarray) -> np.ndarray:
+        if k == 0 or Xnew is None:
+            return None
+        D2n = pairwise_distances(Xnew, Xts, metric="sqeuclidean")
+        Kny = np.exp(-gamma * D2n)
+        row = Kny.sum(axis=1, keepdims=True)
+        row[row == 0] = 1.0
+        Pny = Kny / row
+        # Nyström: phi_j(y) = (1/lambda_j) sum_i P(y,i) phi_j(i) ; その後 t 乗でスケール
+        Phi = (Pny @ eigvecs_sel) / np.maximum(np.abs(eigvals_sel), 1e-12)
+        Phi *= np.power(np.abs(eigvals_sel), t)
+        return Phi
+
+    Xv = _embed_new(Xvs)
+    Xa = _embed_new(Xas) if Xas is not None else None
+    Xat = _embed_new(Xats) if Xats is not None else None
+    return _to_tuple4(Xt, Xv, Xa, Xat)
+
+
+# 追加: Laplacian Eigenmaps ランナー（RBF+KNN, Nyström 拡張）
+def _run_le(
+    X_train, X_test, n_components, *, config=None, anchor=None, anchor_test=None, **kwargs
+):
+    def _median_gamma(X: np.ndarray) -> float:
+        D = pairwise_distances(X, metric="euclidean")
+        vals = D[D > 0]
+        med = np.median(vals) if vals.size else 1.0
+        if not np.isfinite(med) or med <= 0:
+            return 1.0
+        return 1.0 / (2.0 * (med ** 2))
+
+    scaler = StandardScaler()
+    Xts = scaler.fit_transform(X_train)
+    Xvs = scaler.transform(X_test)
+    Xas = scaler.transform(anchor) if anchor is not None else None
+    Xats = scaler.transform(anchor_test) if anchor_test is not None else None
+
+    k_nb = _cfg_int(config, "le_neighbors", 10)
+    gamma = _cfg_float(config, "le_gamma", -1.0)
+    if gamma is None or gamma <= 0:
+        gamma = _median_gamma(Xts)
+
+    n = Xts.shape[0]
+    # KNN グラフ作成（対称化）
+    nn = NearestNeighbors(n_neighbors=min(max(1, k_nb), max(1, n - 1))).fit(Xts)
+    ind = nn.kneighbors(return_distance=False)
+    W = np.zeros((n, n), dtype=float)
+    for i in range(n):
+        for j in ind[i]:
+            if i == j:
+                continue
+            diff = Xts[i] - Xts[j]
+            w = np.exp(-gamma * float(np.dot(diff, diff)))
+            W[i, j] = w
+            W[j, i] = max(W[j, i], w)  # 対称化（最大）
+    D = np.diag(W.sum(axis=1))
+    D_sqrt_inv = np.diag(1.0 / np.maximum(np.sqrt(np.diag(D)), 1e-12))
+    Lsym = D_sqrt_inv @ W @ D_sqrt_inv  # = I - L_norm ではなく、類似度正規化（固有値は [0,1]）
+
+    # 固有分解（最大固有値の次から n_components）
+    evals, evecs = eigh(Lsym)
+    order = np.argsort(evals)[::-1]  # 大きい順
+    evals = evals[order]
+    evecs = evecs[:, order]
+    start = 1 if evecs.shape[1] > 1 else 0  # 先頭はトリビアル
+    k = min(n_components, max(0, evecs.shape[1] - start))
+    U = evecs[:, start:start + k]
+    Xt = U
+
+    # Nyström 拡張: psi_j(y) ≈ (1/sqrt(d(y))) Σ_i W(y,i)/sqrt(d_i) * psi_j(i)
+    d_i_sqrt = np.sqrt(np.maximum(np.diag(D), 1e-12))
+
+    def _embed_new(Xnew: np.ndarray) -> np.ndarray:
+        if Xnew is None or k == 0:
+            return None
+        nn_new = NearestNeighbors(n_neighbors=min(max(1, k_nb), n)).fit(Xts)
+        neigh_ind = nn_new.kneighbors(Xnew, return_distance=False)
+        Z = np.zeros((Xnew.shape[0], k), dtype=float)
+        for r, nbrs in enumerate(neigh_ind):
+            wrow = np.zeros(n, dtype=float)
+            for j in nbrs:
+                diff = Xnew[r] - Xts[j]
+                wrow[j] = np.exp(-gamma * float(np.dot(diff, diff)))
+            d_y = wrow.sum()
+            if d_y <= 0:
+                continue
+            coef = (wrow / np.maximum(d_y, 1e-12)) / np.maximum(d_i_sqrt, 1e-12)
+            Z[r] = (coef @ U) / np.sqrt(d_y)
+        return Z
+
+    Xv = _embed_new(Xvs)
+    Xa = _embed_new(Xas) if Xas is not None else None
+    Xat = _embed_new(Xats) if Xats is not None else None
+    return _to_tuple4(Xt, Xv, Xa, Xat)
+
 def _run_autoencoder(
     X_train, X_test, n_components, *, config=None, anchor=None, anchor_test=None, **kwargs
 ):
@@ -583,6 +731,8 @@ _RUNNERS: Dict[str, Any] = {
     "kernel_pca_unfixed_gamma": lambda *a, **kw: _run_kpca_family(*a, mode="unfixed", **kw),
     # 追加
     "umap": _run_umap,
+    "dm": _run_dm,
+    "le": _run_le,
     "autoencoder": _run_autoencoder,
     "ae": _run_autoencoder,
 }

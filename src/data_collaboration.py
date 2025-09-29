@@ -11,7 +11,7 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import mean_squared_error
 from sklearn.metrics.pairwise import pairwise_distances, rbf_kernel
 from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_val_score
-from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neighbors import KNeighborsClassifier, NearestNeighbors
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.svm import SVC
@@ -242,8 +242,8 @@ class DataCollaborationAnalysis:
         elif self.config.G_type == "ODC": # この分岐を追加
             self.make_integrate_expression_odc()
         elif self.config.G_type  == "nonlinear":
-            #self.assign_anchor_labels(k=5)
-            #self.build_laplacians_from_anchor_labels()
+            self.assign_anchor_labels(k=5)
+            self.build_laplacians_from_anchor_labels()
             self.make_integrate_nonlinear_expression()
         elif self.config.G_type  == "nonlinear_tuning":
             self.make_integrate_nonlinear_expression_tuning()
@@ -351,6 +351,190 @@ class DataCollaborationAnalysis:
             U = rng.random((num_row, num_col))
             anchor = col_min + U * width
             return anchor
+
+        elif self.config.anchor_method == "smote":
+            """
+            SMOTE 風に self.Xs_train と self.Xs_test の元データから公開データ Xpub を合成して返す。
+            - 既定パラメータ（k_neighbors=5, lambda ~ U[0,1]）
+            - クラス比は元データに概ね比例させ、最終的に num_row 件を返す
+            - 指示通り、Xpub にオリジナルの元データ行は含めない（合成データのみ）
+            注意: self.Xs_train/self.ys_train などは run() の先頭の分割後に存在する前提
+            """
+            rng = np.random.default_rng(seed)
+
+            if not self.Xs_train or not self.ys_train:
+                raise RuntimeError("SMOTE anchor 生成には先に train_test_split が必要です。")
+
+            # 元データ（train+test）を結合
+            X_train_all = np.vstack(self.Xs_train) if len(self.Xs_train) > 1 else self.Xs_train[0]
+            y_train_all = np.hstack(self.ys_train) if len(self.ys_train) > 1 else self.ys_train[0]
+            X_test_all  = np.vstack(self.Xs_test)  if len(self.Xs_test)  > 1 else self.Xs_test[0]
+            y_test_all  = np.hstack(self.ys_test)  if len(self.ys_test)  > 1 else self.ys_test[0]
+
+            X0 = np.vstack([X_train_all, X_test_all])
+            y0 = np.hstack([y_train_all, y_test_all])
+
+            # 列数を num_col に合わせる（過不足対策）
+            if X0.shape[1] < num_col:
+                num_col = X0.shape[1]
+            X0 = X0[:, :num_col]
+
+            classes, counts = np.unique(y0, return_counts=True)
+            N_total = int(len(y0))
+            if N_total == 0:
+                # フォールバック: ガウスに戻す
+                return np.random.default_rng(seed).normal(size=(num_row, num_col))
+
+            # クラス別に目標生成数を割当（合計 num_row になるよう調整）
+            # まず比例配分で丸め、最後のクラスで残差を吸収
+            target_counts = []
+            allocated = 0
+            for i, c in enumerate(classes):
+                if i < len(classes) - 1:
+                    n_c = int(round(num_row * (counts[i] / N_total)))
+                    target_counts.append(n_c)
+                    allocated += n_c
+                else:
+                    target_counts.append(num_row - allocated)
+
+            # クラスごとに近傍を準備
+            synthetic_list = []
+            for c, n_gen in zip(classes, target_counts):
+                if n_gen <= 0:
+                    continue
+                mask = (y0 == c)
+                Xc = X0[mask]
+                Nc = Xc.shape[0]
+                if Nc == 0:
+                    continue
+
+                # 近傍数（自分を含めて n_neighbors 個出すので +1）
+                k = min(6, Nc)  # 実近傍5を目安（自分を含め6を取り、あとで除外）
+
+                # Nc==1 の例外処理: 近傍が取れないので微小ノイズで複製
+                if Nc == 1:
+                    base = np.tile(Xc[0], (n_gen, 1))
+                    # スケールに応じた微小ノイズ
+                    std = np.std(X0, axis=0, ddof=0)
+                    noise = rng.normal(scale=np.where(std>0, 1e-3*std, 1e-3), size=base.shape)
+                    synthetic_list.append(base + noise)
+                    continue
+
+                nbrs = NearestNeighbors(n_neighbors=k, algorithm="auto")
+                nbrs.fit(Xc)
+                # 近傍インデックス（自分を含む） shape: (Nc, k)
+                indices = nbrs.kneighbors(Xc, return_distance=False)
+
+                # 合成サンプルを作成
+                gen_idx = rng.integers(low=0, high=Nc, size=n_gen)
+                # 各元サンプルに対して、近傍から1つ選ぶ（自身 indices[i,0] を避ける）
+                nn_choices = []
+                for i0 in gen_idx:
+                    neigh = indices[i0]
+                    if len(neigh) <= 1:
+                        # 念のため
+                        j = i0
+                    else:
+                        # 先頭を除いた中からランダム
+                        j = rng.choice(neigh[1:])
+                    nn_choices.append(j if isinstance(j, (int, np.integer)) else int(j))
+                nn_choices = np.array(nn_choices, dtype=int)
+
+                lam = rng.random(size=n_gen)  # U[0,1]
+                Xi = Xc[gen_idx]
+                Xj = Xc[nn_choices]
+                Xsyn = Xi + lam[:, None] * (Xj - Xi)
+                synthetic_list.append(Xsyn)
+
+            Xpub_syn = np.vstack(synthetic_list) if synthetic_list else np.empty((0, num_col))
+
+            # 合成数の過不足調整
+            if Xpub_syn.shape[0] > num_row:
+                idx = rng.choice(Xpub_syn.shape[0], size=num_row, replace=False)
+                Xpub_syn = Xpub_syn[idx]
+            elif Xpub_syn.shape[0] < num_row:
+                # 不足分はまず追加SMOTEで埋める（Gaussianは最終手段）
+                deficit = num_row - Xpub_syn.shape[0]
+
+                # 追加SMOTEの関数（Nc>=2のクラスから作る）
+                def make_more_smote(need_more: int) -> np.ndarray:
+                    chunks = []
+                    if need_more <= 0:
+                        return np.empty((0, num_col))
+                    # 比例配分で各クラスに割当
+                    share = np.maximum(1, np.round(need_more * (counts / counts.sum())).astype(int))
+                    # 残差調整
+                    over = int(share.sum() - need_more)
+                    if over > 0:
+                        for i in range(len(share)-1, -1, -1):
+                            take = min(over, max(0, share[i]-1))
+                            share[i] -= take
+                            over -= take
+                            if over == 0:
+                                break
+                    elif over < 0:
+                        for i in range(len(share)):
+                            add = min(-over, 1)
+                            share[i] += add
+                            over += add
+                            if over == 0:
+                                break
+
+                    for c, s in zip(classes, share):
+                        if s <= 0:
+                            continue
+                        Xc = X0[y0 == c]
+                        Nc = Xc.shape[0]
+                        if Nc >= 2:
+                            k = min(6, Nc)
+                            nbrs2 = NearestNeighbors(n_neighbors=k, algorithm="auto")
+                            nbrs2.fit(Xc)
+                            inds2 = nbrs2.kneighbors(Xc, return_distance=False)
+                            gi = rng.integers(0, Nc, size=int(s))
+                            gj = []
+                            for i0 in gi:
+                                neigh = inds2[i0]
+                                if len(neigh) <= 1:
+                                    j0 = i0
+                                else:
+                                    j0 = rng.choice(neigh[1:])
+                                gj.append(int(j0))
+                            gj = np.array(gj, dtype=int)
+                            lam2 = rng.random(size=int(s))
+                            Xi2 = Xc[gi]
+                            Xj2 = Xc[gj]
+                            chunks.append(Xi2 + lam2[:, None] * (Xj2 - Xi2))
+                    return np.vstack(chunks) if chunks else np.empty((0, num_col))
+
+                extra = make_more_smote(deficit)
+                Xpub_syn = np.vstack([Xpub_syn, extra])
+                deficit = num_row - Xpub_syn.shape[0]
+
+                if deficit > 0:
+                    # どうしても不足する分のみ、微小Gaussianで補完（最大5%まで）
+                    gauss_cap = max(1, int(np.floor(0.05 * num_row)))
+                    gauss_fill = min(deficit, gauss_cap)
+                    if gauss_fill > 0:
+                        std = np.std(X0, axis=0, ddof=0)
+                        noise = rng.normal(scale=np.where(std>0, 1e-3*std, 1e-3), size=(gauss_fill, num_col))
+                        base = X0[rng.choice(N_total, size=gauss_fill, replace=True)][:, :num_col]
+                        Xpub_syn = np.vstack([Xpub_syn, base + noise])
+                        deficit = num_row - Xpub_syn.shape[0]
+
+                if deficit > 0 and Xpub_syn.shape[0] > 0:
+                    # それでも不足する分は、既存の合成サンプルを再サンプル（複製）
+                    # （オリジナルを含めないという条件を維持）
+                    idx_rep = rng.choice(Xpub_syn.shape[0], size=deficit, replace=True)
+                    Xpub_syn = np.vstack([Xpub_syn, Xpub_syn[idx_rep]])
+
+            # 追跡用に保存（合成のみ）。オリジナルを入れないのが条件
+            try:
+                self.Xpub = Xpub_syn.copy()
+                self.Xpub_y = None  # 必要なら y0 に比例したラベルを別途付ける
+            except Exception:
+                pass
+
+            return Xpub_syn
 
     def make_intermediate_expression(self) -> None:
         print("********************中間表現の生成********************")
@@ -914,7 +1098,7 @@ class DataCollaborationAnalysis:
             M /= trace_M
         
         # --- 2. 固有値問題 → Z (r×p̂ , ‖Z‖_F=1) --- 近接ラプラシアンの重みも加える
-        Q = M #+ lw_alpha * self.L_within - lb_beta * self.L_between
+        Q = M + lw_alpha * self.L_within - lb_beta * self.L_between
 
         # ❶ ほんのわずかな非対称を切り落とす
         Q = (Q + Q.T) * 0.5
@@ -1199,6 +1383,43 @@ class DataCollaborationAnalysis:
         anchor_labels_train = self.anchor_y if hasattr(self, 'anchor_y') else np.zeros(self.anchor.shape[0] if has_train_data else 0)
         anchor_labels_test = self.anchor_y_test if hasattr(self, 'anchor_y_test') else np.zeros(self.anchor_test.shape[0] if has_test_data else 0)
         legend_status = "full" if np.unique(anchor_labels_train).size > 1 else False
+
+        # --- 追加: ラベル頻度（多い順）の棒グラフを保存 ---
+        try:
+            Path(save_dir).mkdir(parents=True, exist_ok=True)
+            # Train anchor labels distribution
+            if False: #has_train_data and anchor_labels_train is not None and len(anchor_labels_train) > 0:
+                classes, counts = np.unique(anchor_labels_train, return_counts=True)
+                order = np.argsort(-counts)
+                classes_ord = classes[order]
+                counts_ord = counts[order]
+                plt.figure(figsize=(6, max(2.5, 0.4 * len(classes_ord))))
+                plt.barh([str(c) for c in classes_ord], counts_ord, color="#4C78A8")
+                plt.gca().invert_yaxis()
+                plt.xlabel("count")
+                plt.title("Anchor labels (Train): frequency")
+                plt.tight_layout()
+                plt.savefig(Path(save_dir) / f"anchor_label_freq_train_{self.config.plot_name}")
+                plt.close()
+                self.logger.info("✅ アンカー(Train)のラベル頻度を保存しました")
+
+            # Test anchor labels distribution
+            if False: # has_test_data and anchor_labels_test is not None and len(anchor_labels_test) > 0:
+                classes, counts = np.unique(anchor_labels_test, return_counts=True)
+                order = np.argsort(-counts)
+                classes_ord = classes[order]
+                counts_ord = counts[order]
+                plt.figure(figsize=(6, max(2.5, 0.4 * len(classes_ord))))
+                plt.barh([str(c) for c in classes_ord], counts_ord, color="#72B7B2")
+                plt.gca().invert_yaxis()
+                plt.xlabel("count")
+                plt.title("Anchor labels (Test): frequency")
+                plt.tight_layout()
+                plt.savefig(Path(save_dir) / f"anchor_label_freq_test_{self.config.plot_name}")
+                plt.close()
+                self.logger.info("✅ アンカー(Test)のラベル頻度を保存しました")
+        except Exception as e:
+            self.logger.warning(f"ラベル頻度プロットの保存に失敗しました: {e}")
 
         # --- プロットの準備 (Train+Testで2倍の行数) ---
         fig, axes = plt.subplots(num_institutions * 2, 4, figsize=(24, 6 * num_institutions * 2), squeeze=False)

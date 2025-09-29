@@ -494,7 +494,25 @@ def run_experiment(cfg: ExpConfig, out_csv: Path) -> pd.DataFrame:
                     dr_idx = _build_dr_indices_stratified(y_trp, tr_idx_local, dr_size, seed)
                 X_dr, y_dr = X_trp[dr_idx], y_trp[dr_idx]
 
-                vprint(f"[dataset={ds_name}] repeat={r}/{cfg.repeats-1} n_train={n_train} -> train={len(y_tr)}, dr_pool={len(y_dr)}, test={len(y_te)}")
+                # Meta info for logging/records
+                train_n = int(len(y_tr))
+                dr_pool_n = int(len(y_dr))
+                test_n = int(len(y_te))
+                n_classes = int(len(np.unique(y)))
+                dr_ratio = float(dr_pool_n / train_n) if train_n > 0 else np.nan
+                vprint(
+                    f"[dataset={ds_name}] repeat={r}/{cfg.repeats-1} "
+                    f"n_train={train_n} -> dr_pool={dr_pool_n} (ratio={dr_ratio:.2f}), test={test_n}, classes={n_classes}"
+                )
+                meta = {
+                    "train_n": train_n,
+                    "dr_pool_n": dr_pool_n,
+                    "dr_ratio": dr_ratio,
+                    "test_n": test_n,
+                    "n_classes": n_classes,
+                    # このスクリプトは単一データ（機関数の概念なし）。参考値として1を記録。
+                    "n_institution": 1,
+                }
 
                 # Method 1: raw (no DR)
                 for clf_name, linear in (("LinearSVM", True), ("RBFSVM", False)):
@@ -503,7 +521,9 @@ def run_experiment(cfg: ExpConfig, out_csv: Path) -> pd.DataFrame:
                     records.append({
                         "dataset": ds_name, "repeat": r, "n_train": n_train,
                         "method": "raw", "dr": "none", "k": D,
-                        "clf": clf_name, "acc": acc, **{f"clf_{k}": v for k, v in bestp.items()}
+                        "clf": clf_name, "acc": acc,
+                        **{f"clf_{k}": v for k, v in bestp.items()},
+                        **meta,
                     })
 
                 # Method 2: linear DR (PCA only)
@@ -521,7 +541,9 @@ def run_experiment(cfg: ExpConfig, out_csv: Path) -> pd.DataFrame:
                             records.append({
                                 "dataset": ds_name, "repeat": r, "n_train": n_train,
                                 "method": "linear_dr", "dr": dr_name, "k": k,
-                                "clf": clf_name, "acc": acc, **{f"clf_{k}": v for k, v in bestp.items()}
+                                "clf": clf_name, "acc": acc,
+                                **{f"clf_{k}": v for k, v in bestp.items()},
+                                **meta,
                             })
 
                 # Method 3: nonlinear DR (UMAP, KernelPCA, Isomap)
@@ -546,7 +568,9 @@ def run_experiment(cfg: ExpConfig, out_csv: Path) -> pd.DataFrame:
                             records.append({
                                 "dataset": ds_name, "repeat": r, "n_train": n_train,
                                 "method": "nonlinear_dr", "dr": dr_name, "k": k,
-                                "clf": clf_name, "acc": acc, **{f"clf_{k}": v for k, v in bestp.items()}
+                                "clf": clf_name, "acc": acc,
+                                **{f"clf_{k}": v for k, v in bestp.items()},
+                                **meta,
                             })
 
         # persist progressively to avoid loss

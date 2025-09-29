@@ -33,29 +33,34 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"har",
     #"diabetes130",
     #"bank_marketing",
-    "mnist",
+    #"mnist",
+    "mnist_1248",
     #"fashion_mnist",
     #'3D_gaussian_clusters',
     #"concentric_three_circles",
+    #"iris",
+    #"ecoli",
+    #"vowel"
 ],#"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["svm_linear_classifier"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "F_type": [ "ae", "umap"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC", "nonlinear" ], # 'centralize', "individual", "Imakura", "GEP",  "ODC"
-    "gamma_ratio": [1],#[0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
+    "F_type": ["kernel_pca_self_tuning",], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
+    "G_type": ["Imakura", "nonlinear"], # 'centralize', "individual", "Imakura", "GEP",  "ODC" # 'centralize', "individual",
+    #"gamma_ratio": [1],#[0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
+    "gamma_type": ["X_tuning"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"]
     "gamma_ratio_krr": [1],
-    "num_anchor_data": [100],
-    "nl_lambda": [0.1],        # LOCKで止められる, 0.00001
-    "lw_alpha": [0],
+    "num_anchor_data": [1000],
+    "nl_lambda": [1],        # LOCKで止められる, 0.00001
+    "lw_alpha": [0.3],
     "lambda_pred": [0],
     "lambda_offdiag": [0],
     "metrics": ["auc"],
     "visualize": [False],
     #"feature_num": [41],
-    #"dim_intermediate": [40],#[20, 10, 5, 2],
-    #"num_institution_user": [50],#[50, 100, 200, 400],
-    #"num_institution": [10],
-    "K_normalization":[True],
-    "anchor_method":["gaussian"],
+    "dim_intermediate": [30],#[20, 10, 5, 2],
+    "num_institution_user": [200],#[50, 100, 200, 400],
+    "num_institution": [3],
+    "K_normalization":[False],
+    "anchor_method":["smote"], #
 })
 
 # 2) ループ回数（seed を 0..loop_num-1 で回します）
@@ -109,8 +114,10 @@ _DATASET_DEFAULTS = {
     "glass":              {"feature_num": 9},#,  "dim_intermediate": 6},
     "seeds":              {"feature_num": 7},#,  "dim_intermediate": 5},
     "letter_recognition": {"feature_num": 16},#, "dim_intermediate": 12},
+    "iris":               {"dim_intermediate": 3},
+    "ecoli":              {"dim_intermediate": 5},
+    "vowel":              {"dim_intermediate": 4},
 }
-
 RULES: List[Dict[str, Any]] = [
     {"type": "LOCK", "when": {"G_type": ["centralize", "individual"]}, "lock": {"gamma_ratio": DEFAULTS["gamma_ratio"]}},
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"nl_lambda": DEFAULTS["nl_lambda"]}},
@@ -347,7 +354,7 @@ def run_grid(
             cfg.seed = i
             cfg.dataset = dataset
             cfg.metrics = metrics_name
-            cfg.plot_name = f"_0913_{dataset}_{combo.get('G_type','-')}_{combo.get('K_normalization','-')}.png"
+            cfg.plot_name = f"_0913_{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}_{combo.get('K_normalization','-')}.png"
 
             _set_config_from_combo(cfg, combo)
             _apply_defaults(cfg, dataset, combo)

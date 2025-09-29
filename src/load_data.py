@@ -117,6 +117,7 @@ def _load_digits_df() -> pd.DataFrame:
 
 from sklearn.preprocessing import StandardScaler
 
+
 def _load_concentric_circles_df() -> pd.DataFrame:
     path = Path("input/Three_Organization_Dataset.csv")
     df = pd.read_csv(path)
@@ -227,6 +228,17 @@ def _load_mnist_df() -> pd.DataFrame:
     data = fetch_openml("mnist_784", version=1, as_frame=True)
     df = data.frame
     df = df.rename(columns={"class": "target"})  # ラベル列名を 'target' に統一
+    return df
+
+def _load_mnist_df_1248() -> pd.DataFrame:
+    """
+    MNIST からクラス {1,4,8} のみを抽出して返すローダ。
+    後段の LabelEncoder で 0..2 にリマップされる想定。
+    """
+    df = _load_mnist_df()
+    # OpenML の MNIST は target が文字列のことが多いので文字列化して判定
+    mask = df["target"].astype(str).isin(["1", "2", "4", "8"])
+    df = df.loc[mask].reset_index(drop=True)
     return df
 
 def _load_fashion_mnist_df() -> pd.DataFrame:
@@ -455,6 +467,133 @@ def _load_letter_recognition() -> pd.DataFrame:
     return df
 
 
+def _load_iris() -> pd.DataFrame:
+    """
+    Iris flower dataset.
+    既存のパイプラインに合わせて 'target' 列を保持して返す。
+    まずは scikit-learn 組込みを使用。
+    """
+    from sklearn.datasets import load_iris
+
+    bunch = load_iris(as_frame=True)
+    df = bunch.frame.copy()
+    # 既に 'target' 列を含む
+    return df
+
+
+def _load_ecoli() -> pd.DataFrame:
+    """
+    UCI Ecoli dataset。
+    - まずローカル候補ファイルを探し、なければ OpenML から取得。
+    - 'sequence_name' などの識別子は落とし、'class' を 'target' に。
+    """
+    # ローカル候補
+    candidates = [
+        Path("input/ecoli/ecoli.data"),
+        Path("input/ecoli.data"),
+        Path("input/ecoli/ecoli.csv"),
+        Path("input/ecoli.csv"),
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is not None:
+        if path.suffix.lower() == ".data":
+            cols = [
+                "sequence_name",
+                "mcg", "gvh", "lip", "chg", "aac", "alm1", "alm2", "class",
+            ]
+            df = pd.read_csv(path, sep=r"\s+", header=None, names=cols)
+        else:
+            df = pd.read_csv(path)
+            # 列名が不足していたら補う
+            if "class" not in df.columns:
+                # 最右列がクラスである想定
+                df.columns = [
+                    "sequence_name",
+                    "mcg", "gvh", "lip", "chg", "aac", "alm1", "alm2", "class",
+                ][: len(df.columns)]
+        # ID列を落とす
+        if "sequence_name" in df.columns:
+            df = df.drop(columns=["sequence_name"]) 
+        # クラス名を統一
+        if "class" in df.columns:
+            df = df.rename(columns={"class": "target"})
+        return df
+
+    # Fallback: OpenML
+    data = fetch_openml("ecoli", version=1, as_frame=True)
+    df = data.frame.copy()
+    # OpenMLではターゲット名が 'class' のことが多い
+    if "target" not in df.columns:
+        for cand in ["class", "Class", "target", "label", "y"]:
+            if cand in df.columns:
+                df = df.rename(columns={cand: "target"})
+                break
+        else:
+            # Bunch.target があれば利用
+            if getattr(data, "target", None) is not None:
+                df["target"] = data.target
+            else:
+                raise ValueError("Ecoli: target 列が判別できませんでした。")
+    # 不要IDがあれば落とす
+    for c in ["sequence_name", "id", "ID", "instance"]:
+        if c in df.columns:
+            df = df.drop(columns=[c])
+    return df
+
+
+def _load_vowel() -> pd.DataFrame:
+    """
+    Vowel recognition dataset。
+    - まずローカル候補を探し、無ければ OpenML 'vowel' を利用。
+    - ラベル列を 'target' に統一。
+    """
+    # ローカル候補
+    candidates = [
+        Path("input/vowel/vowel.data"),
+        Path("input/vowel.data"),
+        Path("input/vowel/vowel.csv"),
+        Path("input/vowel.csv"),
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is not None:
+        # UCI 元データの整形はバリエーションが多いので、柔軟に吸収
+        if path.suffix.lower() in [".data", ".txt"]:
+            df = pd.read_csv(path, sep=r"\s+|,", engine="python", header=None)
+        else:
+            df = pd.read_csv(path)
+        # 列名推定（既にヘッダ付きかもしれない）
+        if "target" not in df.columns and not {"class", "Class"} & set(df.columns):
+            # 典型例: 1列目 speaker, 2列目 sex, 3列目 item, 次に 10特徴, そしてクラス
+            if df.shape[1] >= 13:
+                base = ["speaker", "sex", "item"] + [f"f{i}" for i in range(1, 11)] + ["class"]
+                df.columns = base[: df.shape[1]]
+        # ラベル名統一
+        for cand in ["class", "Class", "Vowel", "label", "y"]:
+            if cand in df.columns:
+                df = df.rename(columns={cand: "target"})
+                break
+        return df
+
+    # Fallback: OpenML
+    data = fetch_openml("vowel", version=1, as_frame=True)
+    df = data.frame.copy()
+    if "target" not in df.columns:
+        for cand in ["Class", "class", "y", "label", "Vowel"]:
+            if cand in df.columns:
+                df = df.rename(columns={cand: "target"})
+                break
+        else:
+            if getattr(data, "target", None) is not None:
+                df["target"] = data.target
+            else:
+                raise ValueError("Vowel: target 列が判別できませんでした。")
+    # 不要ID候補を落とす
+    for c in ["id", "ID", "instance", "Train", "Test"]:
+        if c in df.columns:
+            df = df.drop(columns=[c])
+    return df
+
+
 LOADERS = {
     "qsar":_load_qsar,
     "breast_cancer":_load_breast_cancer,
@@ -474,6 +613,10 @@ LOADERS = {
     "3D_8_gaussian_clusters": _load_3D_8_gaussian_clusters_df,
     "mice": _load_mice_df,
     "housing": _load_housing,
+    # New: classic ML small datasets
+    "iris": _load_iris,
+    "ecoli": _load_ecoli,
+    "vowel": _load_vowel,
     
     # UCI: 追加
     "wine_quality": _load_wine_quality,
@@ -491,6 +634,8 @@ LOADERS = {
     
     "mnist": _load_mnist_df,
     "fashion_mnist": _load_fashion_mnist_df,
+    # Subset MNIST
+    "mnist_1248": _load_mnist_df_1248,
 }
 
 def drop_rare_labels(df, ycol="target", min_count=2):
@@ -499,11 +644,13 @@ def drop_rare_labels(df, ycol="target", min_count=2):
     ok_labels = vc[vc >= min_count].index
     return df[df[ycol].isin(ok_labels)].copy()
 
+import pandas as pd
+
 # -------------------------------------------------- #
 # メイン関数                                         #
 # -------------------------------------------------- #
 from sklearn.preprocessing import LabelEncoder
-import pandas as pd
+
 
 def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
     if config.dataset not in LOADERS:
@@ -532,129 +679,6 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
     # ── 再結合
     df = pd.concat([X, y.reset_index(drop=True)], axis=1)
-
-    # if config.dataset == 'qsar':
-    #     config.feature_num = 41
-    #     config.dim_intermediate = 37 # 中間表現の次元数
-    #     config.dim_integrate = 37 # 統合表現の次元数
-    #     config.num_institution_user = 25 # 100
-    #     config.num_institution = 20#int(len(df) / (config.num_institution_user * 2))                                                            #20
-    #     #config.num_anchor_data = 396
-    #     #config.metrics = "accuracy"
-    
-    # elif config.dataset == "adult":
-    #     config.feature_num = 51
-    #     config.dim_intermediate = 50 # 中間表現の次元数
-    #     config.dim_integrate = 50 # 統合表現の次元数
-    #     config.num_institution_user = 150#50
-    #     config.num_institution = 10
-    #     #config.num_anchor_data = 693          
-
-    # elif config.dataset == "diabetes130":
-    #     config.feature_num = 200
-    #     config.dim_intermediate = 100 # 中間表現の次元数
-    #     config.dim_integrate = 100 # 統合表現の次元数
-    #     config.num_institution_user = 500
-    #     config.num_institution = 10
-    #     #config.num_anchor_data = 693  
-    
-    
-    # elif config.dataset == 'mice':
-    #     config.feature_num = 77
-    #     config.dim_intermediate = 46 # 中間表現の次元数
-    #     config.dim_integrate = 46 # 統合表現の次元数
-    #     config.num_institution_user = 50 # 50
-    #     config.num_institution = 5
-    #     #config.num_anchor_data = 693
-    #     #config.metrics = "accuracy"        
-
-    # elif config.dataset == 'breast_cancer':
-    #     config.feature_num = 15  # 特徴量の数（目的変数を除く）
-    #     config.dim_intermediate = config.feature_num-1 # 中間表現の次元数
-    #     config.dim_integrate = config.feature_num-1 # 統合表現の次元数
-    #     config.num_institution_user = 60#16
-    #     config.num_institution = min(100, int(len(df) / (config.num_institution_user * 2)))
-    #     #config.metrics = "accuracy"
-        
-    # elif config.dataset == 'digits':
-    #     config.feature_num =  len(df.columns) - 1 # 特徴量の数（目的変数を除く）
-    #     config.dim_intermediate = 15 # 中間表現の次元数
-    #     config.dim_integrate = 15 # 統合表現の次元数
-    #     config.feature_num = min(len(df.columns) - 1, 51)
-    #     config.num_institution_user = 100#30
-    #     config.num_institution = 10#min(100, int(len(df) / (config.num_institution_user * 2)))
-
-    # elif config.dataset == 'mnist' or config.dataset == 'fashion_mnist':
-    #     config.feature_num = len(df.columns) - 1  # 特徴量の数（目的変数を除く）
-    #     config.dim_intermediate = 10 # 中間表現の次元数
-    #     config.dim_integrate = 10 # 統合表現の次元数
-    #     config.num_institution_user = 50
-    #     config.num_institution = 10
-                                                                      
-    # elif config.dataset == 'concentric_circles':
-    #     config.feature_num = 2
-    #     config.dim_intermediate = 2  # 中間表現の次元数
-    #     config.dim_integrate = 2  # 統合表現の次元数
-    #     config.num_institution = 2
-    #     config.num_institution_user = int(len(df) / (config.num_institution * 2))                                                              
-
-    # elif config.dataset == 'concentric_three_circles':
-    #     config.feature_num = 2
-    #     config.dim_intermediate = 2  # 中間表現の次元数
-    #     config.dim_integrate = 2  # 統合表現の次元数
-    #     config.num_institution = 2
-    #     config.num_institution_user = int(len(df) / (config.num_institution * 2))               
-        
-    # elif config.dataset == 'two_gaussian_distributions':
-    #     config.feature_num = 2
-    #     config.dim_intermediate = 2
-    #     config.dim_integrate = 2
-    #     config.num_institution_user = 50
-    #     config.num_institution = 5
-    
-    # elif config.dataset == '3D_gaussian_clusters':
-    #     config.feature_num = 3
-    #     config.dim_intermediate = 2
-    #     config.dim_integrate = 2
-    #     config.num_institution = 2
-    #     config.num_institution_user = int(len(df) / (config.num_institution * 2))       
-    
-    # elif config.dataset == '3D_8_gaussian_clusters':
-    #     config.feature_num = 3
-    #     config.dim_intermediate = 2
-    #     config.dim_integrate = 2
-    #     config.num_institution = 2
-    #     config.num_institution_user = int(len(df) / (config.num_institution * 2))     
-            
-    # elif config.dataset == 'digits_':
-    #     config.feature_num = len(df.columns) - 1
-    #     config.dim_intermediate = 4
-    #     config.dim_integrate = 4
-    #     config.num_institution = 10
-    #     config.num_institution_user = 100    
-    
-    # elif config.dataset == 'digits_v2':
-    #     config.feature_num = len(df.columns) - 1
-    #     config.dim_intermediate = 30
-    #     config.dim_integrate = 30
-    #     config.num_institution = 29
-    #     config.num_institution_user = 30
-
-    # elif config.dataset == 'housing':
-    #     config.feature_num = len(df.columns) - 1
-    #     config.dim_intermediate = config.feature_num - 1
-    #     config.dim_integrate = config.feature_num - 1
-    #     config.num_institution = 10
-    #     config.num_institution_user = 10
-    #     config.metrics = "rmse"
-
-    # elif config.dataset == "statlog":
-    #     config.feature_num = len(df.columns) - 1
-    #     config.dim_intermediate = config.feature_num - 1
-    #     config.dim_integrate = config.feature_num - 1
-    #     config.num_institution_user = 200# 30#, max(config.dim_integrate + 1, 50) # int(len(df) / (config.num_institution * 2))  # 1機関あたりのユーザ数を計算
-    #     config.num_institution = min(int(len(df) / (config.num_institution_user * 2)), 5)
-    #     #config.metrics = "auc"
     
     print("config.feature_num", config.feature_num)
     
@@ -696,11 +720,6 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
         config.num_institution = safe_num_inst
     print(f"num_institution_user={config.num_institution_user}, num_institution={config.num_institution}")
     print("config.feature_num", config.feature_num, "config.dim_intermediate", config.dim_intermediate, "config.dim_integrate", config.dim_integrate)
-    #config.num_institution_user *= 3
-    #config.num_institution //= 3
-    #config.num_institution = int(config.num_institution)
-    #config.dim_intermediate = 2
-    #config.dim_integrate = 2
     
     # 特徴量だけを取得（target を除外）
     y_name = config.y_name
@@ -736,9 +755,10 @@ def load_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
             stratify=df["target"]
         )
         
+    from collections import defaultdict
+
     import numpy as np
     import pandas as pd
-    from collections import defaultdict
 
     def split_train_test_by_institution(
         df: pd.DataFrame,
