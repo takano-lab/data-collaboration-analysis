@@ -361,23 +361,23 @@ def run_grid(
             _set_config_from_combo(cfg, combo)
             _apply_defaults(cfg, dataset, combo)
 
-            try:
-                val = run_once(cfg, log)
-                vals.append(float(val))
-                record_config_to_cfg(cfg)
-                record_value_to_cfg(cfg, "評価値", val)
-            except Exception as e:
-                msg = f"[skip] seed={i}, dataset={dataset}, G_type={combo.get('G_type')}, reason={e}"
-                print(msg)
-                try:
-                    log.exception(msg)
-                except Exception:
-                    pass
-                try:
-                    record_value_to_cfg(cfg, "error", str(e))
-                except Exception:
-                    pass
-                continue
+            #try:
+            val = run_once(cfg, log)
+            vals.append(float(val))
+            record_config_to_cfg(cfg)
+            record_value_to_cfg(cfg, "評価値", val)
+            # except Exception as e:
+            #     msg = f"[skip] seed={i}, dataset={dataset}, G_type={combo.get('G_type')}, reason={e}"
+            #     print(msg)
+            #     try:
+            #         log.exception(msg)
+            #     except Exception:
+            #         pass
+            #     try:
+            #         record_value_to_cfg(cfg, "error", str(e))
+            #     except Exception:
+            #         pass
+            #     continue
 
         mean_val = sum(vals) / len(vals) if vals else 0.0
         stdev_val = statistics.stdev(vals) if len(vals) > 1 else 0.0
