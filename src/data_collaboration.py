@@ -72,53 +72,6 @@ class DataCollaborationAnalysis:
             self.make_integrate_expression
         )
 
-    def save_optimal_params(self) -> None:
-        """
-        データ分割、中間表現の生成、統合表現の生成を一気に行う関数。
-        各機関ごとに最適なparamをグリッドサーチし、CSVに保存する。
-        """
-        # データの分割
-        self.Xs_train, self.Xs_test, self.ys_train, self.ys_test = self.train_test_split(
-            train_df=self.train_df,
-            test_df=self.test_df,
-            num_institution=self.config.num_institution,
-            num_institution_user=self.config.num_institution_user,
-            y_name=self.config.y_name,
-        )
-
-        best_params = {}
-
-        # 各機関に対してグリッドサーチ
-        for i, (X_tr, X_te, y_tr, y_te) in enumerate(zip(self.Xs_train, self.Xs_test, self.ys_train, self.ys_test)):
-            best_score = -float("inf")
-            best_param = None
-
-            for param in [1, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0, 1000.0]:
-                X_tr_svd, X_te_svd = reduce_dimensions(X_tr, X_te, n_components=self.config.dim_intermediate, param=param)
-                score = h_ml_model(X_tr_svd, y_tr, X_te_svd, y_te, self.config)
-                print(score, param)
-                if score > best_score:  # 指標が大きいほど良い場合（例：ROC-AUC）
-                    best_score = score
-                    best_param = param
-
-            best_params[i] = best_param
-            print(f"Institution {i}: Best param = {best_param:.1e}, score = {best_score:.4f}")
-
-        # 保存パスの作成
-        out_path = Path(self.config.output_path)
-        out_path.mkdir(parents=True, exist_ok=True)
-
-        save_path = out_path / "best_param.csv"
-
-        # CSV形式で保存
-        with open(save_path, mode="w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["institution", "best_param"])
-            for k, v in best_params.items():
-                writer.writerow([k, v])
-
-        print(f"✅ 最適パラメータ saved to: {save_path}")
-        
     def assign_anchor_labels(self, k=5): # リークしてる
         """
         self.anchor に対して、self.Xs_train, self.ys_train を使い
@@ -234,8 +187,6 @@ class DataCollaborationAnalysis:
         elif self.config.G_type  == "targetvec":
             self.make_integrate_expression_targetvec()
         elif self.config.G_type  == "GEP":
-            if self.config.semi_integ:
-                self.make_semi_integrate_expression()
             self.make_integrate_expression_gen_eig(use_eigen_weighting=False)
         elif self.config.G_type  == "GEP_weighted":
             self.make_integrate_expression_gen_eig(use_eigen_weighting=True)
@@ -245,13 +196,8 @@ class DataCollaborationAnalysis:
             self.assign_anchor_labels(k=5)
             self.build_laplacians_from_anchor_labels()
             self.make_integrate_nonlinear_expression()
-        elif self.config.G_type  == "nonlinear_tuning":
-            self.make_integrate_nonlinear_expression_tuning()
         elif self.config.G_type == "nonlinear_linear":
             self.make_integrate_nonlinear_linear()
-        elif self.config.G_type == "mlp_objective":
-            self.build_init_from_gen_eig()   # ← 上で追加した関数
-            self.make_integrate_gen_eig_fitting_objective()       
         else:
             print(f"Unknown G_type: {self.config.G_type}")
 
@@ -616,42 +562,7 @@ class DataCollaborationAnalysis:
         print("中間表現の次元数: ", self.Xs_train_inter[0].shape[1])
 
         self.logger.info(f"中間表現（訓練データ）の数と次元数: {self.Xs_train_inter[0].shape}")
-
-    def make_semi_integrate_expression(self) -> None:
-        print("********************中間表現の生成********************")
-        """
-        中間統合表現を生成する関数
-        """
-        self.Xs_train_inter_copy = self.Xs_train_inter.copy()
-        self.Xs_test_inter_copy = self.Xs_test_inter.copy()
-        self.anchors_inter_copy = self.anchors_inter.copy()
-        # 中間表現
-        self.Xs_train_inter: list[np.ndarray] = []
-        self.Xs_test_inter: list[np.ndarray] = []
-        self.anchors_inter: list[np.ndarray] = []
-
-        for X_train, X_test, y_train, anchor_inter in zip(tqdm(self.Xs_train_inter_copy), self.Xs_test_inter_copy, self.ys_train, self.anchors_inter_copy):
-            X_train_svd, X_test_svd, anchor_svd, anchor_test_svd = reduce_dimensions(
-               X_train=X_train,
-               X_test=X_test,
-               n_components=self.config.dim_intermediate,
-               y_train=y_train,
-               anchor=anchor_inter,
-               seed=self.config.f_seed,
-               F_type="kcca", 
-               config=self.config,)
-            self.config.f_seed += 1
-
-            # svdを適用したデータをリストに格納
-            self.Xs_train_inter.append(X_train_svd)
-            self.Xs_test_inter.append(X_test_svd)
-            self.anchors_inter.append(anchor_svd)
-            self.anchors_test_inter.append(anchor_test_svd)
-
-        print("中間表現の次元数: ", self.Xs_train_inter[0].shape[1])
-
-        self.logger.info(f"中間表現（訓練データ）の数と次元数: {self.Xs_train_inter[0].shape}")
-
+        
     def make_integrate_expression(self) -> None:
         print("********************統合表現の生成********************")
         """
@@ -755,18 +666,7 @@ class DataCollaborationAnalysis:
         #eigvals, eigvecs = eigh(C_tildeS)                 # 昇順で返る
         p_hat = self.config.dim_integrate
         #Z = eigvecs[:, :p_hat]                            # r×p̂  —— 目標行列 Z
-        
-        # 目的関数が向上するようなZを選ぶ
-        #objective_direction_ratio = getattr(self.config, "objective_direction_ratio", 0.1)
-        #if objective_direction_ratio < 0:
-            # すべての固有値が正か確認
-        #    is_positive_definite = np.all(eigvals > 0)
-        #    print(f"C_tildeS is positive definite: {is_positive_definite}")
-            
-        #    selected_idx, Z, eigvals_centered, eigvecs, coef = self.select_eigvecs_linear_hybrid(C_tildeS, self.anchor_y, p_hat=p_hat, objective_direction_ratio=objective_direction_ratio)
-            #is_positive_definite = np.all(eigvals > 0)
-            #print(f"zzzC_tildeS is positive definite: {is_positive_definite}")
-        #else:
+
         # ❷ 実対称用の固有値分解を使う
         eigvals, eigvecs = np.linalg.eigh(C_tildeS)
         # ❸ 念のため負の丸め誤差を 0 に
@@ -1062,21 +962,14 @@ class DataCollaborationAnalysis:
                 gamma = self_tuning_gamma(X_train_inter, standardize=False, k=3, summary='median')
                 gamma *= self.config.gamma_ratio_krr
                 gammas.append(gamma)
-        
-        elif self.config.gamma_type == "same_as_f":
-            gammas = self.config.nl_gammas
-            print("ggggggggggggggggggggggggggggg")
-            print(len(self.Xs_train_inter))
-            print(len(gammas))
-            # svd だと記録されないためバグる
+
         print(gammas)
 
         if hasattr(self.config, "nl_lambda"):
             lam = self.config.nl_lambda
         else:
             lam = 1e-2
-        #gammas = [11, 15.5, 1000]
-        #k = 1
+
         # --- 1. Gram 行列と射影行列 ---
         for i, S̃ in enumerate(self.anchors_inter):             # S̃ : r×d̃_k
             K = rbf_kernel(S̃, S̃, gamma=gammas[i])       # r×r
@@ -1101,13 +994,6 @@ class DataCollaborationAnalysis:
         # ❶ ほんのわずかな非対称を切り落とす
         Q = (Q + Q.T) * 0.5
         
-        # 目的関数が向上するzを選択
-        #objective_direction_ratio = getattr(self.config, "objective_direction_ratio", 0)
-        #if objective_direction_ratio < 0:
-        #    print(1)
-        #    idx, Z, eigvals, eigvecs = self.select_eigvecs_linear_hybrid(Q, self.anchor_y, p_hat=p̂, objective_direction_ratio=objective_direction_ratio)
-        #    print(2)
-        #else:
         # ❷ 実対称用の固有値分解を使う
         eigvals, eigvecs = np.linalg.eigh(Q)
         # ❸ 念のため負の丸め誤差を 0 に
@@ -1120,13 +1006,6 @@ class DataCollaborationAnalysis:
             if nz > 0:
                 Z[:, j] /= nz
         
-        # S_hat_list (S_hat_k = P_k @ Z) の計算
-        #S_hat_list = []
-        #for P in Ps:
-        #    S_hat_list.append(P @ Z)
-        #self.anchors_integ = S_hat_list
-        #self.logger.info(f"S_hat_list を計算しました。要素数: {len(self.anchors_integ)}, 各要素のShape: {self.anchors_integ[0].shape}")
-
         # --- 3. 各機関の係数 B^(k) とデータ射影 ---
         Xs_train_intg, Xs_test_intg = [], []
         # zipに self.anchors_test_inter を追加
@@ -1136,7 +1015,6 @@ class DataCollaborationAnalysis:
         )):
             # 学習データから係数 Bk を計算
             #mu_max = max(eigvalsh(K).max(), 1e-12)            # スペクトル半径
-            
             Bk  = inv(K + lam * I_r) @ Z          # r×p̂
             
             # (a) 学習データの射影
@@ -1146,7 +1024,6 @@ class DataCollaborationAnalysis:
             K_te = rbf_kernel(X_te, S̃_train, gamma=γ)  # t_k×r
 
             # (c) 学習アンカーの射影結果 S_hat (P @ Z と等価)
-
             # (d) ★★★ テストアンカーの射影結果 S_hat_test ★★★
             K_anchor_test = rbf_kernel(S̃_test, S̃_train, gamma=γ) # (r_test, r_train)
             
@@ -1325,348 +1202,6 @@ class DataCollaborationAnalysis:
             f"lambda={lam}, approx={'1st' if USE_FIRST_ORDER else 'exact'}"
         )
         print("統合表現の次元数:", self.X_train_integ.shape[1])
-
-    def kcca_projection_matrix(Ks, Ky, p_hat, ridge=0.0, kx=1e-3, ky=1e-3):
-        # 二重中心化
-        n = Ks.shape[0]
-        H = np.eye(n) - np.ones((n,n))/n
-        Ks = H @ Ks @ H
-        Ky = H @ Ky @ H
-
-        # ホワイトニング
-        # （数値安定のため固有分解で -1/2 を作ってもOK）
-        from scipy.linalg import fractional_matrix_power
-        Ks_mh = fractional_matrix_power(Ks + kx*np.eye(n), -0.5)
-        Ky_mh = fractional_matrix_power(Ky + ky*np.eye(n), -0.5)
-
-        C = Ks_mh @ Ks @ Ky @ Ky_mh
-        U, sing, Vt = np.linalg.svd(C, full_matrices=False)
-        A = Ks_mh @ U[:, :p_hat]               # n x p_hat（S側の双対係数）
-        Uscore = Ks @ A                        # n x p_hat
-
-        G = Uscore.T @ Uscore + ridge * np.eye(p_hat)
-        P = Uscore @ np.linalg.solve(G, Uscore.T)   # n x n
-        return P, A, Uscore
-
-    def visualize_anchors(self, save_dir: Optional[str] = None) -> None:
-        """
-        アンカーデータの変換フローを訓練/テストの2部構成で可視化する。
-        上半分(Train): 1.元, 2.中間, 3.射影, 4.統合Z
-        下半分(Test):  1.元, 2.中間, 3.射影
-        """
-        save_dir = save_dir or self.config.output_path / "visualizations"
-        
-        from pathlib import Path
-
-        import matplotlib.pyplot as plt
-        import seaborn as sns
-        from sklearn.decomposition import PCA
-
-        # --- 必要なデータの存在チェック ---
-        train_attrs = ['anchor', 'anchors_inter', 'Z', 'anchors_integ']
-        test_attrs = ['anchor_test', 'anchors_test_inter', 'anchors_test_integ']
-        
-        has_train_data = all(hasattr(self, attr) and getattr(self, attr) is not None and len(getattr(self, attr, [])) > 0 for attr in train_attrs)
-        has_test_data = all(hasattr(self, attr) and getattr(self, attr) is not None and len(getattr(self, attr, [])) > 0 for attr in test_attrs)
-
-        if not has_train_data and not has_test_data:
-            self.logger.warning("可視化に必要な訓練データもテストデータも存在しません。")
-            return
-
-        num_institutions = len(self.anchors_inter) if has_train_data else len(self.anchors_test_inter)
-        if num_institutions == 0: return
-
-        # --- ラベルの準備 ---
-        self.assign_anchor_labels()
-        anchor_labels_train = self.anchor_y if hasattr(self, 'anchor_y') else np.zeros(self.anchor.shape[0] if has_train_data else 0)
-        anchor_labels_test = self.anchor_y_test if hasattr(self, 'anchor_y_test') else np.zeros(self.anchor_test.shape[0] if has_test_data else 0)
-        legend_status = "full" if np.unique(anchor_labels_train).size > 1 else False
-
-        # --- 追加: ラベル頻度（多い順）の棒グラフを保存 ---
-        try:
-            Path(save_dir).mkdir(parents=True, exist_ok=True)
-            # Train anchor labels distribution
-            if False: #has_train_data and anchor_labels_train is not None and len(anchor_labels_train) > 0:
-                classes, counts = np.unique(anchor_labels_train, return_counts=True)
-                order = np.argsort(-counts)
-                classes_ord = classes[order]
-                counts_ord = counts[order]
-                plt.figure(figsize=(6, max(2.5, 0.4 * len(classes_ord))))
-                plt.barh([str(c) for c in classes_ord], counts_ord, color="#4C78A8")
-                plt.gca().invert_yaxis()
-                plt.xlabel("count")
-                plt.title("Anchor labels (Train): frequency")
-                plt.tight_layout()
-                plt.savefig(Path(save_dir) / f"anchor_label_freq_train_{self.config.plot_name}")
-                plt.close()
-                self.logger.info("✅ アンカー(Train)のラベル頻度を保存しました")
-
-            # Test anchor labels distribution
-            if False: # has_test_data and anchor_labels_test is not None and len(anchor_labels_test) > 0:
-                classes, counts = np.unique(anchor_labels_test, return_counts=True)
-                order = np.argsort(-counts)
-                classes_ord = classes[order]
-                counts_ord = counts[order]
-                plt.figure(figsize=(6, max(2.5, 0.4 * len(classes_ord))))
-                plt.barh([str(c) for c in classes_ord], counts_ord, color="#72B7B2")
-                plt.gca().invert_yaxis()
-                plt.xlabel("count")
-                plt.title("Anchor labels (Test): frequency")
-                plt.tight_layout()
-                plt.savefig(Path(save_dir) / f"anchor_label_freq_test_{self.config.plot_name}")
-                plt.close()
-                self.logger.info("✅ アンカー(Test)のラベル頻度を保存しました")
-        except Exception as e:
-            self.logger.warning(f"ラベル頻度プロットの保存に失敗しました: {e}")
-
-        # --- プロットの準備 (Train+Testで2倍の行数) ---
-        fig, axes = plt.subplots(num_institutions * 2, 4, figsize=(24, 6 * num_institutions * 2), squeeze=False)
-        fig.suptitle("Anchor Data Transformation Flow (Top: Train, Bottom: Test)", fontsize=16, y=1.0)
-
-        # --- PCAとスケール計算のためのデータ準備 ---
-        Z_train_plot = self.Z.T if has_train_data and self.Z.shape[0] == self.config.dim_integrate else (self.Z if has_train_data else None)
-
-        col1_data = ([self.anchor] if has_train_data else []) + ([self.anchor_test] if has_test_data else [])
-        col2_data = (self.anchors_inter if has_train_data else []) + (self.anchors_test_inter if has_test_data else [])
-        col3_data = (self.anchors_integ if has_train_data else []) + (self.anchors_test_integ if has_test_data else [])
-        col4_data = [Z_train_plot] if has_train_data else []
-
-        def get_2d_data_and_limits(data_list):
-            if not data_list: return [], ((0,1), (0,1))
-            data_for_pca = [d for d in data_list if d.shape[1] > 2]
-            if not data_for_pca:
-                data_2d = data_list
-            else:
-                pca = PCA(n_components=2).fit(np.vstack(data_for_pca))
-                data_2d = [pca.transform(d) if d.shape[1] > 2 else d for d in data_list]
-            
-            all_data_2d = np.vstack(data_2d)
-            x_min, x_max = all_data_2d[:, 0].min(), all_data_2d[:, 0].max()
-            y_min, y_max = all_data_2d[:, 1].min(), all_data_2d[:, 1].max()
-            x_pad = (x_max - x_min) * 0.05 if x_max > x_min else 0.1
-            y_pad = (y_max - y_min) * 0.05 if y_max > y_min else 0.1
-            limits = ((x_min - x_pad, x_max + x_pad), (y_min - y_pad, y_max + y_pad))
-            return data_2d, limits
-
-        col1_2d, (xlim1, ylim1) = get_2d_data_and_limits(col1_data)
-        col2_2d, (xlim2, ylim2) = get_2d_data_and_limits(col2_data)
-        col3_2d, (xlim3, ylim3) = get_2d_data_and_limits(col3_data)
-        col4_2d, (xlim4, ylim4) = get_2d_data_and_limits(col4_data)
-
-        # --- プロットループ ---
-        for i in range(num_institutions):
-            # --- TRAIN DATA (Top Half) ---
-            if has_train_data:
-                train_row = i
-                sns.scatterplot(x=col1_2d[0][:, 0], y=col1_2d[0][:, 1], hue=anchor_labels_train, palette="coolwarm", ax=axes[train_row, 0], legend=(i==0 and legend_status))
-                axes[train_row, 0].set_title(f"1. Original Anchor (Train)" if i == 0 else "")
-                axes[train_row, 0].set_xlim(xlim1); axes[train_row, 0].set_ylim(ylim1); axes[train_row, 0].set_ylabel(f"Inst {i+1}")
-
-                sns.scatterplot(x=col2_2d[i][:, 0], y=col2_2d[i][:, 1], hue=anchor_labels_train, palette="coolwarm", ax=axes[train_row, 1], legend=False)
-                axes[train_row, 1].set_title(f"2. Intermediate (Train)" if i == 0 else "")
-                axes[train_row, 1].set_xlim(xlim2); axes[train_row, 1].set_ylim(ylim2)
-
-                sns.scatterplot(x=col3_2d[i][:, 0], y=col3_2d[i][:, 1], hue=anchor_labels_train, palette="coolwarm", ax=axes[train_row, 2], legend=False)
-                axes[train_row, 2].set_title(f"3. Projection S_hat (Train)" if i == 0 else "")
-                axes[train_row, 2].set_xlim(xlim3); axes[train_row, 2].set_ylim(ylim3)
-
-                sns.scatterplot(x=col4_2d[0][:, 0], y=col4_2d[0][:, 1], hue=anchor_labels_train, palette="coolwarm", ax=axes[train_row, 3], legend=False)
-                axes[train_row, 3].set_title(f"4. Integrated Z (Train)" if i == 0 else "")
-                axes[train_row, 3].set_xlim(xlim4); axes[train_row, 3].set_ylim(ylim4)
-
-            # --- TEST DATA (Bottom Half) ---
-            if has_test_data:
-                test_row = i + num_institutions
-                train_offset = 1 if has_train_data else 0
-                
-                anchor_test_2d = col1_2d[train_offset]
-                sns.scatterplot(x=anchor_test_2d[:, 0], y=anchor_test_2d[:, 1], hue=anchor_labels_test, palette="viridis", ax=axes[test_row, 0], legend=(i==0 and legend_status))
-                axes[test_row, 0].set_title(f"1. Original Anchor (Test)" if i == 0 else "")
-                axes[test_row, 0].set_xlim(xlim1); axes[test_row, 0].set_ylim(ylim1); axes[test_row, 0].set_ylabel(f"Inst {i+1}")
-
-                sns.scatterplot(x=col2_2d[train_offset * num_institutions + i][:, 0], y=col2_2d[train_offset * num_institutions + i][:, 1], hue=anchor_labels_test, palette="viridis", ax=axes[test_row, 1], legend=False)
-                axes[test_row, 1].set_title(f"2. Intermediate (Test)" if i == 0 else "")
-                axes[test_row, 1].set_xlim(xlim2); axes[test_row, 1].set_ylim(ylim2)
-
-                sns.scatterplot(x=col3_2d[train_offset * num_institutions + i][:, 0], y=col3_2d[train_offset * num_institutions + i][:, 1], hue=anchor_labels_test, palette="viridis", ax=axes[test_row, 2], legend=False)
-                axes[test_row, 2].set_title(f"3. Projection S_hat (Test)" if i == 0 else "")
-                axes[test_row, 2].set_xlim(xlim3); axes[test_row, 2].set_ylim(ylim3)
-                
-                # 4列目は空欄にする
-                axes[test_row, 3].set_visible(False)
-
-        # レイアウト調整と保存
-        plt.tight_layout(rect=[0, 0.03, 1, 0.98])
-        if save_dir:
-            Path(save_dir).mkdir(parents=True, exist_ok=True)
-            save_path = Path(save_dir) / f"anchor_visualization_{self.config.plot_name}"
-            plt.savefig(save_path)
-            self.logger.info(f"✅ アンカーデータの可視化を保存しました: {save_path}")
-    
-    
-    def visualize_representations(self, save_dir: Optional[str] = None) -> None:
-        """
-        元データ、中間表現、統合表現（機関ごとと全体）を2次元散布図で可視化する関数。
-        訓練データとテストデータをそれぞれ別の図で出力する。
-        """
-        self.assign_anchor_labels()
-        self.visualize_anchors() 
-        
-        save_dir = save_dir or self.config.output_path / "visualizations"
-        if not self.Xs_train or not self.Xs_train_inter or self.X_train_integ.size == 0:
-            print("可視化する表現が生成されていません。run()メソッドを実行してください。")
-            return
-
-        # 必要なライブラリのインポート
-        import matplotlib.pyplot as plt
-        import seaborn as sns
-
-        num_institutions = self.config.num_institution
-
-        # 統合表現を機関ごとに再分割
-        train_sizes = [len(y) for y in self.ys_train]
-        test_sizes = [len(y) for y in self.ys_test]
-        train_indices = np.cumsum([0] + train_sizes)
-        test_indices = np.cumsum([0] + test_sizes)
-
-        Xs_train_integ_split = [self.X_train_integ[train_indices[i]:train_indices[i+1]] for i in range(num_institutions)]
-        Xs_test_integ_split = [self.X_test_integ[test_indices[i]:test_indices[i+1]] for i in range(num_institutions)]
-
-        # 統合表現プロットの軸スケールを統一するための範囲計算
-        # Train
-        x_min_train, x_max_train = self.X_train_integ[:, 0].min(), self.X_train_integ[:, 0].max()
-        y_min_train, y_max_train = self.X_train_integ[:, 1].min(), self.X_train_integ[:, 1].max()
-        x_pad_train = (x_max_train - x_min_train) * 0.05
-        y_pad_train = (y_max_train - y_min_train) * 0.05
-        xlim_train = (x_min_train - x_pad_train, x_max_train + x_pad_train)
-        ylim_train = (y_min_train - y_pad_train, y_max_train + y_pad_train)
-
-        # Test
-        x_min_test, x_max_test = self.X_test_integ[:, 0].min(), self.X_test_integ[:, 0].max()
-        y_min_test, y_max_test = self.X_test_integ[:, 1].min(), self.X_test_integ[:, 1].max()
-        x_pad_test = (x_max_test - x_min_test) * 0.05
-        y_pad_test = (y_max_test - y_min_test) * 0.05
-        xlim_test = (x_min_test - x_pad_test, x_max_test + x_pad_test)
-        ylim_test = (y_min_test - y_pad_test, y_max_test + y_pad_test)
-
-
-        # --- 訓練データの可視化 ---
-        fig_train, axes_train = plt.subplots(num_institutions, 4, figsize=(24, 5 * num_institutions), squeeze=False)
-        fig_train.suptitle("Representations (Train Data)", fontsize=16)
-
-        for i in range(num_institutions):
-            # 1. 元データ (Train)
-            sns.scatterplot(
-                x=self.Xs_train[i][:, 0], y=self.Xs_train[i][:, 1], hue=self.ys_train[i],
-                palette="viridis", ax=axes_train[i, 0], legend="full"
-            )
-            axes_train[i, 0].set_title(f"Institution {i+1} - Original Data")
-            axes_train[i, 0].set_xlabel("Dimension 1")
-            axes_train[i, 0].set_ylabel("Dimension 2")
-
-            # 2. 中間表現 (Train)
-            sns.scatterplot(
-                x=self.Xs_train_inter[i][:, 0], y=self.Xs_train_inter[i][:, 1], hue=self.ys_train[i],
-                palette="viridis", ax=axes_train[i, 1], legend="full"
-            )
-            axes_train[i, 1].set_title(f"Institution {i+1} - Intermediate Expression")
-            axes_train[i, 1].set_xlabel("Dimension 1")
-            axes_train[i, 1].set_ylabel("Dimension 2")
-
-            # 3. 統合表現 (Train) - 機関ごと
-            sns.scatterplot(
-                x=Xs_train_integ_split[i][:, 0], y=Xs_train_integ_split[i][:, 1], hue=self.ys_train[i],
-                palette="viridis", ax=axes_train[i, 2], legend="full"
-            )
-            axes_train[i, 2].set_title(f"Institution {i+1} - Integrated Expression")
-            axes_train[i, 2].set_xlabel("Dimension 1")
-            axes_train[i, 2].set_ylabel("Dimension 2")
-            axes_train[i, 2].set_xlim(xlim_train)
-            axes_train[i, 2].set_ylim(ylim_train)
-
-            # 4. 統合表現 (Train) - 全機関（強調表示付き）
-            other_institutions_indices = [j for j in range(num_institutions) if j != i]
-            if other_institutions_indices:
-                X_other = np.vstack([Xs_train_integ_split[j] for j in other_institutions_indices])
-                y_other = np.hstack([self.ys_train[j] for j in other_institutions_indices])
-                sns.scatterplot(
-                    x=X_other[:, 0], y=X_other[:, 1], hue=y_other,
-                    palette="viridis", ax=axes_train[i, 3], legend=False, alpha=1.0
-                )
-            sns.scatterplot(
-                x=Xs_train_integ_split[i][:, 0], y=Xs_train_integ_split[i][:, 1], hue=self.ys_train[i],
-                palette="viridis", ax=axes_train[i, 3], legend="full", alpha=1.0
-            )
-            axes_train[i, 3].set_title(f"All Institutions (Institution {i+1} Highlighted)")
-            axes_train[i, 3].set_xlabel("Dimension 1")
-            axes_train[i, 3].set_ylabel("Dimension 2")
-            axes_train[i, 3].set_xlim(xlim_train)
-            axes_train[i, 3].set_ylim(ylim_train)
-
-        plt.tight_layout(rect=[0, 0.03, 1, 0.97])
-        if save_dir:
-            Path(save_dir).mkdir(parents=True, exist_ok=True)
-            plt.savefig(Path(save_dir) / self.config.plot_name)
-            
-        
-        """
-        # --- テストデータの可視化 ---
-        fig_test, axes_test = plt.subplots(num_institutions, 4, figsize=(24, 5 * num_institutions), squeeze=False)
-        fig_test.suptitle("Representations (Test Data)", fontsize=16)
-
-        for i in range(num_institutions):
-            # 1. 元データ (Test)
-            sns.scatterplot(
-                x=self.Xs_test[i][:, 0], y=self.Xs_test[i][:, 1], hue=self.ys_test[i],
-                palette="viridis", ax=axes_test[i, 0], legend="full"
-            )
-            axes_test[i, 0].set_title(f"Institution {i+1} - Original Data")
-            axes_test[i, 0].set_xlabel("Dimension 1")
-            axes_test[i, 0].set_ylabel("Dimension 2")
-
-            # 2. 中間表現 (Test)
-            sns.scatterplot(
-                x=self.Xs_test_inter[i][:, 0], y=self.Xs_test_inter[i][:, 1], hue=self.ys_test[i],
-                palette="viridis", ax=axes_test[i, 1], legend="full"
-            )
-            axes_test[i, 1].set_title(f"Institution {i+1} - Intermediate Expression")
-            axes_test[i, 1].set_xlabel("Dimension 1")
-            axes_test[i, 1].set_ylabel("Dimension 2")
-
-            # 3. 統合表現 (Test) - 機関ごと
-            sns.scatterplot(
-                x=Xs_test_integ_split[i][:, 0], y=Xs_test_integ_split[i][:, 1], hue=self.ys_test[i],
-                palette="viridis", ax=axes_test[i, 2], legend="full"
-            )
-            axes_test[i, 2].set_title(f"Institution {i+1} - Integrated Expression")
-            axes_test[i, 2].set_xlabel("Dimension 1")
-            axes_test[i, 2].set_ylabel("Dimension 2")
-            axes_test[i, 2].set_xlim(xlim_test)
-            axes_test[i, 2].set_ylim(ylim_test)
-
-            # 4. 統合表現 (Test) - 全機関（強調表示付き）
-            other_institutions_indices = [j for j in range(num_institutions) if j != i]
-            if other_institutions_indices:
-                X_other = np.vstack([Xs_test_integ_split[j] for j in other_institutions_indices])
-                y_other = np.hstack([self.ys_test[j] for j in other_institutions_indices])
-                sns.scatterplot(
-                    x=X_other[:, 0], y=X_other[:, 1], hue=y_other,
-                    palette="viridis", ax=axes_test[i, 3], legend=False, alpha=1.0
-                )
-            sns.scatterplot(
-                x=Xs_test_integ_split[i][:, 0], y=Xs_test_integ_split[i][:, 1], hue=self.ys_test[i],
-                palette="viridis", ax=axes_test[i, 3], legend="full", alpha=1.0
-            )
-            axes_test[i, 3].set_title(f"All Institutions (Institution {i+1} Highlighted)")
-            axes_test[i, 3].set_xlabel("Dimension 1")
-            axes_test[i, 3].set_ylabel("Dimension 2")
-            axes_test[i, 3].set_xlim(xlim_test)
-            axes_test[i, 3].set_ylim(ylim_test)
-
-        plt.tight_layout(rect=[0, 0.03, 1, 0.97])
-        if save_dir:
-            plt.savefig(Path(save_dir) / f"test_{self.config.G_type}_{self.config.nl_gamma}.png")
-        """
 
     def save_representations_to_csv(self, save_dir: Optional[str] = None) -> None:
         """

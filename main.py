@@ -56,7 +56,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "lambda_pred": [0],
     "lambda_offdiag": [0],
     "metrics": ["auc"],
-    "visualize": [False],
+    "visualize": [True],
     #"feature_num": [41],
     #"dim_intermediate": [25],#[20, 10, 5, 2],
     "num_institution_user": [100],#[50, 100, 200, 400],

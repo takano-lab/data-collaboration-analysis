@@ -11,7 +11,6 @@ from sklearn.preprocessing import StandardScaler
 
 # torch, UMAP は遅延インポート（_run_umap 内で import）
 
-
 # ============================================================
 # 次元削減アルゴリズム（定義）
 # ============================================================
@@ -112,42 +111,6 @@ class SVDScratch:
             X_rec += self.mean_
         return X_rec
 
-
-class SVDScratch_:
-    """
-    ゼロパディングなしの SVD（参考用途）
-    """
-    def __init__(self, n_components: Optional[int] = None, *, center: bool = False, full_matrices: bool = False):
-        self.n_components = n_components
-        self.center = center
-        self.full_matrices = full_matrices
-        self.mean_: Optional[np.ndarray] = None
-        self.components_: Optional[np.ndarray] = None
-        self.singular_values_: Optional[np.ndarray] = None
-
-    def fit(self, X: np.ndarray) -> "SVDScratch_":
-        X = np.asarray(X, dtype=float)
-        if self.center:
-            self.mean_ = X.mean(axis=0)
-            X = X - self.mean_
-        U, S, Vt = np.linalg.svd(X, full_matrices=self.full_matrices)
-        k = self.n_components or len(S)
-        self.singular_values_ = S[:k]
-        self.components_ = Vt[:k]
-        return self
-
-    def transform(self, X: np.ndarray) -> np.ndarray:
-        if self.components_ is None:
-            raise RuntimeError("SVDScratch_: fit を先に呼んでください")
-        X = np.asarray(X, dtype=float)
-        if self.center and self.mean_ is not None:
-            X = X - self.mean_
-        return X @ self.components_.T
-
-    def fit_transform(self, X: np.ndarray) -> np.ndarray:
-        return self.fit(X).transform(X)
-
-
 class KCCAScratch:
     """
     Kernel CCA（X と Y の相関最大化）
@@ -240,7 +203,6 @@ def self_tuning_gamma(
         return float(np.mean(gamma_i))
     raise ValueError("summary must be 'median', 'mean', or None")
 
-
 def _to_tuple4(a, b, c=None, d=None) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
     return a, b, c, d
 
@@ -277,7 +239,6 @@ def _cfg_float(cfg, name, default: float) -> float:
     except Exception:
         return default
 
-# 追加: 文字列用
 def _cfg_str(cfg, name, default: str) -> str:
     v = _cfg_get(cfg, name, default)
     if v is None:
@@ -425,13 +386,6 @@ def _run_kpca_family(X_train, X_test, n_components, *, mode: str, config=None, s
             if not hasattr(config, "nl_gammas") or config.nl_gammas is None:
                 config.nl_gammas = []
             config.nl_gammas.append(gamma)
-    elif mode == "unfixed":
-        gamma = self_tuning_gamma(Xts, standardize=False, k=7, summary='median')
-        sd = 0 if seed is None else int(seed)
-        if sd % 6 != 0:
-            gamma = (10 ** ((sd % 6) - 3)) * gamma
-        else:
-            gamma = 1.0 / X_train.shape[1]
     else:
         raise ValueError(f"unknown kpca mode: {mode}")
 
@@ -737,7 +691,6 @@ _RUNNERS: Dict[str, Any] = {
     "ae": _run_autoencoder,
 }
 
-
 # ============================================================
 # 公開API
 # ============================================================
@@ -766,40 +719,3 @@ def reduce_dimensions(
         y_train=y_train, anchor=anchor, anchor_test=anchor_test,
         F_type=F_type, seed=seed, param=param, config=config
     )
-
-
-# 参考: 旧API（必要なら使用）。戻り値は4要素タプルに統一
-def reduce_dimensions_with_svd_(
-    X_train: np.ndarray,
-    X_test: np.ndarray,
-    n_components: int,
-    anchor: Optional[np.ndarray] = None,
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
-    svd = SVDScratch(n_components=n_components, center=True)
-    svd.fit(X_train)
-    Xt = svd.transform(X_train)
-    Xv = svd.transform(X_test)
-    Xa = svd.transform(anchor) if anchor is not None else None
-    return _to_tuple4(Xt, Xv, Xa, None)
-
-
-def make_random_kpca(n_components: int, seed: Optional[int] = None, param: Any = None) -> KernelPCA:
-    rng = np.random.default_rng(seed)
-    kernel = "rbf"
-    params: Dict[str, Any] = {
-        "n_components": n_components,
-        "kernel": kernel,
-        "eigen_solver": "auto",
-        "n_jobs": -1,
-    }
-    # ランダム γ の例
-    if seed is not None:
-        if seed % 3 == 0:
-            params["gamma"] = 0.1
-        elif seed % 3 == 1:
-            params["gamma"] = 1
-        else:
-            params["gamma"] = 5
-    else:
-        params["gamma"] = 1.0
-    return KernelPCA(**params)

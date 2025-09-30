@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
-from logging import INFO, FileHandler, getLogger
 import statistics
-import pandas as pd
+from logging import INFO, FileHandler, getLogger
+
 import numpy as np  # 追加
+import pandas as pd
 import yaml
-from tqdm import tqdm 
+from tqdm import tqdm
+
 from config.config import Config
 from config.config_logger import record_config_to_cfg, record_value_to_cfg
 from src.data_collaboration import DataCollaborationAnalysis
@@ -14,12 +16,13 @@ from src.institutional_analysis import (
     centralize_analysis,
     centralize_analysis_with_dimension_reduction,
     dca_analysis,
-    individual_analysis,
     fl_analysis,
+    individual_analysis,
     individual_analysis_with_dimension_reduction,
 )
 from src.load_data import load_data
 from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
+from src.visualization import DataCollabVisualizer
 
 # # 引数の設定
 # parser = argparse.ArgumentParser()
@@ -71,7 +74,9 @@ def run_once(config, logger):
         #data_collaboration.save_optimal_params()
         data_collaboration.run()
         if config.visualize:
-            data_collaboration.visualize_representations()
+            # 新しい可視化クラス経由で表示/保存
+            viz = DataCollabVisualizer(data_collaboration, logger)
+            viz.visualize_representations()
             print(1111)
         #data_collaboration.save_representations_to_csv()
             # 提案手法
