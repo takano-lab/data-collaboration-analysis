@@ -28,37 +28,39 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"breast_cancer",
     #"adult",
     #"digits",
-    #"glass", "seeds", "letter_recognition",
+    #"glass", 
+    #"seeds", 
+    #"letter_recognition",
     #"wine_quality",
     #"har",
     #"diabetes130",
     #"bank_marketing",
     #"mnist",
-    "mnist_1248",
+    #"mnist_1248",
     #"fashion_mnist",
     #'3D_gaussian_clusters',
     #"concentric_three_circles",
     #"iris",
     #"ecoli",
-    #"vowel"
+    "vowel"
 ],#"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["svm_linear_classifier"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "F_type": ["kernel_pca_self_tuning",], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["Imakura", "nonlinear"], # 'centralize', "individual", "Imakura", "GEP",  "ODC" # 'centralize', "individual",
-    #"gamma_ratio": [1],#[0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
-    "gamma_type": ["X_tuning"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"]
+    "F_type": ["le"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
+    "G_type": ["nonlinear", "individual", 'centralize', "Imakura", "GEP", "ODC"], # 'centralize', "individual", "Imakura", "GEP",  "ODC" # 'centralize', "individual", #"individual", "Imakura",
+    "gamma_ratio": [1],#[0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
+    "gamma_type": ["X_tuning"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual", 
     "gamma_ratio_krr": [1],
     "num_anchor_data": [1000],
-    "nl_lambda": [1],        # LOCKで止められる, 0.00001
-    "lw_alpha": [0.3],
+    "nl_lambda": [0.1],        # LOCKで止められる, 0.00001
+    "lw_alpha": [0.1],
     "lambda_pred": [0],
     "lambda_offdiag": [0],
     "metrics": ["auc"],
     "visualize": [False],
     #"feature_num": [41],
-    "dim_intermediate": [30],#[20, 10, 5, 2],
-    "num_institution_user": [200],#[50, 100, 200, 400],
-    "num_institution": [3],
+    #"dim_intermediate": [25],#[20, 10, 5, 2],
+    "num_institution_user": [100],#[50, 100, 200, 400],
+    "num_institution": [4],
     "K_normalization":[False],
     "anchor_method":["smote"], #
 })
@@ -359,23 +361,23 @@ def run_grid(
             _set_config_from_combo(cfg, combo)
             _apply_defaults(cfg, dataset, combo)
 
-            #try:
-            val = run_once(cfg, log)
-            vals.append(float(val))
-            record_config_to_cfg(cfg)
-            record_value_to_cfg(cfg, "評価値", val)
-            # except Exception as e:
-            #     msg = f"[skip] seed={i}, dataset={dataset}, G_type={combo.get('G_type')}, reason={e}"
-            #     print(msg)
-            #     try:
-            #         log.exception(msg)
-            #     except Exception:
-            #         pass
-            #     try:
-            #         record_value_to_cfg(cfg, "error", str(e))
-            #     except Exception:
-            #         pass
-            #     continue
+            try:
+                val = run_once(cfg, log)
+                vals.append(float(val))
+                record_config_to_cfg(cfg)
+                record_value_to_cfg(cfg, "評価値", val)
+            except Exception as e:
+                msg = f"[skip] seed={i}, dataset={dataset}, G_type={combo.get('G_type')}, reason={e}"
+                print(msg)
+                try:
+                    log.exception(msg)
+                except Exception:
+                    pass
+                try:
+                    record_value_to_cfg(cfg, "error", str(e))
+                except Exception:
+                    pass
+                continue
 
         mean_val = sum(vals) / len(vals) if vals else 0.0
         stdev_val = statistics.stdev(vals) if len(vals) > 1 else 0.0

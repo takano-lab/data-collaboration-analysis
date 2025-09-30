@@ -544,32 +544,37 @@ class DataCollaborationAnalysis:
         print(self.config)
         print("self.config.dim_intermediate", self.config.dim_intermediate)
         print()
+        # シードを初期化（各機関で進める）
         self.config.f_seed = 0
         self.config.f_seed_2 = 0
-        mixed = False
-        unfixed_mixed = False
-        if self.config.True_F_type == "kernel_pca_svd_mixed": #
-            mixed = True
-        elif self.config.True_F_type == "kernel_pca_unfixed_mixed":
-            unfixed_mixed = True
-            # kernel_pca_unfixed_gamma
-        for X_train, X_test in zip(tqdm(self.Xs_train), self.Xs_test):
-            # 各機関の訓練データ, テストデータおよびアンカーデータを取得し、svdを適用
-            if mixed:
-                if self.config.f_seed_2 % 2 == 0:
-                    self.config.F_type = "kernel_pca_self_tuning"
-                    #print("svd")
-                else:
-                    self.config.F_type = "svd"
-                    #print("kpca")
-                self.config.f_seed_2 += 1
-            elif unfixed_mixed:
-                self.config.f_seed_2 += 1
-                if self.config.f_seed_2 % 6 == 0:
-                    self.config.F_type = "svd"
-                else:
-                    self.config.F_type = "kernel_pca_unfixed_gamma"
-            #print(self.config.F_type)
+
+        # True_F_type の解釈:
+        # - 文字列: その方式を使用
+        # - リスト/タプル: 機関ごとにローテーションして使用
+        # - 未設定: 現在の F_type を固定使用
+        tf = getattr(self.config, "True_F_type", None)
+        if isinstance(tf, (list, tuple)) and len(tf) > 0:
+            ftype_sequence = list(tf)
+        elif isinstance(tf, str) and len(tf) > 0:
+            # 従来の mixed キーワードに相当する簡易プリセットにも対応
+            if tf == "kernel_pca_svd_mixed":
+                ftype_sequence = ["kernel_pca_self_tuning", "svd"]
+            elif tf == "ae_dm_mixed":
+                ftype_sequence = ["ae", "dm"]
+            elif tf == "ae_svd_mixed":
+                ftype_sequence = ["ae", "svd"]
+            elif tf == "ae_dm_svd_mixed":
+                ftype_sequence = ["ae", "dm", "svd"]
+            else:
+                ftype_sequence = [tf]
+        else:
+            ftype_sequence = [self.config.F_type]
+
+        for idx, (X_train, X_test) in enumerate(zip(tqdm(self.Xs_train), self.Xs_test)):
+            # 各機関の F_type を選択（ローテーション）
+            self.config.F_type = ftype_sequence[idx % len(ftype_sequence)]
+
+            # 各機関の訓練データ, テストデータおよびアンカーデータを取得し、reduce_dimensions を適用
             X_train_svd, X_test_svd, anchor_svd, anchor_test_svd = reduce_dimensions(
                X_train=X_train,
                X_test=X_test,
@@ -581,18 +586,11 @@ class DataCollaborationAnalysis:
                config=self.config,)
             self.config.f_seed += 1
 
-
-            # そのままで実験  ##########################################
-            #X_train_svd = X_train
-            #X_test_svd = X_test
-            #anchor_svd = self.anchor
-
             # svdを適用したデータをリストに格納
             self.Xs_train_inter.append(X_train_svd)
             self.Xs_test_inter.append(X_test_svd)
             self.anchors_inter.append(anchor_svd)
             self.anchors_test_inter.append(anchor_test_svd)
-            
             
             # 標準化 # qsar だと欠損になる
             
