@@ -22,31 +22,31 @@ from config.config import Config
 # 1) 全探索したいパラメータ（config.◯◯に代入）
 PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "dataset": [
-    #"mice",
+    "mice",
     #"statlog",
-    #"qsar",
+    "qsar",
     #"breast_cancer",
     #"adult",
-    #"digits",
-    #"glass", 
-    #"seeds", 
-    #"letter_recognition",
-    #"wine_quality",
-    #"har",
+    "digits",
+    "glass", 
+    "seeds", 
+    "letter_recognition",
+    "wine_quality",
+    "har",
     #"diabetes130",
     #"bank_marketing",
-    #"mnist",
+    "mnist",
     #"mnist_1248",
     #"fashion_mnist",
     #'3D_gaussian_clusters',
     #"concentric_three_circles",
-    #"iris",
+    "iris",
     #"ecoli",
     "vowel"
 ],#"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["svm_linear_classifier"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "F_type": ["le"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["nonlinear", "individual", 'centralize', "Imakura", "GEP", "ODC"], # 'centralize', "individual", "Imakura", "GEP",  "ODC" # 'centralize', "individual", #"individual", "Imakura",
+    "F_type": ["ae_dm_mixed"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
+    "G_type": ["nonlinear", "Imakura", "GEP", "ODC"], # 'centralize', "individual", "Imakura", "GEP",  "ODC" # 'centralize', "individual", #"individual", "Imakura",
     "gamma_ratio": [1],#[0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
     "gamma_type": ["X_tuning"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual", 
     "gamma_ratio_krr": [1],
@@ -56,13 +56,14 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "lambda_pred": [0],
     "lambda_offdiag": [0],
     "metrics": ["auc"],
-    "visualize": [True],
+    "visualize": [False],
     #"feature_num": [41],
     #"dim_intermediate": [25],#[20, 10, 5, 2],
-    "num_institution_user": [100],#[50, 100, 200, 400],
+    "num_institution_user": [100],
     "num_institution": [4],
     "K_normalization":[False],
     "anchor_method":["smote"], #
+    "data_distribution":["division"]
 })
 
 # 2) ループ回数（seed を 0..loop_num-1 で回します）
@@ -361,23 +362,23 @@ def run_grid(
             _set_config_from_combo(cfg, combo)
             _apply_defaults(cfg, dataset, combo)
 
-            #try:
-            val = run_once(cfg, log)
-            vals.append(float(val))
-            record_config_to_cfg(cfg)
-            record_value_to_cfg(cfg, "評価値", val)
-            # except Exception as e:
-            #     msg = f"[skip] seed={i}, dataset={dataset}, G_type={combo.get('G_type')}, reason={e}"
-            #     print(msg)
-            #     try:
-            #         log.exception(msg)
-            #     except Exception:
-            #         pass
-            #     try:
-            #         record_value_to_cfg(cfg, "error", str(e))
-            #     except Exception:
-            #         pass
-            #     continue
+            try:
+                val = run_once(cfg, log)
+                vals.append(float(val))
+                record_config_to_cfg(cfg)
+                record_value_to_cfg(cfg, "評価値", val)
+            except Exception as e:
+                msg = f"[skip] seed={i}, dataset={dataset}, G_type={combo.get('G_type')}, reason={e}"
+                print(msg)
+                try:
+                    log.exception(msg)
+                except Exception:
+                    pass
+                try:
+                    record_value_to_cfg(cfg, "error", str(e))
+                except Exception:
+                    pass
+                continue
 
         mean_val = sum(vals) / len(vals) if vals else 0.0
         stdev_val = statistics.stdev(vals) if len(vals) > 1 else 0.0
@@ -416,7 +417,7 @@ from src.paths import CONFIG_DIR, OUTPUT_DIR, INPUT_DIR
 if __name__ == "__main__":
     # 引数処理はここだけ（デフォルトは 0912）
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run-name", type=str, default="0913")
+    parser.add_argument("--run-name", type=str, default="1004")
     parser.add_argument("--use_csv", action="store_true", help="CSV由来のコンボを使わず、PARAM_GRIDのみで総当りする")
     args = parser.parse_args()
 
