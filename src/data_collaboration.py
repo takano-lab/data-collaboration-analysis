@@ -30,7 +30,17 @@ logger = TypeVar("logger")
 
 
 class DataCollaborationAnalysis:
-    def __init__(self, train_df: pd.DataFrame, test_df: pd.DataFrame, config: Config, logger: logger) -> None:
+    def __init__(
+        self,
+        train_df: pd.DataFrame,
+        test_df: pd.DataFrame,
+        config: Config,
+        logger: logger,
+        Xs_train: list[np.ndarray] | None = None,
+        Xs_test: list[np.ndarray] | None = None,
+        ys_train: list[np.ndarray] | None = None,
+        ys_test: list[np.ndarray] | None = None,
+    ) -> None:
         self.config: Config = config
         self.logger = logger
 
@@ -42,11 +52,11 @@ class DataCollaborationAnalysis:
         self.anchor_y: np.ndarray = np.array([])
         self.anchor_test: np.ndarray = np.array([])
 
-        # 機関ごとの分割データ
-        self.Xs_train: list[np.ndarray] = []
-        self.Xs_test: list[np.ndarray] = []
-        self.ys_train: list[np.ndarray] = []
-        self.ys_test: list[np.ndarray] = []
+        # 機関ごとの分割データ (外部で構築済みのものを優先使用)
+        self.Xs_train: list[np.ndarray] = Xs_train or []
+        self.Xs_test: list[np.ndarray] = Xs_test or []
+        self.ys_train: list[np.ndarray] = ys_train or []
+        self.ys_test: list[np.ndarray] = ys_test or []
 
         # 中間表現
         self.anchors_inter: list[np.ndarray] = []
@@ -156,14 +166,15 @@ class DataCollaborationAnalysis:
         """
         データ分割、中間表現の生成、統合表現の生成を一気に行う関数
         """
-        # データの分割
-        self.Xs_train, self.Xs_test, self.ys_train, self.ys_test = self.train_test_split(
-            train_df=self.train_df,
-            test_df=self.test_df,
-            num_institution=self.config.num_institution,
-            num_institution_user=self.config.num_institution_user,
-            y_name=self.config.y_name,
-        )
+        # データの分割（既に渡されていない場合のみ内部で旧分割を実行: 後方互換）
+        if not self.Xs_train or not self.Xs_test:
+            self.Xs_train, self.Xs_test, self.ys_train, self.ys_test = self.train_test_split(
+                train_df=self.train_df,
+                test_df=self.test_df,
+                num_institution=self.config.num_institution,
+                num_institution_user=self.config.num_institution_user,
+                y_name=self.config.y_name,
+            )
         self.logger.info(f"各機関（訓練データ）の数と次元数: {self.Xs_train[0].shape}")
         # アンカーデータの生成
         self.anchor = self.produce_anchor(

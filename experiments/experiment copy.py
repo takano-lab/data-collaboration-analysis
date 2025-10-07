@@ -12,7 +12,7 @@ from tqdm import tqdm
 from config.config import Config
 from config.config_logger import record_config_to_cfg, record_value_to_cfg
 from src.data_collaboration import DataCollaborationAnalysis
-from src.institution_data import prepare_institutional_dataset  # 新しい機関データ生成
+from src.institution_data import prepare_institutional_dataset
 from src.institutional_analysis import (
     centralize_analysis,
     centralize_analysis_with_dimension_reduction,
@@ -56,10 +56,9 @@ def run_once(config, logger):
     print(f"データセット:{config.dataset}")
     
     
-    # datasetの読み込み
-    # 1. 前処理まで（単一 df）
+    # 前処理済み df の読み込み（train/test にはまだ分割しない設計に変更済み）
     df = load_data(config=config)
-    # 2. 機関データへ変換 (内部で列制限/機関数補完/ train-test split / even|division)
+    # 機関配列を取得（even/division 方式含む）
     Xs_train, Xs_test, ys_train, ys_test, train_df, test_df = prepare_institutional_dataset(df, config)
     
     metrics_dict = {}
@@ -71,38 +70,29 @@ def run_once(config, logger):
         # GEP_weightedはUSE_KERNELがTrueのときのみ実行
     #    return
     config.log(logger, exclude_keys=["output_path", "input_path", "name", "seed", "y_name"])
-    if config.G_type != "centralize":
-        # インスタンスの生成
-        data_collaboration = DataCollaborationAnalysis(
-            config=config,
-            logger=logger,
-            train_df=train_df,
-            test_df=test_df,
-            Xs_train=Xs_train,
-            Xs_test=Xs_test,
-            ys_train=ys_train,
-            ys_test=ys_test,
-        )
-        # データ分割 -> 統合表現の獲得まで一気に実行
-        #data_collaboration.save_optimal_params()
-        data_collaboration.run()
-        if config.visualize:
-            # 新しい可視化クラス経由で表示/保存
-            viz = DataCollabVisualizer(data_collaboration, logger)
-            viz.visualize_representations()
-            print(1111)
+    if config.G_type == "centralize":
+        metrics_cen = centralize_analysis(config, logger, y_name=config.y_name)
+        return metrics_cen
+
+    # centralize 以外: DataCollaboration パイプライン
+    data_collaboration = DataCollaborationAnalysis(
+        train_df=train_df,
+        test_df=test_df,
+        config=config,
+        logger=logger,
+        Xs_train=Xs_train,
+        Xs_test=Xs_test,
+        ys_train=ys_train,
+        ys_test=ys_test,
+    )
+    data_collaboration.run()
+    if config.visualize:
+        viz = DataCollabVisualizer(data_collaboration, logger)
+        viz.visualize_representations()
+        print(1111)
         #data_collaboration.save_representations_to_csv()
             # 提案手法
         #record_config_to_cfg(config)
-    if config.G_type == 'centralize':
-        # 集中解析
-        print(22222222222)
-        metrics_cen = centralize_analysis(config, logger, y_name=config.y_name)
-        metrics_dict['centralize'] = metrics_cen
-        #record_config_to_cfg(config)
-        #record_value_to_cfg(config, "評価値", metrics_cen)
-        return metrics_cen
-    
     elif config.G_type == 'centralize_dim':
         # 集中解析 with 次元削減
 

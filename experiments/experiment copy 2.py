@@ -12,7 +12,6 @@ from tqdm import tqdm
 from config.config import Config
 from config.config_logger import record_config_to_cfg, record_value_to_cfg
 from src.data_collaboration import DataCollaborationAnalysis
-from src.institution_data import prepare_institutional_dataset  # 新しい機関データ生成
 from src.institutional_analysis import (
     centralize_analysis,
     centralize_analysis_with_dimension_reduction,
@@ -57,10 +56,7 @@ def run_once(config, logger):
     
     
     # datasetの読み込み
-    # 1. 前処理まで（単一 df）
-    df = load_data(config=config)
-    # 2. 機関データへ変換 (内部で列制限/機関数補完/ train-test split / even|division)
-    Xs_train, Xs_test, ys_train, ys_test, train_df, test_df = prepare_institutional_dataset(df, config)
+    train_df, test_df = load_data(config=config)
     
     metrics_dict = {}
     
@@ -73,16 +69,7 @@ def run_once(config, logger):
     config.log(logger, exclude_keys=["output_path", "input_path", "name", "seed", "y_name"])
     if config.G_type != "centralize":
         # インスタンスの生成
-        data_collaboration = DataCollaborationAnalysis(
-            config=config,
-            logger=logger,
-            train_df=train_df,
-            test_df=test_df,
-            Xs_train=Xs_train,
-            Xs_test=Xs_test,
-            ys_train=ys_train,
-            ys_test=ys_test,
-        )
+        data_collaboration = DataCollaborationAnalysis(config=config, logger=logger, train_df=train_df, test_df=test_df)
         # データ分割 -> 統合表現の獲得まで一気に実行
         #data_collaboration.save_optimal_params()
         data_collaboration.run()
