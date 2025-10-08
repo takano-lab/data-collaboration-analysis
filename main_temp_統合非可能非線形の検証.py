@@ -179,9 +179,9 @@ def run_onec_(visualize):
         min_val  = float(inst_losses.min())
         max_val  = float(inst_losses.max())
         
-        config.losses_mean = round(mean_val, 4)
-        config.losses_even =  round(sum(even_losses)/len(even_losses), 4)
-        config.losses_odd = round(sum(odd_losses)/len(odd_losses), 4)
+        #config.losses_mean = round(mean_val, 4)
+        #config.losses_even =  round(sum(even_losses)/len(even_losses), 4)
+        #config.losses_odd = round(sum(odd_losses)/len(odd_losses), 4)
         #record_config_to_cfg(config)
         
         print("評価値2", mean_val)

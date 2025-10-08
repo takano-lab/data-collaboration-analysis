@@ -204,8 +204,8 @@ class DataCollaborationAnalysis:
         elif self.config.G_type == "ODC": # この分岐を追加
             self.make_integrate_expression_odc()
         elif self.config.G_type  == "nonlinear":
-            self.assign_anchor_labels(k=5)
-            self.build_laplacians_from_anchor_labels()
+            #self.assign_anchor_labels(k=5)
+            #self.build_laplacians_from_anchor_labels()
             self.make_integrate_nonlinear_expression()
         elif self.config.G_type == "nonlinear_linear":
             self.make_integrate_nonlinear_linear()
@@ -531,44 +531,67 @@ class DataCollaborationAnalysis:
             # 各機関の F_type を選択（ローテーション）
             self.config.F_type = ftype_sequence[idx % len(ftype_sequence)]
 
-            # 各機関の訓練データ, テストデータおよびアンカーデータを取得し、reduce_dimensions を適用
+            # --- 次元削減 ---
+            current_seed = self.config.f_seed  # シフト判定用に保持
             X_train_svd, X_test_svd, anchor_svd, anchor_test_svd = reduce_dimensions(
-               X_train=X_train,
-               X_test=X_test,
-               n_components=self.config.dim_intermediate,
-               anchor=self.anchor,
-               anchor_test=self.anchor_test,
-               F_type=self.config.F_type,
-               seed=self.config.f_seed,
-               config=self.config,)
+                X_train=X_train,
+                X_test=X_test,
+                n_components=self.config.dim_intermediate,
+                anchor=self.anchor,
+                anchor_test=self.anchor_test,
+                F_type=self.config.F_type,
+                seed=current_seed,
+                config=self.config,
+            )
             self.config.f_seed += 1
 
-            # svdを適用したデータをリストに格納
-            self.Xs_train_inter.append(X_train_svd)
-            self.Xs_test_inter.append(X_test_svd)
-            self.anchors_inter.append(anchor_svd)
-            self.anchors_test_inter.append(anchor_test_svd)
+            # # --- 偏移（第一/第二成分方向シフト） ---
+            # # 量: config.inter_shift があればそれを使用 (None / 0 / 未設定 は 0 とみなす)
+            # raw_shift = getattr(self.config, "inter_shift", 5.0)
+            # # 偶数 → 第1成分 (index 0), 奇数 → 第2成分 (index 1; 次元不足なら 0)
+            # axis_idx = 0 if (current_seed % 2 == 0) else 1
+            # if X_train_svd.shape[1] <= axis_idx:
+            #     axis_idx = 0  # 次元不足フォールバック
+            # # シフトベクトル作成
+
+            # shift_vec = np.zeros(X_train_svd.shape[1], dtype=float)
+            # shift_vec[axis_idx] = 10.0
+            # print(shift_vec, 444444444444444)
+            # # 全データ (train/test/anchor/anchor_test) を同じだけ平行移動
+            # X_train_svd = X_train_svd + shift_vec
+            # X_test_svd = X_test_svd + shift_vec
+            # anchor_svd = anchor_svd + shift_vec
+            # anchor_test_svd = anchor_test_svd + shift_vec
+
+            # --- 格納 ---
+            inter_norm = getattr(self.config, "inter_normalization", False)
+            if not inter_norm:
+                self.Xs_train_inter.append(X_train_svd)
+                self.Xs_test_inter.append(X_test_svd)
+                self.anchors_inter.append(anchor_svd)
+                self.anchors_test_inter.append(anchor_test_svd)
             
-            # 標準化 # qsar だと欠損になる
-            
-            # # SVDを適用したデータをリストに格納
-            # scaler = StandardScaler()
+            else:
+                #標準化 # qsar だと欠損になる
+                
+                # SVDを適用したデータをリストに格納
+                scaler = StandardScaler()
+                
+                # アンカーデータの標準化
+                anchor_svd = scaler.fit_transform(anchor_svd)
+                self.anchors_inter.append(anchor_svd)
 
-            # # 訓練データの標準化
-            # X_train_svd = scaler.fit_transform(X_train_svd)
-            # self.Xs_train_inter.append(X_train_svd)
+                # 訓練データの標準化
+                X_train_svd = scaler.transform(X_train_svd)
+                self.Xs_train_inter.append(X_train_svd)
 
-            # # テストデータの標準化
-            # X_test_svd = scaler.transform(X_test_svd)
-            # self.Xs_test_inter.append(X_test_svd)
+                # テストデータの標準化
+                X_test_svd = scaler.transform(X_test_svd)
+                self.Xs_test_inter.append(X_test_svd)
 
-            # # アンカーデータの標準化
-            # anchor_svd = scaler.fit_transform(anchor_svd)
-            # self.anchors_inter.append(anchor_svd)
-
-            # # テスト用アンカーデータの標準化
-            # anchor_test_svd = scaler.transform(anchor_test_svd)
-            # self.anchors_test_inter.append(anchor_test_svd)
+                # テスト用アンカーデータの標準化
+                anchor_test_svd = scaler.transform(anchor_test_svd)
+                self.anchors_test_inter.append(anchor_test_svd)
 
         print("中間表現の次元数: ", self.Xs_train_inter[0].shape[1])
 
@@ -859,12 +882,14 @@ class DataCollaborationAnalysis:
         # ベクトル vj の分散を計算し、機関ごとに平均を取る
         Xs_train_integrate, Xs_test_integrate = [], []
 
-        for k, (d_k, X_tr_k, X_te_k) in enumerate(
-                zip(np.diff(cum_dims), self.Xs_train_inter, self.Xs_test_inter)):
-
+        for k, (d_k, X_tr_k, X_te_k, anchor_inter, anchor_test_inter) in enumerate(
+                zip(np.diff(cum_dims), self.Xs_train_inter, self.Xs_test_inter, self.anchors_inter, self.anchors_test_inter)):
             Gk = V_sel[cum_dims[k]:cum_dims[k + 1], :]               # d_k × p̂
             Xs_train_integrate.append(X_tr_k @ Gk)
             Xs_test_integrate.append(X_te_k @ Gk)
+
+            self.anchors_integ.append(anchor_inter @ Gk)
+            self.anchors_test_integ.append(anchor_test_inter @ Gk)
 
         # --------------------------------------------------
         # 6. スタック & 保存
@@ -984,6 +1009,7 @@ class DataCollaborationAnalysis:
         # --- 1. Gram 行列と射影行列 ---
         for i, S̃ in enumerate(self.anchors_inter):             # S̃ : r×d̃_k
             K = rbf_kernel(S̃, S̃, gamma=gammas[i])       # r×r
+            #K = S̃ @ S̃.T
             # (a) カーネル行列（先に作って正規化）
             if self.config.K_normalization:
                 mu_max = max(eigvalsh(K).max(), 1e-12)            # スペクトル半径
@@ -1000,7 +1026,7 @@ class DataCollaborationAnalysis:
             M /= trace_M
         
         # --- 2. 固有値問題 → Z (r×p̂ , ‖Z‖_F=1) --- 近接ラプラシアンの重みも加える
-        Q = M + lw_alpha * self.L_within - lb_beta * self.L_between
+        Q = M #+ lw_alpha * self.L_within - lb_beta * self.L_between
 
         # ❶ ほんのわずかな非対称を切り落とす
         Q = (Q + Q.T) * 0.5

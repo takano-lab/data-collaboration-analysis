@@ -46,6 +46,7 @@ class DataCollabVisualizer:
 
         if not has_train_data and not has_test_data:
             self._log("可視化に必要な訓練データもテストデータも存在しません。")
+            print("可視化に必要な訓練データもテストデータも存在しません。")
             return
 
         num_institutions = len(a.anchors_inter) if has_train_data else len(a.anchors_test_inter)
@@ -71,14 +72,42 @@ class DataCollabVisualizer:
         col4_data = [Z_train_plot] if has_train_data else []
 
         def get_2d_data_and_limits(data_list):
+            """与えられた行列群を 2 次元に変換し (必要なら PCA)、表示範囲を返す。
+            全て既に 2 次元 (shape[1]==2) の場合は PCA を行わずそのまま返す。
+            1 次元 (shape[1]==1) の場合は 2 列目を 0 で埋めて可視化を安定化。
+            3 次元以上を含む場合のみ、その高次元データに PCA を適用し 2 次元へ射影。
+            """
             if not data_list:
                 return [], ((0, 1), (0, 1))
-            data_for_pca = [d for d in data_list if d.shape[1] > 2]
-            if not data_for_pca:
+
+            # すべて 2 次元ならそのまま
+            if all(d.shape[1] == 2 for d in data_list):
                 data_2d = data_list
             else:
-                pca = PCA(n_components=2).fit(np.vstack(data_for_pca))
-                data_2d = [pca.transform(d) if d.shape[1] > 2 else d for d in data_list]
+                prepared = []
+                high_dim_sources = []
+                for d in data_list:
+                    if d.shape[1] == 2:
+                        prepared.append(d)
+                    elif d.shape[1] == 1:
+                        prepared.append(np.hstack([d, np.zeros((d.shape[0], 1))]))
+                    else:  # >2 は後で PCA
+                        high_dim_sources.append(d)
+                if high_dim_sources:
+                    pca = PCA(n_components=2).fit(np.vstack(high_dim_sources))
+                    projected = [pca.transform(d) for d in high_dim_sources]
+                    # 元の順序を維持しながら再構築
+                    data_2d = []
+                    hi_iter = iter(projected)
+                    for d in data_list:
+                        if d.shape[1] == 2:
+                            data_2d.append(d)
+                        elif d.shape[1] == 1:
+                            data_2d.append(np.hstack([d, np.zeros((d.shape[0], 1))]))
+                        else:
+                            data_2d.append(next(hi_iter))
+                else:
+                    data_2d = prepared
 
             all_data_2d = np.vstack(data_2d)
             x_min, x_max = all_data_2d[:, 0].min(), all_data_2d[:, 0].max()
@@ -148,7 +177,7 @@ class DataCollabVisualizer:
         plt.tight_layout(rect=[0, 0.03, 1, 0.98])
         if save_dir:
             Path(save_dir).mkdir(parents=True, exist_ok=True)
-            save_path = Path(save_dir) / f"anchor_visualization_{a.config.plot_name}"
+            save_path = Path(save_dir) / f"{a.config.plot_name}_anchor_visualization.png"
             plt.savefig(save_path)
             self._log(f"✅ アンカーデータの可視化を保存しました: {save_path}")
 

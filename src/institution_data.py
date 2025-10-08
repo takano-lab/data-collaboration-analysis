@@ -51,7 +51,21 @@ def ensure_institution_params(df: pd.DataFrame, config: Config) -> None:
         max_by_total = len(df) // (2 * config.num_institution_user)
         max_by_class = int(np.min(counts) // 2)
         config.num_institution = max(1, min(max_by_total, max_by_class))
-
+    
+    # --- inter_integ_dim_ratio 適用（未設定/None/空/False は 1 とみなす・一度だけ）---
+    if not hasattr(config, "_applied_inter_integ_ratio"):
+        ratio_raw = getattr(config, "inter_integ_dim_ratio", 1)
+        if ratio_raw in (None, "", False):
+            ratio = 1.0
+        else:
+            try:
+                ratio = float(ratio_raw)
+            except (TypeError, ValueError):
+                ratio = 1.0
+        if ratio != 1.0:
+            orig = config.dim_integrate
+            new_dim = int(round(orig * ratio))
+            config.dim_integrate = new_dim
 
 def limit_feature_columns(df: pd.DataFrame, config: Config) -> pd.DataFrame:
     y_name = config.y_name
@@ -164,55 +178,78 @@ def division_split(
     config: Config,
     random_state: int = 42,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """division: 1 機関 = 1 ラベル。train/test は 50:50 stratified 後に各ラベル内で機関割当。"""
+    """division モード: ユーザ仕様に従い 1 機関 = 1 ラベルの訓練データ・共通テストデータを構築。
+
+    仕様:
+      1. 各ラベルごとにシャッフルし 50% を train, 残り 50% を test に分割
+      2. 機関数 num_institution = ラベル数 (num_label)
+      3. 各機関は単一ラベルのみを保持。 per-label の train サンプル最小数を max_num_institution_user とし
+         max_num_institution_user < config.num_institution_user の場合のみ更新
+      4. Xs_train / ys_train: 各機関 (= 各ラベル) から num_institution_user 件（ラベル固有）
+      5. テスト: 全ラベルについて num_institution_user 件ずつ抽出し結合 (サイズ = num_label * num_institution_user)
+         これを num_institution 回 (機関数) で共有する想定 → DataFrame としては 1 回分のみ保持し
+         配列化段階で複製する（to_institution_arrays で特殊処理）
+    戻り値 train_df は 機関順 (ラベル昇順) にラベルブロックが連結された形。
+            test_df は 1 セット (全ラベル均等) のみ。
+    """
+    rng = np.random.default_rng(getattr(config, "seed", random_state))
     label_col = config.y_name
-    stratify_arg = df[label_col] if getattr(config, "dataset", None) != "housing" else None
-    train_df, test_df = sk_train_test_split(
-        df,
-        test_size=0.5,
-        shuffle=True,
-        random_state=getattr(config, "seed", random_state),
-        stratify=stratify_arg,
-    )
-    train_df = train_df.reset_index(drop=True)
-    test_df = test_df.reset_index(drop=True)
 
-    labels = np.array(sorted(train_df[label_col].unique()))
-    L = len(labels)
-    requested = config.num_institution
-    if requested < L:
-        final_inst = L
-    else:
-        k = requested // L
-        final_inst = max(L, k * L)
-    k = final_inst // L
-    rng = np.random.default_rng(random_state)
+    # 1. ラベルごとにインデックス分割
+    labels = np.array(sorted(df[label_col].unique()))
+    train_parts: List[pd.DataFrame] = []
+    test_label_parts: List[pd.DataFrame] = []
+    for lab in labels:
+        idx = np.flatnonzero(df[label_col].to_numpy() == lab)
+        rng.shuffle(idx)
+        half = len(idx) // 2  # 下側切り捨て
+        train_idx = idx[:half]
+        test_idx = idx[half:]
+        train_parts.append(df.iloc[train_idx])
+        test_label_parts.append(df.iloc[test_idx])
 
-    def _alloc(side_df: pd.DataFrame) -> pd.DataFrame:
-        parts: List[pd.DataFrame] = []
-        for lab in labels:
-            sub = side_df[side_df[label_col] == lab].sample(
-                frac=1, random_state=rng.integers(0, 1_000_000)
-            )
-            need = k * config.num_institution_user
-            if len(sub) < need:
-                possible_k = max(1, len(sub) // max(1, config.num_institution_user))
-                use_k = possible_k
-            else:
-                use_k = k
-            take = use_k * config.num_institution_user
-            sub = sub.iloc[:take]
-            for i in range(use_k):
-                seg = sub.iloc[
-                    i * config.num_institution_user : (i + 1) * config.num_institution_user
-                ]
-                parts.append(seg)
-        return pd.concat(parts, axis=0).reset_index(drop=True)
+    # 2. 機関数設定
+    num_label = len(labels)
+    config.num_institution = num_label
 
-    train_packed = _alloc(train_df)
-    test_packed = _alloc(test_df)
-    config.num_institution = final_inst  # 調整結果を反映
-    return train_packed, test_packed
+    # 3. 機関当たりサンプル数の上限 (train 側最小) を算出
+    train_counts = [len(p) for p in train_parts]
+    max_num_institution_user = int(min(train_counts)) if train_counts else 0
+    if max_num_institution_user <= 0:
+        raise ValueError("division_split: 有効な train サンプルがありません")
+    if max_num_institution_user < config.num_institution_user:
+        config.num_institution_user = max_num_institution_user
+
+    per_inst = config.num_institution_user
+
+    # 4. train_df 構築（ラベル昇順で per_inst 件ずつ）
+    trimmed_train_blocks = []
+    for lab, part in zip(labels, train_parts):
+        if len(part) < per_inst:
+            # 必要件数不足 → 上で per_inst 調整済のはずだがガード
+            raise ValueError(f"label {lab}: train サンプル不足 {len(part)} < {per_inst}")
+        trimmed_train_blocks.append(part.iloc[:per_inst].copy())
+    train_df = pd.concat(trimmed_train_blocks, axis=0).reset_index(drop=True)
+
+    # 5. test base セット構築
+    test_counts = [len(p) for p in test_label_parts]
+    min_test = min(test_counts) if test_counts else 0
+    if min_test < per_inst:
+        # テスト側が足りない場合は per_inst をさらに下げる (仕様上明記なしだが安全策)
+        per_inst = min_test
+        config.num_institution_user = per_inst
+    trimmed_test_blocks = []
+    for lab, part in zip(labels, test_label_parts):
+        if len(part) < per_inst:
+            raise ValueError(f"label {lab}: test サンプル不足 {len(part)} < {per_inst}")
+        trimmed_test_blocks.append(part.iloc[:per_inst].copy())
+    test_base_df = pd.concat(trimmed_test_blocks, axis=0).reset_index(drop=True)
+
+    # test_df は 1 セットのみ（配列化で複製）
+    test_df = test_base_df
+    print(per_inst)
+    print(config.num_institution_user, 999999999)
+    return train_df, test_df
 
 
 # ------------------------- 配列化 ------------------------- #
@@ -221,22 +258,68 @@ def to_institution_arrays(
     test_df: pd.DataFrame,
     config: Config,
 ) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
+    """DataFrame から機関配列へ変換。
+
+    division モードの場合:
+      - train_df はラベル毎ブロック (各 block = num_institution_user 行) が並ぶ
+      - test_df は全ラベル * num_institution_user 行の 1 セットのみ
+      - Xs_test / ys_test はこの 1 セットを機関数分複製（各機関同一テスト集合）
+    even モードの場合は従来どおり連続スライス。
+    """
     y_name = config.y_name
-    X_train_df = train_df.drop(columns=[y_name])
-    y_train_ser = train_df[y_name]
-    X_test_df = test_df.drop(columns=[y_name])
-    y_test_ser = test_df[y_name]
     n_inst = config.num_institution
     per_inst = config.num_institution_user
+    Xs_train: List[np.ndarray] = []
+    Xs_test: List[np.ndarray] = []
+    ys_train: List[np.ndarray] = []
+    ys_test: List[np.ndarray] = []
+
+    if getattr(config, "data_distribution", None) == "division":
+        # --- train (各ラベル1 block) ---
+        y_train_ser = train_df[y_name]
+        X_train_df = train_df.drop(columns=[y_name])
+        labels = sorted(y_train_ser.unique())
+        # 検証: 行数 = num_institution * per_inst
+        if len(train_df) != n_inst * per_inst:
+            raise ValueError(
+                f"division train_df 行数不整合: {len(train_df)} != {n_inst * per_inst}"
+            )
+        for i, lab in enumerate(labels):
+            block = X_train_df.iloc[i * per_inst : (i + 1) * per_inst]
+            y_block = y_train_ser.iloc[i * per_inst : (i + 1) * per_inst]
+            # 念のため全て同ラベル
+            if len(set(y_block)) != 1:
+                raise ValueError("division train block 内に複数ラベルが混在")
+            Xs_train.append(block.to_numpy())
+            ys_train.append(y_block.to_numpy())
+
+        # --- test (共通セット) ---
+        y_test_ser = test_df[y_name]
+        X_test_df = test_df.drop(columns=[y_name])
+        # ラベル均等性 (警告のみ) ※ 厳密には各ラベル per_inst 行が理想
+        counts = y_test_ser.value_counts()
+        if (counts < per_inst).any():
+            print(
+                f"[WARN] division test: 一部ラベル不足 counts={counts.to_dict()} < {per_inst}. 利用可能件数で進行"
+            )
+        # そのままの順序で base セット化
+        X_base = X_test_df.to_numpy()
+        y_base = y_test_ser.to_numpy()
+        for _ in range(n_inst):
+            Xs_test.append(X_base.copy())
+            ys_test.append(y_base.copy())
+        return Xs_train, Xs_test, ys_train, ys_test
+
+    # ---- even (従来) ----
+    y_train_ser = train_df[y_name]
+    X_train_df = train_df.drop(columns=[y_name])
+    y_test_ser = test_df[y_name]
+    X_test_df = test_df.drop(columns=[y_name])
     total_needed = n_inst * per_inst
     if len(train_df) < total_needed or len(test_df) < total_needed:
         raise ValueError(
             f"サンプル不足: need per side={total_needed}, train={len(train_df)}, test={len(test_df)}"
         )
-    Xs_train: List[np.ndarray] = []
-    Xs_test: List[np.ndarray] = []
-    ys_train: List[np.ndarray] = []
-    ys_test: List[np.ndarray] = []
     for start in range(0, n_inst * per_inst, per_inst):
         end = start + per_inst
         Xs_train.append(X_train_df.iloc[start:end].to_numpy())
@@ -253,6 +336,7 @@ def prepare_institutional_dataset(
     """前処理済み df から機関配列を構築 (even / division)"""
     ensure_institution_params(df, config)
     df_lim = limit_feature_columns(df, config)
+    print(df_lim.columns)
     dist = getattr(config, "data_distribution", None)
     if dist == "division":
         train_df, test_df = division_split(df_lim, config)

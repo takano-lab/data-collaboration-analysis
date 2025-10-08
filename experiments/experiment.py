@@ -158,14 +158,22 @@ def run_once(config, logger):
     else:
         print(11111111111)
         config.f_seed = 0
-        metrics_ind_dim = individual_analysis_with_dimension_reduction(
-            config=config,
-            logger=logger,
-            Xs_train=data_collaboration.Xs_train,
-            ys_train=data_collaboration.ys_train,
-            Xs_test=data_collaboration.Xs_test,
-            ys_test=data_collaboration.ys_test,
-        )
+        if getattr(config, "data_distribution", None) == "division":
+            skip_individual = True
+        else:
+            skip_individual = False
+        if not skip_individual:
+            metrics_ind_dim = individual_analysis_with_dimension_reduction(
+                config=config,
+                logger=logger,
+                Xs_train=data_collaboration.Xs_train,
+                ys_train=data_collaboration.ys_train,
+                Xs_test=data_collaboration.Xs_test,
+                ys_test=data_collaboration.ys_test,
+            )
+        
+        else:
+            metrics_ind_dim = {config.metrics: np.nan}
 
         # metrics = dca_analysis(
         #                 X_train_integ=data_collaboration.X_train_integ,
@@ -185,67 +193,85 @@ def run_once(config, logger):
         #train_counts = [len(y) for y in data_collaboration.ys_train]
         test_counts  = [len(y) for y in data_collaboration.ys_test]
         test_counts  = [config.num_institution_user for y in data_collaboration.ys_test]
+        # --- ここから機関ごとの metrics を算出 ---
         n_inst = config.num_institution
 
-        #train_cum = np.concatenate(([0], np.cumsum(train_counts)))
-        test_cum  = np.concatenate(([0], np.cumsum(test_counts)))
+        division_mode = getattr(config, "data_distribution", None) == "division"
+        if division_mode:
+            # division: テストは全機関共通セット（分割不要）
+            test_cum = None
+        else:
+            # even: 各機関ごとに独立テストをスライス
+            test_counts = [len(y) for y in data_collaboration.ys_test]
+            test_cum = np.concatenate(([0], np.cumsum(test_counts)))
 
         inst_losses = []
         even_losses = []
         odd_losses = []
-        
+
         config.f_seed = 0
         for i in range(n_inst):
-            # 各機関の訓練・テストから num_institution_user 件だけ使用
-            #tr_start, tr_end = int(train_cum[i]), int(train_cum[i+1])
-            te_start, te_end = int(test_cum[i]),  int(test_cum[i+1])
-            #tr_take = min(config.num_institution_user, tr_end - tr_start)
-            #te_take = min(config.num_institution_user, te_end - te_start)
-            te_take = config.num_institution_user
-            #X_tr_i = data_collaboration.X_train_integ[tr_start: tr_start + tr_take, :]
-            #y_tr_i = data_collaboration.y_train_integ[tr_start: tr_start + tr_take]
-            X_te_i = data_collaboration.X_test_integ[te_start:  te_start  + te_take,  :]
-            y_te_i = data_collaboration.y_test_integ[te_start:  te_start  + te_take]
+            if division_mode:
+                # 全機関同一テストセットをそのまま使う
+                X_te_i = data_collaboration.X_test_integ
+                y_te_i = data_collaboration.y_test_integ
+            else:
+                # 機関 i のテスト範囲
+                te_start, te_end = int(test_cum[i]), int(test_cum[i + 1])
+                # 希望件数を超えないように調整
+                te_take = min(config.num_institution_user, te_end - te_start)
+                if te_take <= 0:
+                    # データ不足 → NaN
+                    inst_losses.append(np.nan)
+                    (even_losses if i % 2 == 0 else odd_losses).append(np.nan)
+                    continue
+                X_te_i = data_collaboration.X_test_integ[te_start : te_start + te_take, :]
+                y_te_i = data_collaboration.y_test_integ[te_start : te_start + te_take]
 
+            try:
+                metric_i = dca_analysis(
+                    X_train_integ=data_collaboration.X_train_integ,
+                    X_test_integ=X_te_i,
+                    y_train_integ=data_collaboration.y_train_integ,
+                    y_test_integ=y_te_i,
+                    config=config,
+                    logger=logger,
+                )
+            except ValueError as e:
+                logger.warning(f"dca_analysis 失敗 inst={i}: {e} → NaN で継続")
+                metric_i = np.nan
+            except Exception as e:
+                logger.exception(f"dca_analysis 予期せぬ例外 inst={i}: {e}")
+                metric_i = np.nan
 
-            metric_i = dca_analysis(
-                X_train_integ=data_collaboration.X_train_integ,
-                X_test_integ=X_te_i,
-                y_train_integ=data_collaboration.y_train_integ,
-                y_test_integ=y_te_i,
-                config=config,
-                logger=logger,
-            )
             inst_losses.append(metric_i)
-            
             if i % 2 == 0:
                 even_losses.append(metric_i)
             else:
                 odd_losses.append(metric_i)
 
-        # 平均・最小・最大を算出して出力
-        inst_losses = np.array(inst_losses, dtype=float)
-        mean_val = float(inst_losses.mean())
-        min_val  = float(inst_losses.min())
-        max_val  = float(inst_losses.max())
-        
-        config.losses_even =  round(sum(even_losses)/len(even_losses), 4)
-        config.losses_odd = round(sum(odd_losses)/len(odd_losses), 4)
-        config.losses_mean = round(mean_val, 4)
-        #record_config_to_cfg(config)
-        
+        # --- 集計 ---
+        inst_losses_arr = np.array(inst_losses, dtype=float)
+        valid_mask = ~np.isnan(inst_losses_arr)
+        if valid_mask.any():
+            mean_val = float(inst_losses_arr[valid_mask].mean())
+            min_val = float(inst_losses_arr[valid_mask].min())
+            max_val = float(inst_losses_arr[valid_mask].max())
+        else:
+            mean_val = min_val = max_val = float("nan")
+
+        config.losses_even = round(float(np.nanmean(even_losses)), 4) if even_losses else np.nan
+        config.losses_odd = round(float(np.nanmean(odd_losses)), 4) if odd_losses else np.nan
+        config.losses_mean = round(mean_val, 4) if not np.isnan(mean_val) else np.nan
+
         print("評価値2", mean_val)
-        #record_config_to_cfg(config)
-        #record_value_to_cfg(config, "評価値", mean_val)
-        #print("評価値", mean_val)
         print("config.losses_mean", config.losses_mean)
-        print(f"機関ごとの {config.metrics}: {np.round(inst_losses, 4).tolist()}")
+        print(f"機関ごとの {config.metrics}: {np.round(inst_losses_arr, 4).tolist()}")
         print(f"平均: {mean_val:.4f}, 最小: {min_val:.4f}, 最大: {max_val:.4f}")
-        logger.info(f"機関ごとの {config.metrics}: {inst_losses.tolist()}")
+        logger.info(f"機関ごとの {config.metrics}: {inst_losses_arr.tolist()}")
         logger.info(f"平均: {mean_val:.6f}, 最小: {min_val:.6f}, 最大: {max_val:.6f}")
 
-        # main_loop の集計用に平均値を返す
-        return mean_val    
+        return mean_val
     
     
     # 個別解析
