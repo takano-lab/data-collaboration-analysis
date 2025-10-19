@@ -18,6 +18,13 @@ from sklearn.svm import SVC
 from tqdm import tqdm
 
 from config.config import Config
+from src.integration import (
+    build_gep_projectors,
+    build_imakura_projectors,
+    build_nonlinear_projectors,
+    build_odc_projectors,
+    build_targetvec_projectors,
+)
 from src.utils import reduce_dimensions, self_tuning_gamma
 
 logger = TypeVar("logger")
@@ -25,8 +32,6 @@ import csv
 from pathlib import Path
 
 from config.timing import timed
-
-logger = TypeVar("logger")
 
 
 class DataCollaborationAnalysis:
@@ -63,8 +68,6 @@ class DataCollaborationAnalysis:
         self.anchors_test_inter: list[np.ndarray] = []
         self.Xs_train_inter: list[np.ndarray] = []
         self.Xs_test_inter: list[np.ndarray] = []
-        #self.ys_train_inter: list[np.ndarray] = []
-        #self.ys_test_inter: list[np.ndarray] = []
 
         # 統合表現
         self.anchors_integ: list[np.ndarray] = []
@@ -73,14 +76,13 @@ class DataCollaborationAnalysis:
         self.X_test_integ: np.ndarray = np.array([])
         self.y_train_integ: np.ndarray = np.array([])
         self.y_test_integ: np.ndarray = np.array([])
+        # Z_integ: r x m_integ で統一したターゲット（あれば設定）
+        self.Z_integ: Optional[np.ndarray] = None
 
-
-        self.make_integrate_expression_gen_eig = timed(config=self.config)(
-            self.make_integrate_expression_gen_eig
-        )
-        self.make_integrate_expression = timed(config=self.config)(
-            self.make_integrate_expression
-        )
+    # ------------------------------
+    # 共通ヘルパ: インテグレータ（射影関数）
+    # ------------------------------
+    # 既存のクラス内ヘルパは integration.py に移設
 
     def assign_anchor_labels(self, k=5): # リークしてる
         """
@@ -198,26 +200,17 @@ class DataCollaborationAnalysis:
         elif self.config.G_type  == "targetvec":
             self.make_integrate_expression_targetvec()
         elif self.config.G_type  == "GEP":
-            self.make_integrate_expression_gen_eig(use_eigen_weighting=False)
-        elif self.config.G_type  == "GEP_weighted":
-            self.make_integrate_expression_gen_eig(use_eigen_weighting=True)
+            self.make_integrate_expression_gen_eig()
         elif self.config.G_type == "ODC": # この分岐を追加
             self.make_integrate_expression_odc()
         elif self.config.G_type  == "nonlinear":
             #self.assign_anchor_labels(k=5)
             #self.build_laplacians_from_anchor_labels()
             self.make_integrate_nonlinear_expression()
-        elif self.config.G_type == "nonlinear_linear":
-            self.make_integrate_nonlinear_linear()
         else:
             print(f"Unknown G_type: {self.config.G_type}")
-
-        self.logger.info(f"{self.config.dim_integrate}:次元")
-        self.logger.info(f"{self.config.num_institution_user} 機関人数")
-        self.logger.info(f"{self.config.num_institution} 機関数")
         
         self.integrate_metrics()
-
 
     @staticmethod
     # この関数外に出したい
@@ -239,8 +232,6 @@ class DataCollaborationAnalysis:
         # 格納しておくリスト
         Xs_train, Xs_test = [], []
         ys_train, ys_test = [], []
-
-
 
         # データセットを分割する
         for institute_start in tqdm(
@@ -596,71 +587,68 @@ class DataCollaborationAnalysis:
         print("中間表現の次元数: ", self.Xs_train_inter[0].shape[1])
 
         self.logger.info(f"中間表現（訓練データ）の数と次元数: {self.Xs_train_inter[0].shape}")
+    
+    # 統合関数の共通適用ヘルパ
+    def _apply_integrator_per_institution(self, integrator_builder):
+        """integrator_builder を用いて各機関の (X_train, X_test, anchor, anchor_test) に適用する統一ループ。
+        integrator_builder は callable で、引数は機関別の必要行列（例: Z と anchor_inter）を受け取り、
+        projector（X -> ...）と係数行列（ログ用）を返す想定。
+        戻り値: (Xs_train_integrate, Xs_test_integrate)
+        副作用: self.anchors_integ, self.anchors_test_integ を追加更新
+        """
+        Xs_train_integrate, Xs_test_integrate = [], []
+        for X_train_inter, X_test_inter, anchor_inter, anchor_test_inter in zip(
+            tqdm(self.Xs_train_inter), self.Xs_test_inter, self.anchors_inter, self.anchors_test_inter
+        ):
+            projector, _ = integrator_builder(anchor_inter)
+            X_train_integrate = projector(X_train_inter)
+            X_test_integrate = projector(X_test_inter)
+            anchor_integ = projector(anchor_inter)
+            anchor_test_integ = projector(anchor_test_inter)
+
+            Xs_train_integrate.append(X_train_integrate)
+            Xs_test_integrate.append(X_test_integrate)
+            self.anchors_integ.append(anchor_integ)
+            self.anchors_test_integ.append(anchor_test_integ)
+
+        return Xs_train_integrate, Xs_test_integrate
+
+    # 新しい共通ヘルパ: 生成済みプロジェクタ群を適用して属性をセット
+    def _apply_projectors_and_set(self, projs: list):
+        Xs_train_integ: list[np.ndarray] = []
+        Xs_test_integ: list[np.ndarray] = []
+        for proj, X_tr, X_te, anc_tr, anc_te in zip(
+            projs, self.Xs_train_inter, self.Xs_test_inter, self.anchors_inter, self.anchors_test_inter
+        ):
+            Xs_train_integ.append(proj(X_tr))
+            Xs_test_integ.append(proj(X_te))
+            self.anchors_integ.append(proj(anc_tr))
+            self.anchors_test_integ.append(proj(anc_te))
+
+        # スタック & y も連結
+        self.X_train_integ = np.vstack(Xs_train_integ)
+        self.X_test_integ = np.vstack(Xs_test_integ)
+        self.y_train_integ = np.hstack(self.ys_train)
+        self.y_test_integ = np.hstack(self.ys_test)
+        return Xs_train_integ, Xs_test_integ
         
     def make_integrate_expression(self) -> None:
         print("********************統合表現の生成********************")
         """
         統合表現を生成する関数
         """
-        # アンカーデータを水平方向に開く（アンカーデータ数 × 各機関の中間表現次元の合計）
-        centralized_anchor = np.hstack(self.anchors_inter)  # \hat{X}^{anc}
-
-        # 特異値分解（Uはアンカーデータ数 × 統合表現の次元数）
-        U, _, _ = np.linalg.svd(centralized_anchor)
-        U = U[:, : self.config.dim_integrate]  # 固有値の大きい順に統合表現の次元数だけ取得
-
-        # Zは統合表現の次元数 × アンカーデータ数
-        Z = U.T
-
-        # 各機関の統合関数を求め、統合表現を生成
-        Xs_train_integrate, Xs_test_integrate = [], []
-        # 擬似逆行列の絶対値総和を計算するための変数を初期化
-        total_g_abs_sum = 0.0
-
-        for X_train_inter, X_test_inter, anchor_inter, anchor_test_inter in zip(
-            tqdm(self.Xs_train_inter), self.Xs_test_inter, self.anchors_inter, self.anchors_test_inter
-        ):
-            # 各機関のアンカーデータの中間表現を転置して、擬似逆行列を求める
-            pseudo_inverse = np.linalg.pinv(anchor_inter.T)  # \hat{X}^{anc}+
-
-
-            # 各機関の統合関数を求める
-            integrate_function = np.dot(Z, pseudo_inverse)  # G^{(i)}
-
-            # 擬似逆行列の絶対値の総和を計算して加算
-            total_g_abs_sum += np.sum(np.abs(integrate_function))
-
-            # 統合関数で各機関の中間表現を統合表現に変換
-            X_train_integrate = np.dot(integrate_function, X_train_inter.T)
-            X_test_integrate = np.dot(integrate_function, X_test_inter.T)
-            anchor_integ = np.dot(integrate_function, anchor_inter.T)
-            anchor_test_integ = np.dot(integrate_function, anchor_test_inter.T)
-            # そのままで実験 ##########################################
-            # X_train _integrate = X_train_inter.T
-            # X_test_integrate = X_test_inter.T
-
-            # 統合表現をリストに格納
-            Xs_train_integrate.append(X_train_integrate.T)
-            Xs_test_integrate.append(X_test_integrate.T)
-            
-            self.anchors_integ.append(anchor_integ.T)
-            self.anchors_test_integ.append(anchor_test_integ.T)
-
-        # 計算した総和をconfigに保存
-        self.config.g_abs_sum = total_g_abs_sum
-        print(f"擬似逆行列の絶対値の総和: {self.config.g_abs_sum}")
-
-        print("統合表現の次元数: ", Xs_train_integrate[0].shape[1])
-
-        # 全ての機関の統合表現をくっつけ、1つのarrayに変換
-        self.X_train_integ = np.vstack(Xs_train_integrate)
-        self.X_test_integ = np.vstack(Xs_test_integrate)
-
-        # yもくっつける
-        self.y_train_integ = np.hstack(self.ys_train)
-        self.y_test_integ = np.hstack(self.ys_test)
-        
+        # integration.py で projector 群を構築
+        projs, Z, g_abs_sum = build_imakura_projectors(self.anchors_inter, self.config.dim_integrate)
+        # Z を設定（互換のため self.Z は転置）
         self.Z = Z
+
+        # projector を適用して属性にセット
+        self._apply_projectors_and_set(projs)
+
+        # メトリクス（従来と同様に出力）
+        self.config.g_abs_sum = g_abs_sum
+        print(f"擬似逆行列の絶対値の総和: {self.config.g_abs_sum}")
+        print("統合表現の次元数: ", self.X_train_integ.shape[1])
 
         # logにも出力
         self.logger.info(f"統合表現（訓練データ）の数と次元数: {self.X_train_integ.shape}")
@@ -676,237 +664,83 @@ class DataCollaborationAnalysis:
             self.config.num_anchor_data   : アンカー数 r
         """
         print("********************統合表現の生成 (目標ベクトル型) ********************")
-        from numpy.linalg import eigh, pinv
-
-        # --------------------------------------------------
-        # 1. C_s̃ = m I_r - Σ_k S̃^(k) (S̃^(k))^†   （r×r）
-        # --------------------------------------------------
-        m = self.config.num_institution
+        c = self.config.num_institution  # 機関数（c に統一）
         r = self.config.num_anchor_data
         I_r = np.eye(r)
-
-        C_tildeS = m * I_r
-        for S_tilde in self.anchors_inter:                # S_tilde : (r, d_I)
-            C_tildeS -= S_tilde @ pinv(S_tilde)           # r×r
-            
-        # 固有値を計算
-        eigvals = np.linalg.eigvals(C_tildeS)
-
-        # すべての固有値が正か確認
-
+        
         # --------------------------------------------------
         # 2. 固有値問題  C_s̃ z = λ z  を解く（昇順）
         # --------------------------------------------------
-        #eigvals, eigvecs = eigh(C_tildeS)                 # 昇順で返る
-        p_hat = self.config.dim_integrate
-        #Z = eigvecs[:, :p_hat]                            # r×p̂  —— 目標行列 Z
+        m_inter = self.config.dim_integrate
 
-        # ❷ 実対称用の固有値分解を使う
-        eigvals, eigvecs = np.linalg.eigh(C_tildeS)
-        # ❸ 念のため負の丸め誤差を 0 に
-        eigvals[eigvals < 0] = 0.0
-        Z = eigvecs[:, :p_hat]
-        
         # --------------------------------------------------
         # 3. 各機関ごとに  g^(k) = (S̃^(k))^† Z   を計算
-        #    → 係数行列 G^(k)（d_I × p̂）
+        #    → 係数行列 G^(k)（d_I × m_integ）
         # --------------------------------------------------
-        Gs = []            # 係数行列 G^(k) を保存（デバッグ用）
-        Xs_train_integrate = []
-        Xs_test_integrate  = []
+        # integration.py のビルダーで projector を構築
+        projs, Z = build_targetvec_projectors(self.anchors_inter, m_inter)
+        # projector を適用して属性にセット
+        self._apply_projectors_and_set(projs)
 
-        for S_tilde_k, X_tr_k, X_te_k in zip(
-                self.anchors_inter, self.Xs_train_inter, self.Xs_test_inter):
-
-            Gk = pinv(S_tilde_k) @ Z                      # (d_I, p̂)
-            Gs.append(Gk)
-
-            Xs_train_integrate.append(X_tr_k @ Gk)        # 射影
-            Xs_test_integrate.append( X_te_k @ Gk)        # 射影
-
-        # --------------------------------------------------
-        # 4. スタックして最終データを保持
-        # --------------------------------------------------
-        self.X_train_integ = np.vstack(Xs_train_integrate)
-        self.X_test_integ  = np.vstack(Xs_test_integrate)
-        self.y_train_integ = np.hstack(self.ys_train)
-        self.y_test_integ  = np.hstack(self.ys_test)
-
-        print("統合表現の次元数:", self.X_train_integ.shape[1])
-        self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
-        self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
-        
+        # 互換のため保持
         self.Z = Z
-
-        # 必要なら self.Gs = Gs などで保存しておくと解析に便利
-        
-        # すべての固有値が正か確認
-        
-        reg = LinearRegression()
-        reg.fit(Z, self.anchor_y)
-        y_pred = reg.predict(Z)
-        mse = mean_squared_error(self.anchor_y, y_pred)
-        print(f"平均二乗誤差 (MSE)最小: {mse:.4g}")
-        #print(eigvals > 0)
-        reg = LinearRegression()
-        Z = eigvecs[:, eigvals.argsort()[:p_hat]]
-        reg.fit(Z, self.anchor_y)
-        y_pred = reg.predict(Z)
-        mse = mean_squared_error(self.anchor_y, y_pred)
-        print(f"平均二乗誤差 (MSE) 普通: {mse:.4g}")
-        
-        reg = LinearRegression()
-        Z_ = eigvecs[:, eigvals.argsort()[:p_hat]]
-        reg.fit(Z_, self.anchor_y)
-        y_pred = reg.predict(Z_)
-        mse = mean_squared_error(self.anchor_y, y_pred)
-        print(f"平均二乗誤差 (MSE) 直後2: {mse:.4g}")
-        #print(eigvals > 0)
 
     # ============================================================
     # 〈統合関数の最適化〉§3 一般化固有値問題 (8) ベース
     #   A_s̃ v = λ B_s̃ v ,  vᵀ B_s̃ v = 1
     # ============================================================
-    def make_integrate_expression_gen_eig(self, use_eigen_weighting=False) -> None:
+    def make_integrate_expression_gen_eig(self) -> None:
         """
         川上・高野 (2024) §3   一般化固有値問題による統合関数
         + オプションで λ に基づくウェイト付け   (exp(-(λ_j-λ1)/(λ_max-λ1)))
-        ------------------------------------------------------------
-        追加設定:
-            self.config.use_eigen_weighting : bool  ← デフォルト False
-        追加出力:
-            self.lambda_selected : ndarray (p̂,)     ← 選択した λ_j
-            self.weights_selected: ndarray (p̂,)     ← w(λ_j)  (use_eigen_weighting=True のとき)
         """
         print("********************統合表現の生成 (一般化固有値型) ********************")
-        from functools import reduce
 
-        import numpy as np
-        from scipy.linalg import block_diag, eigh
-
-        # --------------------------------------------------
-        # 0. 各種設定・寸法
-        # --------------------------------------------------
-        m       = self.config.num_institution
-        p_hat   = self.config.dim_integrate           # ← 共通表現次元
-        r       = self.config.num_anchor_data
+        # 各種設定
+        m_inter = self.config.dim_integrate
         lambda_gen = getattr(self.config, 'lambda_gen_eigen', 0)
+        use_eigen_weighting = bool(getattr(self.config, "use_eigen_weighting", False))
         print("lambda_gen", lambda_gen)
         orth_ver = bool(getattr(self.config, "orth_ver", None) or False)
-        #use_w   = getattr(self.config, "use_eigen_weighting", False)   # ★
 
+        # projector 構築とメトリクス取得
+        projs, metrics = build_gep_projectors(
+            self.anchors_inter, m_inter, lambda_gen=lambda_gen, orth_ver=orth_ver
+        )
 
-        # --------------------------------------------------
-        # 1. W̃_s  と  B̃_s  を構築
-        # --------------------------------------------------
-        W_s_tilde = np.hstack(self.anchors_inter)                     # r × Σd_k
-        blocks    = [S.T @ S for S in self.anchors_inter]             # 各 d_k × d_k
-        epsilon = 1e-6
-        B_s_tilde = reduce(lambda a, b: block_diag(a, b), blocks) + epsilon * np.eye(sum(S.shape[1] for S in self.anchors_inter))
-
-        # --------------------------------------------------
-        # 2. Ã_s = 2m B̃_s - 2 WᵀW
-        # --------------------------------------------------
-        print("W_s_tilde.shape", W_s_tilde.shape, "B_s_tilde.shape", B_s_tilde.shape)
+        # 形状のプリントは従来通り（再計算せず形状のみ）
+        r = self.anchors_inter[0].shape[0]
+        sum_d = sum(S.shape[1] for S in self.anchors_inter)
+        print("W_s_tilde.shape", (r, sum_d), "B_s_tilde.shape", (sum_d, sum_d))
         print("lambda_gen", lambda_gen)
-        A_s_tilde = 2 * m * B_s_tilde - 2 * (W_s_tilde.T @ W_s_tilde) + lambda_gen* np.eye(W_s_tilde.shape[1])  # 正則化項を追加
-
-        # --------------------------------------------------
-        # 3. 一般化固有値問題  A v = λ B v
-        # --------------------------------------------------
-        if orth_ver:
-            eigvals, eigvecs = eigh(A_s_tilde)                 # SciPy の一般化固有分解
-        else:
-            eigvals, eigvecs = eigh(A_s_tilde, B_s_tilde)                 # SciPy の一般化固有分解
-        order   = np.argsort(eigvals)                                 # 昇順
-        lambdas = eigvals[order][:p_hat]                              # ★ λ_1 … λ_p̂
+        lambdas = metrics["lambdas"]
         print(lambdas)
-        V_sel   = eigvecs[:, order[:p_hat]]
-        cum_dims = np.cumsum([0] + [S.shape[1] for S in self.anchors_inter])
 
-        # Jreg (目的関数第2項) の値を計算して記録
-        jreg_val = 0.0
-        for j in range(p_hat):
-            gj = V_sel[:, j]
-            term1 = 0.0
-            sum_Sgj = np.zeros(self.anchors_inter[0].shape[0]) # r次元ベクトル
-            for k in range(m):
-                gjk = gj[cum_dims[k]:cum_dims[k+1]]
-                Sk = self.anchors_inter[k]
-                term1 += gjk.T @ (Sk.T @ Sk) @ gjk
-                sum_Sgj += Sk @ gjk
-            jreg_val += (2.0 * m * term1 - 2.0 * (sum_Sgj @ sum_Sgj))
-        self.config.jreg_gep = f"{jreg_val:.6g}"
+        # 設定へ反映（従来キー名を維持）
+        self.config.jreg_gep = f"{metrics['jreg_gep']:.6g}"
         print(f"Jreg (GEP) = {self.config.jreg_gep}")
-        
-        # --- ノルム値の計算 ---
-        norm_val_sum = 0.0
-        for j in range(p_hat):
-            gj = V_sel[:, j]
-            for k in range(m):
-                gjk = gj[cum_dims[k]:cum_dims[k+1]]
-                Sk = self.anchors_inter[k]
-                norm_vec = Sk @ gjk
-                norm_val_sum += norm_vec @ norm_vec
-        
-        avg_norm_val = norm_val_sum / p_hat
-        self.config.g_norm_val_gep = f"{avg_norm_val:.6g}"
+        self.config.g_norm_val_gep = f"{metrics['g_norm_val_gep']:.6g}"
         print(f"norm (GEP) = {self.config.g_norm_val_gep}")
-
-        # λ の総和を計算して記録
-        self.config.sum_objective_function = f"{np.sum(lambdas):.4g}"
+        self.config.sum_objective_function = f"{float(np.sum(lambdas)):.4g}"
         print(f"λ の総和 (sum_objective_function): {self.config.sum_objective_function}")
-
-        self.config.g_abs_sum = f"{np.sum(np.abs(V_sel)):.4g}"  # Σd_k × p̂
+        self.config.g_abs_sum = f"{metrics['g_abs_sum']:.4g}"
         print(f"V_selの絶対値の総和: {self.config.g_abs_sum}")
-
-        mean_vars = []
-        for k in range(len(self.anchors_inter)):
-            V_k = V_sel[cum_dims[k]:cum_dims[k + 1], :]               # 機関 k の部分
-            var_k = np.var(V_k, axis=0)                               # 列ごとの分散
-            mean_vars.append(np.mean(var_k))                         # 分散の平均を計算
-        self.config.g_mean_var = f"{np.mean(mean_vars):.4g}"         # 全機関の平均を格納
+        self.config.g_mean_var = f"{metrics['g_mean_var']:.4g}"
         print(f"機関ごとのベクトル分散の平均: {self.config.g_mean_var}")
-
-        # 条件数を計算
-        lambda_min, lambda_max = lambdas[0], lambdas[-1]
-        print(lambda_min, lambda_max)
-        print(lambda_min, lambda_max)
-        print(lambda_max / lambda_min)
-        self.config.g_condition_number = f"{lambda_max / lambda_min:.4g}" if lambda_min > 0 else "inf"
+        self.config.g_condition_number = (
+            f"{metrics['g_condition_number']:.4g}" if np.isfinite(metrics['g_condition_number']) else "inf"
+        )
         print(f"条件数: {self.config.g_condition_number}")
-        
-        # --------------------------------------------------
-        # 5. 機関ごとの G^(k) 抽出と射影
-        # --------------------------------------------------
-        # ベクトル vj の分散を計算し、機関ごとに平均を取る
-        Xs_train_integrate, Xs_test_integrate = [], []
 
-        for k, (d_k, X_tr_k, X_te_k, anchor_inter, anchor_test_inter) in enumerate(
-                zip(np.diff(cum_dims), self.Xs_train_inter, self.Xs_test_inter, self.anchors_inter, self.anchors_test_inter)):
-            Gk = V_sel[cum_dims[k]:cum_dims[k + 1], :]               # d_k × p̂
-            Xs_train_integrate.append(X_tr_k @ Gk)
-            Xs_test_integrate.append(X_te_k @ Gk)
-
-            self.anchors_integ.append(anchor_inter @ Gk)
-            self.anchors_test_integ.append(anchor_test_inter @ Gk)
-
-        # --------------------------------------------------
-        # 6. スタック & 保存
-        # --------------------------------------------------
-        self.X_train_integ = np.vstack(Xs_train_integrate)
-        self.X_test_integ  = np.vstack(Xs_test_integrate)
-        self.y_train_integ = np.hstack(self.ys_train)
-        self.y_test_integ  = np.hstack(self.ys_test)
+        # projector を適用して属性にセット
+        self._apply_projectors_and_set(projs)
 
         print("統合表現の次元数:", self.X_train_integ.shape[1])
         self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
         self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
 
-        # 解析用に λ とウェイトも保持 ★
         if use_eigen_weighting:
-
-            self.config.eigenvalues  = lambdas
+            self.config.eigenvalues = lambdas
 
     def make_integrate_expression_odc(self) -> None:
         """
@@ -919,47 +753,19 @@ class DataCollaborationAnalysis:
             self.logger.error("アンカーの中間表現が生成されていません。")
             return
 
-        # 1. 基準となるアンカー (A_1) を設定
-        anchor_1 = self.anchors_inter[0]
+        # 2. projector 群を構築して適用
+        projs, anchor_1_Z = build_odc_projectors(self.anchors_inter)
+        self._apply_projectors_and_set(projs)
 
-        Xs_train_integrate = []
-        Xs_test_integrate = []
-
-        # 2. 各機関 k についてループ
-        for anchor_k, X_tr_k, X_te_k, anchor_inter, anchor_test_inter in zip(
-            self.anchors_inter, self.Xs_train_inter, self.Xs_test_inter, self.anchors_inter, self.anchors_test_inter
-        ):
-            # 3. M_k = A_k^T @ A_1 を計算　Oはなし
-            M_k = anchor_k.T @ anchor_1
-
-            # 4. M_k を特異値分解(SVD)
-            # full_matrices=False にして、計算結果の行列サイズを揃える
-            U_k, _, Vh_k = np.linalg.svd(M_k, full_matrices=False)
-
-            # 5. 変換行列 G_k = U_k @ Vh_k を計算 (Vh_k は V_k^T)
-            G_k = U_k @ Vh_k
-
-            # 6. G_k を用いて中間表現を射影
-            # これにより、全機関の表現が anchor_1 と同じ次元数に変換される
-            Xs_train_integrate.append(X_tr_k @ G_k)
-            Xs_test_integrate.append(X_te_k @ G_k)
-            self.anchors_integ.append(anchor_inter @ G_k)
-            self.anchors_test_integ.append(anchor_test_inter @ G_k)
-
-        self.Z = anchor_1
-
-        # 7. スタックして最終データを保持
-        self.X_train_integ = np.vstack(Xs_train_integrate)
-        self.X_test_integ = np.vstack(Xs_test_integrate)
-        self.y_train_integ = np.hstack(self.ys_train)
-        self.y_test_integ = np.hstack(self.ys_test)
+        # 互換のため保持
+        self.Z = anchor_1_Z
+        self.Z_integ = None  # ODC では Z の自然な定義がないため未設定
 
         print("統合表現の次元数:", self.X_train_integ.shape[1])
         self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
         self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
 
-    import numpy as np
-    from sklearn.linear_model import LogisticRegression
+    
 
     def _one_hot(self, y: np.ndarray, classes: np.ndarray) -> np.ndarray:
         # classes の順に one-hot を作る（列順が常に一定）
@@ -971,275 +777,40 @@ class DataCollaborationAnalysis:
     def make_integrate_nonlinear_expression(self) -> None:
         """
         非線形（カーネル）版：アンカー同士の射影行列で共通ターゲット Z を導き，
-        各機関データを同じ次元 p̂ へ写像する。
+    各機関データを同じ次元 m_inter へ写像する。
         """
-        import numpy as np
-        from numpy.linalg import eig, inv, norm
-        from sklearn.metrics.pairwise import rbf_kernel
+        m_inter  = self.config.dim_integrate
+        # integration.py のビルダーで projector を構築
+        projs, Z, eigvals, gammas = build_nonlinear_projectors(
+            self.anchors_inter,
+            self.Xs_train_inter,
+            m_inter,
+            gamma_type=getattr(self.config, "gamma_type", "auto"),
+            gamma_ratio_krr=getattr(self.config, "gamma_ratio_krr", 1.0),
+            K_normalization=bool(getattr(self.config, "K_normalization", False)),
+            nl_lambda=getattr(self.config, "nl_lambda", 1e-2),
+        )
 
-        m  = len(self.anchors_inter)              # 機関数
-        r  = self.anchors_inter[0].shape[0]       # アンカー行数
-        p̂  = self.config.dim_integrate           # 統合表現次元
-        lw_alpha     = float(getattr(self.config, "lw_alpha", None) or 0) # 同ラベル近接ラプラシアンの重み
-        lb_beta      = float(getattr(self.config, "lb_beta", None) or 0) # 異ラベル分離ラプラシアンの重み
-
-        Ks, Ps, gammas, max_mus  = [], [], [], []
-        I_r = np.eye(r)
-        
-        if self.config.gamma_type == "auto":
-            for S̃ in self.anchors_inter:             # S̃ : r×d̃_k
-                γ = 1.0 / S̃.shape[1]                # γ = 1/d̃_k
-                gammas.append(γ)
-
-        elif self.config.gamma_type == "X_tuning":
-            for X_train_inter in self.Xs_train_inter:
-                # gamma を計算
-                # gamma を計算
-                gamma = self_tuning_gamma(X_train_inter, standardize=False, k=3, summary='median')
-                gamma *= self.config.gamma_ratio_krr
-                gammas.append(gamma)
-
+        # 以前と同様に gamma を表示
         print(gammas)
 
-        if hasattr(self.config, "nl_lambda"):
-            lam = self.config.nl_lambda
-        else:
-            lam = 1e-2
-
-        # --- 1. Gram 行列と射影行列 ---
-        for i, S̃ in enumerate(self.anchors_inter):             # S̃ : r×d̃_k
-            K = rbf_kernel(S̃, S̃, gamma=gammas[i])       # r×r
-            #K = S̃ @ S̃.T
-            # (a) カーネル行列（先に作って正規化）
-            if self.config.K_normalization:
-                mu_max = max(eigvalsh(K).max(), 1e-12)            # スペクトル半径
-                max_mus.append(mu_max)
-                K = K / mu_max                                # ||K||_2 = 1
-            
-            Ks.append(K)
-            Ps.append(K @ inv(K + lam * I_r))     # 射影
-        
-        M = sum((P - I_r).T @ (P - I_r) for P in Ps)
-        ## M 正規化 ラプラシアンなしならしなくてよい
-        trace_M = np.trace(M)
-        if trace_M > 1e-9:
-            M /= trace_M
-        
-        # --- 2. 固有値問題 → Z (r×p̂ , ‖Z‖_F=1) --- 近接ラプラシアンの重みも加える
-        Q = M #+ lw_alpha * self.L_within - lb_beta * self.L_between
-
-        # ❶ ほんのわずかな非対称を切り落とす
-        Q = (Q + Q.T) * 0.5
-        
-        # ❷ 実対称用の固有値分解を使う
-        eigvals, eigvecs = np.linalg.eigh(Q)
-        # ❸ 念のため負の丸め誤差を 0 に
-        eigvals[eigvals < 0] = 0.0
-        Z = eigvecs[:, eigvals.argsort()[:p̂]]
-            
-        # 列ごとに ||z_j||_2 = 1 へ
-        for j in range(Z.shape[1]):
-            nz = np.linalg.norm(Z[:, j])
-            if nz > 0:
-                Z[:, j] /= nz
-        
-        # --- 3. 各機関の係数 B^(k) とデータ射影 ---
-        Xs_train_intg, Xs_test_intg = [], []
-        # zipに self.anchors_test_inter を追加
-        for i, (K, S̃_train, S̃_test, γ, X_tr, X_te) in enumerate(zip(
-            Ks, self.anchors_inter, self.anchors_test_inter, gammas,
-            self.Xs_train_inter, self.Xs_test_inter
-        )):
-            # 学習データから係数 Bk を計算
-            #mu_max = max(eigvalsh(K).max(), 1e-12)            # スペクトル半径
-            Bk  = inv(K + lam * I_r) @ Z          # r×p̂
-            
-            # (a) 学習データの射影
-            K_tr = rbf_kernel(X_tr, S̃_train, gamma=γ)  # n_k×r
-
-            # (b) テストデータの射影
-            K_te = rbf_kernel(X_te, S̃_train, gamma=γ)  # t_k×r
-
-            # (c) 学習アンカーの射影結果 S_hat (P @ Z と等価)
-            # (d) ★★★ テストアンカーの射影結果 S_hat_test ★★★
-            K_anchor_test = rbf_kernel(S̃_test, S̃_train, gamma=γ) # (r_test, r_train)
-            
-            if self.config.K_normalization:
-                #s = np.linalg.svd(K_tr, compute_uv=False)
-                #mu_max = s.max()
-                K_tr = K_tr / max_mus[i]
-                    
-                #s = np.linalg.svd(K_te, compute_uv=False)
-                #mu_max = s.max()
-                K_te = K_te / max_mus[i]
-                # ||K||_2 = 1
-                #mu_max = max(eigvalsh(K_anchor_test).max(), 1e-12)            # スペクトル半径
-                K_anchor_test = K_anchor_test / max_mus[i]                             # ||K||_2 = 1
-            
-            Xs_train_intg.append(K_tr @ Bk)       # n_k×p̂
-            Xs_test_intg.append(K_te @ Bk)        # t_k×p̂
-            self.anchors_integ.append(K @ Bk)
-            self.anchors_test_integ.append(K_anchor_test @ Bk)
-
-                
-        # --- 4. スタック & 保存 ---
-        self.X_train_integ = np.vstack(Xs_train_intg)
-        self.X_test_integ  = np.vstack(Xs_test_intg)
-        self.y_train_integ = np.hstack(self.ys_train)
-        self.y_test_integ  = np.hstack(self.ys_test)
+        # projector を適用して属性にセット
+        self._apply_projectors_and_set(projs)
 
         self.logger.info(f"nonlinear integrate: X_train {self.X_train_integ.shape}")
         print("統合表現の次元数:", self.X_train_integ.shape[1])
         self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
         self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
-        
-        # 固有値の小さい順に p_hat 個選択
-        lambdas = eigvals[:p̂]  # 固有値の上位 p_hat 個
 
-        # 固有値の総和を計算
-        sum_lambdas = np.sum(lambdas)
-
-        # 結果を self.config.g_abs_sum に格納
+        # 固有値の小さい順に m_inter 個選択し総和
+        sum_lambdas = float(np.sum(eigvals[:m_inter]))
         self.config.g_abs_sum = f"{sum_lambdas:.4g}"
-        
+
         self.Z = Z
 
-        # デバッグ用出力
-        print(f"固有値 λ の上位 {p̂} 個の総和: {self.config.g_abs_sum}")
+        print(f"固有値 λ の上位 {m_inter} 個の総和: {self.config.g_abs_sum}")
         #print(f"固有値 λ の目的関数減少 {p̂} 個の総和: {np.sum(eigvals[idx])}")
         
-    # ---------------------------------------------------------------
-    # 〈非線形統合〉  RBF ⊕ Linear（※線形のバイアス項なし）
-    #     g(x)= αᵀ k_rbf(x,·) + βᵀx
-    #     零空間 = { βᵀx }（無罰則）, 有罰則 = α（λ‖α‖²）
-    # ---------------------------------------------------------------
-    def make_integrate_nonlinear_linear(self) -> None:
-
-        import numpy as np
-        from numpy.linalg import eigvalsh, inv, pinv
-        from sklearn.metrics.pairwise import rbf_kernel
-
-        m     = len(self.anchors_inter)
-        r     = self.anchors_inter[0].shape[0]
-        p_hat = self.config.dim_integrate
-        lam   = getattr(self.config, "nl_lambda", 1e-2)
-
-        Ks, gammas, Ps_lambda = [], [], []
-        K_scales = []
-        I_r = np.eye(r)
-
-        # ---- gamma の用意（既存ロジックのまま）----
-        if self.config.gamma_type == "auto":
-            for S_tilde in self.anchors_inter:
-                gammas.append(1.0 / S_tilde.shape[1])
-        elif self.config.gamma_type == "X_tuning":
-            for X_train_inter in self.Xs_train_inter:
-                gamma = self_tuning_gamma(X_train_inter, standardize=False, k=3, summary='median')
-                gammas.append(gamma)
-        else:
-            # フォールバック
-            for S_tilde in self.anchors_inter:
-                gammas.append(1.0 / S_tilde.shape[1])
-
-        # ---- 1. K と P_λ（厳密 or 一次近似） ----
-        # λ大きいことに寄る誤差はほとんどないが、一次近似すると計算時間が短縮される
-        USE_FIRST_ORDER = (lam >= 10.0)
-
-        for i, S_tilde in enumerate(self.anchors_inter):
-            gamma = gammas[i]
-
-            # (a) RBF カーネル行列と正規化
-            K_rbf_raw = rbf_kernel(S_tilde, S_tilde, gamma=gamma)        # (r,r)
-            mu_max = max(eigvalsh(K_rbf_raw).max(), 1e-12)               # スペクトル半径
-            K_rbf = K_rbf_raw / mu_max                                   # ||K||_2 = 1
-            K_scales.append(mu_max)
-
-            # (b) ★ 線形基底（バイアス無し）
-            P_lin = S_tilde                                              # ★ (r, d_k)
-
-            if USE_FIRST_ORDER:
-                # 一次近似：P_λ ≈ P_linProj + (1/λ) P^(1)
-                G = P_lin.T @ P_lin
-                G_inv = pinv(G)
-                P_linProj = P_lin @ G_inv @ P_lin.T                      # (r,r)
-
-                # P^(1) = K - K P - P K + P K P   （K は正規化済）
-                P1 = K_rbf - K_rbf @ P_linProj - P_linProj @ K_rbf + P_linProj @ K_rbf @ P_linProj
-                P_lambda = P_linProj + (1.0/lam) * P1
-
-                coeff_mode = "first_order"
-                coeff_pack = (G_inv, P_linProj)                          # 係数再計算用
-            else:
-                # 厳密計算
-                A_inv = inv(K_rbf + lam * I_r)                           # (K + λI)^(-1)
-                try:
-                    M = inv(P_lin.T @ A_inv @ P_lin)                     # ★ (d_k,d_k)
-                except np.linalg.LinAlgError:
-                    M = pinv(P_lin.T @ A_inv @ P_lin)
-
-                # P_λ = K A^{-1} + (P - K A^{-1} P) M Pᵀ A^{-1}
-                P_lambda = (K_rbf @ A_inv
-                            + (P_lin - K_rbf @ A_inv @ P_lin) @ M @ (P_lin.T @ A_inv))
-                coeff_mode = "exact"
-                coeff_pack = (A_inv, M)
-
-            Ks.append((K_rbf, P_lin, coeff_mode, coeff_pack, mu_max))
-            Ps_lambda.append(P_lambda)
-
-        # ---- 2. 共通ターゲット Z（固有値問題）----
-        M_tot = sum((P_l - I_r).T @ (P_l - I_r) for P_l in Ps_lambda)
-        M_sym = 0.5 * (M_tot + M_tot.T)
-        eigvals, eigvecs = np.linalg.eigh(M_sym)
-
-        Z = eigvecs[:, eigvals.argsort()[:p_hat]]
-        # 列正規化（任意）
-        for j in range(Z.shape[1]):
-            nz = np.linalg.norm(Z[:, j])
-            if nz > 0:
-                Z[:, j] /= nz
-
-        # ---- 3. 各機関データを写像 ----
-        Xs_train_intg, Xs_test_intg = [], []
-
-        for (K_rbf, P_lin, coeff_mode, coeff_pack, mu_max), S_tilde, gamma, X_tr, X_te in zip(
-                Ks, self.anchors_inter, gammas, self.Xs_train_inter, self.Xs_test_inter):
-
-            if coeff_mode == "exact":
-                A_inv, M = coeff_pack
-                beta  = M @ (P_lin.T @ A_inv @ Z)                          # ★ (d_k, p̂)
-                alpha = A_inv @ (Z - P_lin @ beta)                         # (r, p̂)
-            else:
-                # 一次近似
-                G_inv, P_linProj = coeff_pack
-                beta0 = G_inv @ (P_lin.T @ Z)                              # ★ (d_k, p̂)
-                r0    = Z - P_lin @ beta0
-                beta1 = G_inv @ (P_lin.T @ (K_rbf @ r0))                   # ★ (d_k, p̂)
-                beta  = beta0 + (1.0/lam) * beta1
-                alpha = (1.0/lam) * r0
-
-            # --- 埋め込み（K(x,S) も同じスケールで正規化）---
-            def embed(X):
-                Kx_raw = rbf_kernel(X, S_tilde, gamma=gamma)               # (n,r)
-                Kx = Kx_raw / mu_max
-                Px = X                                                     # ★ (n, d_k)  ← バイアス無し
-                return Kx @ alpha + Px @ beta
-
-            Xs_train_intg.append(embed(X_tr))
-            Xs_test_intg .append(embed(X_te))
-
-        # ---- 4. スタック & 保存 ----
-        self.X_train_integ = np.vstack(Xs_train_intg)
-        self.X_test_integ  = np.vstack(Xs_test_intg)
-        self.y_train_integ = np.hstack(self.ys_train)
-        self.y_test_integ  = np.hstack(self.ys_test)
-
-        self.logger.info(
-            f"nonlinear integrate (RBF + Linear[no-bias]): "
-            f"X_train {self.X_train_integ.shape}, X_test {self.X_test_integ.shape}, "
-            f"lambda={lam}, approx={'1st' if USE_FIRST_ORDER else 'exact'}"
-        )
-        print("統合表現の次元数:", self.X_train_integ.shape[1])
-
     def save_representations_to_csv(self, save_dir: Optional[str] = None) -> None:
         """
         中間表現と統合表現をCSVファイルに保存する関数。

@@ -46,7 +46,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
 ],#"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
     "F_type": ["kernel_pca_svd_mixed"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["nonlinear"], #  "Imakura", "GEP", "ODC"'centralize', "individual", "Imakura", "GEP",  "ODC" # 'centralize', "individual", #"individual", "Imakura",
+    "G_type": ["Imakura"], #  "Imakura", "GEP", "ODC"'centralize', "individual", "Imakura", "GEP",  "ODC" # 'centralize', "individual", #"individual", "Imakura",
     "gamma_ratio": [1],#[0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
     "gamma_type": ["X_tuning"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual", 
     "gamma_ratio_krr": [1],
@@ -362,7 +362,7 @@ def run_grid(
             cfg.seed = i
             cfg.dataset = dataset
             cfg.metrics = metrics_name
-            cfg.plot_name = f"2_{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}.png"
+            cfg.plot_name = f"1019_{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}.png"
 
             _set_config_from_combo(cfg, combo)
             _apply_defaults(cfg, dataset, combo)
