@@ -38,13 +38,13 @@ def make_kernel_integrator(
 # --- Per-method integrator builders (return projector and the raw matrix when applicable) ---
 
 def compute_linear_integrator_from_Z_anchor(
-    Z: np.ndarray,
-    S_tilde_k: np.ndarray,
+    Z_integ: np.ndarray,
+    anchor_inter_k: np.ndarray,
 ) -> Tuple[Callable[[np.ndarray], np.ndarray], np.ndarray]:
-    """TargetVec-style: build (right-mult) integrator from Z and S_tilde_k.
+    """TargetVec-style: build (right-mult) integrator from Z_integ and anchor_inter_k.
     Returns (projector, G_k).
     """
-    G_k = pinv(S_tilde_k) @ Z
+    G_k = pinv(anchor_inter_k) @ Z_integ
     return make_linear_integrator(G_k), G_k
 
 
@@ -64,15 +64,15 @@ def build_imakura_projectors(
     U, _, _ = np.linalg.svd(centralized_anchor)
     U = U[:, :dim_integrate]
 
-    Z = U  # r × m_inter (retain for Z_integ)
+    Z_integ = U  # r × m_inter (retain for Z_integ)
     projs: List[Callable[[np.ndarray], np.ndarray]] = []
     g_abs_sum = 0.0
-    for S_k in anchors_inter:
-        # Left-mult integrator expects Z_left: (m_inter × r)
-        proj, integrate_function = compute_linear_integrator_from_Z_anchor(Z, S_k)
+    for anchor_inter_k in anchors_inter:
+        # Build per-institution projector from Z_integ and anchor_inter_k (right-mult form)
+        proj, integrate_function = compute_linear_integrator_from_Z_anchor(Z_integ, anchor_inter_k)
         g_abs_sum += float(np.sum(np.abs(integrate_function)))
         projs.append(proj)
-    return projs, Z, g_abs_sum
+    return projs, Z_integ, g_abs_sum
 
 def build_targetvec_projectors(
     anchors_inter: List[np.ndarray],
@@ -80,24 +80,24 @@ def build_targetvec_projectors(
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray]:
     """
     TargetVec-based projector builders.
-    Returns (projs_per_institution, Z (r×m_inter)).
+    Returns (projs_per_institution, Z_integ (r×m_inter)).
     """
     c = len(anchors_inter)
     r = anchors_inter[0].shape[0]
     I_r = np.eye(r)
     C_tildeS = c * I_r
-    for S in anchors_inter:
-        C_tildeS -= S @ pinv(S)
+    for anchor_inter_k in anchors_inter:
+        C_tildeS -= anchor_inter_k @ pinv(anchor_inter_k)
 
     eigvals, eigvecs = np.linalg.eigh(C_tildeS)
     eigvals[eigvals < 0] = 0.0
-    Z = eigvecs[:, :dim_integrate]
+    Z_integ = eigvecs[:, :dim_integrate]
 
     projs: List[Callable[[np.ndarray], np.ndarray]] = []
-    for S in anchors_inter:
-        proj, _Gk = compute_linear_integrator_from_Z_anchor(Z, S)
+    for anchor_inter_k in anchors_inter:
+        proj, _Gk = compute_linear_integrator_from_Z_anchor(Z_integ, anchor_inter_k)
         projs.append(proj)
-    return projs, Z
+    return projs, Z_integ
 
 
 def build_gep_projectors(
@@ -117,7 +117,7 @@ def build_gep_projectors(
     r = anchors_inter[0].shape[0]
     # Build W and B
     W_s_tilde = np.hstack(anchors_inter)
-    blocks = [S.T @ S for S in anchors_inter]
+    blocks = [anchor_inter_k.T @ anchor_inter_k for anchor_inter_k in anchors_inter]
     epsilon = 1e-6
     B_s_tilde = blocks[0]
     for b in blocks[1:]:
@@ -134,7 +134,7 @@ def build_gep_projectors(
     lambdas = eigvals[order][:dim_integrate]
     V_sel = eigvecs[:, order[:dim_integrate]]
 
-    cum_dims = np.cumsum([0] + [S.shape[1] for S in anchors_inter])
+    cum_dims = np.cumsum([0] + [anchor_inter_k.shape[1] for anchor_inter_k in anchors_inter])
 
     # Compute diagnostics analogous to original implementation
     jreg_val = 0.0
@@ -144,9 +144,9 @@ def build_gep_projectors(
         sum_Sgj = np.zeros(r)
         for k in range(c):
             gjk = gj[cum_dims[k]:cum_dims[k+1]]
-            Sk = anchors_inter[k]
-            term1 += gjk.T @ (Sk.T @ Sk) @ gjk
-            sum_Sgj += Sk @ gjk
+            anchor_inter_k = anchors_inter[k]
+            term1 += gjk.T @ (anchor_inter_k.T @ anchor_inter_k) @ gjk
+            sum_Sgj += anchor_inter_k @ gjk
         jreg_val += (2.0 * c * term1 - 2.0 * (sum_Sgj @ sum_Sgj))
 
     norm_val_sum = 0.0
@@ -154,8 +154,8 @@ def build_gep_projectors(
         gj = V_sel[:, j]
         for k in range(c):
             gjk = gj[cum_dims[k]:cum_dims[k+1]]
-            Sk = anchors_inter[k]
-            norm_vec = Sk @ gjk
+            anchor_inter_k = anchors_inter[k]
+            norm_vec = anchor_inter_k @ gjk
             norm_val_sum += norm_vec @ norm_vec
     avg_norm_val = norm_val_sum / dim_integrate if dim_integrate > 0 else 0.0
 
@@ -193,19 +193,19 @@ def build_odc_projectors(
     anchors_inter: List[np.ndarray],
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray]:
     """
-    Orthogonal Procrustes based projectors. Returns (projs, anchor_1-as-Z)
+    Orthogonal Procrustes based projectors. Returns (projs, anchor_1-as-Z_integ)
     """
     if not anchors_inter:
         return [], np.array([])
     anchor_1 = anchors_inter[0]
-    Z = anchor_1
+    Z_integ = anchor_1
     projs: List[Callable[[np.ndarray], np.ndarray]] = []
     for anchor_k in anchors_inter:
-        M_k = anchor_k.T @ Z
+        M_k = anchor_k.T @ Z_integ
         U_k, _, Vh_k = np.linalg.svd(M_k, full_matrices=False)
         G_k = U_k @ Vh_k
         projs.append(make_linear_integrator(G_k))
-    return projs, Z
+    return projs, Z_integ
 
 
 def build_nonlinear_projectors(
@@ -220,7 +220,7 @@ def build_nonlinear_projectors(
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
     """
     Kernel (nonlinear) based projector builders.
-    Returns (projs_per_institution, Z (r×m_inter), eigvals (ascending)).
+    Returns (projs_per_institution, Z_integ (r×m_inter), eigvals (ascending)).
     """
     c = len(anchors_inter)
     r = anchors_inter[0].shape[0]
@@ -228,8 +228,8 @@ def build_nonlinear_projectors(
 
     gammas: List[float] = []
     if gamma_type == "auto":
-        for S in anchors_inter:
-            gammas.append(1.0 / S.shape[1])
+        for anchor_inter_k in anchors_inter:
+            gammas.append(1.0 / anchor_inter_k.shape[1])
     elif gamma_type == "X_tuning":
         for X_tr in Xs_train_inter:
             gamma = self_tuning_gamma(X_tr, standardize=False, k=3, summary='median')
@@ -237,12 +237,12 @@ def build_nonlinear_projectors(
             gammas.append(float(gamma))
     else:
         # fallback
-        for S in anchors_inter:
-            gammas.append(1.0 / S.shape[1])
+        for anchor_inter_k in anchors_inter:
+            gammas.append(1.0 / anchor_inter_k.shape[1])
 
     Ks, Ps, mu_max_list = [], [], []
-    for i, S in enumerate(anchors_inter):
-        K = rbf_kernel(S, S, gamma=gammas[i])
+    for i, anchor_inter_k in enumerate(anchors_inter):
+        K = rbf_kernel(anchor_inter_k, anchor_inter_k, gamma=gammas[i])
         if K_normalization:
             mu_max = max(np.linalg.eigvalsh(K).max(), 1e-12)
             mu_max_list.append(mu_max)
@@ -261,18 +261,18 @@ def build_nonlinear_projectors(
     eigvals, eigvecs = np.linalg.eigh(Q)
     eigvals[eigvals < 0] = 0.0
     order = np.argsort(eigvals)
-    Z = eigvecs[:, order[:dim_integrate]]
-    for j in range(Z.shape[1]):
-        nz = np.linalg.norm(Z[:, j])
+    Z_integ = eigvecs[:, order[:dim_integrate]]
+    for j in range(Z_integ.shape[1]):
+        nz = np.linalg.norm(Z_integ[:, j])
         if nz > 0:
-            Z[:, j] /= nz
+            Z_integ[:, j] /= nz
 
     projs: List[Callable[[np.ndarray], np.ndarray]] = []
     for i, K in enumerate(Ks):
-        B_k = np.linalg.inv(K + nl_lambda * I_r) @ Z
+        B_k = np.linalg.inv(K + nl_lambda * I_r) @ Z_integ
         proj = make_kernel_integrator(
             anchors_inter[i], B_k, gamma=gammas[i], normalize=K_normalization, mu_max=mu_max_list[i]
         )
         projs.append(proj)
 
-    return projs, Z, eigvals, gammas
+    return projs, Z_integ, eigvals, gammas

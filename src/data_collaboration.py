@@ -591,7 +591,7 @@ class DataCollaborationAnalysis:
     # 統合関数の共通適用ヘルパ
     def _apply_integrator_per_institution(self, integrator_builder):
         """integrator_builder を用いて各機関の (X_train, X_test, anchor, anchor_test) に適用する統一ループ。
-        integrator_builder は callable で、引数は機関別の必要行列（例: Z と anchor_inter）を受け取り、
+        integrator_builder は callable で、引数は機関別の必要行列（例: Z_integ と anchor_inter_k）を受け取り、
         projector（X -> ...）と係数行列（ログ用）を返す想定。
         戻り値: (Xs_train_integrate, Xs_test_integrate)
         副作用: self.anchors_integ, self.anchors_test_integ を追加更新
@@ -638,9 +638,9 @@ class DataCollaborationAnalysis:
         統合表現を生成する関数
         """
         # integration.py で projector 群を構築
-        projs, Z, g_abs_sum = build_imakura_projectors(self.anchors_inter, self.config.dim_integrate)
-        # Z を設定（互換のため self.Z は転置）
-        self.Z = Z
+        projs, Z_integ, g_abs_sum = build_imakura_projectors(self.anchors_inter, self.config.dim_integrate)
+        # Z_integ を設定（self.Z_integ に統一）
+        self.Z_integ = Z_integ
 
         # projector を適用して属性にセット
         self._apply_projectors_and_set(projs)
@@ -669,25 +669,25 @@ class DataCollaborationAnalysis:
         I_r = np.eye(r)
         
         # --------------------------------------------------
-        # 2. 固有値問題  C_s̃ z = λ z  を解く（昇順）
+        # 2. 固有値問題  C_s_tilde z = λ z  を解く（Z_integ を得る）
         # --------------------------------------------------
         m_inter = self.config.dim_integrate
 
         # --------------------------------------------------
-        # 3. 各機関ごとに  g^(k) = (S̃^(k))^† Z   を計算
+        # 3. 各機関ごとに  g^(k) = (anchor_inter_k)^† Z_integ   を計算
         #    → 係数行列 G^(k)（d_I × m_integ）
         # --------------------------------------------------
         # integration.py のビルダーで projector を構築
-        projs, Z = build_targetvec_projectors(self.anchors_inter, m_inter)
+        projs, Z_integ = build_targetvec_projectors(self.anchors_inter, m_inter)
         # projector を適用して属性にセット
         self._apply_projectors_and_set(projs)
 
         # 互換のため保持
-        self.Z = Z
+        self.Z_integ = Z_integ
 
     # ============================================================
     # 〈統合関数の最適化〉§3 一般化固有値問題 (8) ベース
-    #   A_s̃ v = λ B_s̃ v ,  vᵀ B_s̃ v = 1
+    #   A_s_tilde v = λ B_s_tilde v ,  vᵀ B_s_tilde v = 1
     # ============================================================
     def make_integrate_expression_gen_eig(self) -> None:
         """
@@ -745,7 +745,7 @@ class DataCollaborationAnalysis:
     def make_integrate_expression_odc(self) -> None:
         """
         Orthogonal Procrustes Problem (OPP) に基づく統合表現を生成する。
-        G_k = U_k V_k^T  where  anchor_k^T @ anchor_1 = U_k S_k V_k^T
+        G_k = U_k V_k^T  where  anchor_k^T @ anchor_1 = U_k Σ_k V_k^T
         """
         print("********************統合表現の生成 (Orthogonal Procrustes) ********************")
 
@@ -758,9 +758,8 @@ class DataCollaborationAnalysis:
         self._apply_projectors_and_set(projs)
 
         # 互換のため保持
-        self.Z = anchor_1_Z
-        self.Z_integ = None  # ODC では Z の自然な定義がないため未設定
-
+        self.Z_integ = anchor_1_Z
+    
         print("統合表現の次元数:", self.X_train_integ.shape[1])
         self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
         self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
@@ -776,12 +775,12 @@ class DataCollaborationAnalysis:
     # ------------------------------------------------------------------
     def make_integrate_nonlinear_expression(self) -> None:
         """
-        非線形（カーネル）版：アンカー同士の射影行列で共通ターゲット Z を導き，
+        非線形（カーネル）版：アンカー同士の射影行列で共通ターゲット Z_integ を導き，
     各機関データを同じ次元 m_inter へ写像する。
         """
         m_inter  = self.config.dim_integrate
         # integration.py のビルダーで projector を構築
-        projs, Z, eigvals, gammas = build_nonlinear_projectors(
+        projs, Z_integ, eigvals, gammas = build_nonlinear_projectors(
             self.anchors_inter,
             self.Xs_train_inter,
             m_inter,
@@ -806,7 +805,7 @@ class DataCollaborationAnalysis:
         sum_lambdas = float(np.sum(eigvals[:m_inter]))
         self.config.g_abs_sum = f"{sum_lambdas:.4g}"
 
-        self.Z = Z
+        self.Z_integ = Z_integ
 
         print(f"固有値 λ の上位 {m_inter} 個の総和: {self.config.g_abs_sum}")
         #print(f"固有値 λ の目的関数減少 {p̂} 個の総和: {np.sum(eigvals[idx])}")
