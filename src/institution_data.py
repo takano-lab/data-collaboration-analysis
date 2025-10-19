@@ -53,19 +53,18 @@ def ensure_institution_params(df: pd.DataFrame, config: Config) -> None:
         config.num_institution = max(1, min(max_by_total, max_by_class))
     
     # --- inter_integ_dim_ratio 適用（未設定/None/空/False は 1 とみなす・一度だけ）---
-    if not hasattr(config, "_applied_inter_integ_ratio"):
-        ratio_raw = getattr(config, "inter_integ_dim_ratio", 1)
-        if ratio_raw in (None, "", False):
+    ratio_raw = getattr(config, "inter_integ_dim_ratio", 1)
+    if ratio_raw in (None, "", False):
+        ratio = 1.0
+    else:
+        try:
+            ratio = float(ratio_raw)
+        except (TypeError, ValueError):
             ratio = 1.0
-        else:
-            try:
-                ratio = float(ratio_raw)
-            except (TypeError, ValueError):
-                ratio = 1.0
-        if ratio != 1.0:
-            orig = config.dim_integrate
-            new_dim = int(round(orig * ratio))
-            config.dim_integrate = new_dim
+    if ratio != 1.0:
+        orig = config.dim_integrate
+        new_dim = int(round(orig * ratio))
+        config.dim_integrate = new_dim
 
 def limit_feature_columns(df: pd.DataFrame, config: Config) -> pd.DataFrame:
     y_name = config.y_name
