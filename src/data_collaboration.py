@@ -881,33 +881,28 @@ class DataCollaborationAnalysis:
         df_integrated_all.to_csv(integrated_save_path, index=False)
         self.logger.info(f"✅ 統合表現をCSVに保存しました: {integrated_save_path}")
 
-    def integrate_metrics(self, which: str = "test") -> dict:
+
+    def integrate_metrics(self) -> dict:
         """
-        anchors_[test_]integ の機関間ペアごとに:
-          1) 各機関のアンカー統合表現 A_k を列ごとに標準化（ゼロ平均・単位分散）
-          2) D_{ij} = A_i - A_j（行: サンプル, 列: 次元）
-          3) 行ごとの L2 距離 ||D_{ij}[n,:]||_2 の「平均」と「標準偏差」を記録
+        train/test 両方の統合アンカーについて、機関間ペアごとにメトリクスを計算する。
 
-        結果の集約（各ペアの平均距離の平均・標準偏差など）を metrics に入れ、
-        self.config.integ_metrics には各ペアの平均距離の平均（1桁丸め）を保存する。
+        手順:
+          - train: 各機関の A_k(train) を列ごとに標準化（ゼロ平均・単位分散）。
+                   標準化パラメータ（mu, std）は機関ごとに保持。
+          - test : A_k(test) は train で得た (mu, std) を使って標準化。
+          - その後、D_{ij} = A_i - A_j とし、行ごとの L2 距離の平均(mean)と標準偏差(std)を記録。
 
-        Args:
-            which: "test" -> self.anchors_test_integ を対象
-                   "train"-> self.anchors_integ を対象
-        Returns:
-            dict: {"pairs": [...], "summary": {...}}
+        戻り値は {"train": {...}, "test": {...}} 形式で、各 {...} は
+          {"pairs": [ {i,j,mean,std,n_rows_used,dim_used}, ...],
+           "summary": {pair_count, mean_of_means, std_of_means, min_mean, max_mean} }
+
+        併せて以下を設定:
+          - self.config.integ_metrics_train = 各ペア平均距離の平均（四捨五入1桁）
+          - self.config.integ_metrics_test  = 同上（test）
         """
         from itertools import combinations
 
         import numpy as np
-
-        anchors_list = self.anchors_test_integ if which == "test" else self.anchors_integ
-
-        if not anchors_list or len(anchors_list) < 2:
-            self.logger.warning("integrate_metrics: 対象のアンカー統合表現が不足しています。")
-            metrics = {"pairs": [], "summary": {}}
-            self.config.integ_metrics = 100000
-            return metrics
 
         def _standardize(X: np.ndarray) -> np.ndarray:
             """列ごとに標準化（ゼロ平均・単位分散）。分散0列はそのまま0で保持。"""
@@ -923,59 +918,119 @@ class DataCollaborationAnalysis:
                 Xz[:, zero_var_cols] = 0.0
             return Xz
 
-        # 各機関ごとに独立に標準化
-        anchors_std = [ _standardize(A) for A in anchors_list ]
+        def _standardize_with_params(X: np.ndarray, mu: np.ndarray, std: np.ndarray) -> np.ndarray:
+            if X is None or X.size == 0:
+                return X
+            std_safe = np.where(std > 0, std, 1.0)
+            Xz = (X - mu) / std_safe
+            zero_var_cols = (std == 0)
+            if np.any(zero_var_cols):
+                Xz[:, zero_var_cols] = 0.0
+            return Xz
 
-        results = []
-        for i, j in combinations(range(len(anchors_std)), 2):
-            Ai = anchors_std[i]
-            Aj = anchors_std[j]
+        def _compute_metrics(anchors_std_list: list[np.ndarray]) -> dict:
+            if not anchors_std_list or len(anchors_std_list) < 2:
+                self.logger.warning("integrate_metrics: 対象のアンカー統合表現が不足しています。")
+                return {"pairs": [], "summary": {}}
 
-            if Ai is None or Aj is None or Ai.size == 0 or Aj.size == 0:
-                self.logger.warning(f"integrate_metrics: 空の配列をスキップ (i={i}, j={j})")
-                continue
+            results = []
+            for i, j in combinations(range(len(anchors_std_list)), 2):
+                Ai = anchors_std_list[i]
+                Aj = anchors_std_list[j]
 
-            # 行数が異なる場合は小さい方に合わせる
-            n = min(Ai.shape[0], Aj.shape[0])
-            if (Ai.shape[0] != Aj.shape[0]) or (Ai.shape[1] != Aj.shape[1]):
-                self.logger.warning(
-                    f"integrate_metrics: 形状不一致 i={i}{Ai.shape}, j={j}{Aj.shape} -> "
-                    f"先頭 {n} 行・共通次元に合わせて比較します。"
-                )
-            dmin = min(Ai.shape[1], Aj.shape[1])
-            Di = Ai[:n, :dmin] - Aj[:n, :dmin]  # 行対応の差分
-            row_dists = np.linalg.norm(Di, axis=1)  # 各サンプルの距離
-            res = {
-                "i": i,
-                "j": j,
-                "mean": float(row_dists.mean()),
-                "std": float(row_dists.std(ddof=0)),
-                "n_rows_used": int(n),
-                "dim_used": int(dmin),
+                if Ai is None or Aj is None or Ai.size == 0 or Aj.size == 0:
+                    self.logger.warning(f"integrate_metrics: 空の配列をスキップ (i={i}, j={j})")
+                    continue
+
+                # 行数が異なる場合は小さい方に合わせる
+                n = min(Ai.shape[0], Aj.shape[0])
+                if (Ai.shape[0] != Aj.shape[0]) or (Ai.shape[1] != Aj.shape[1]):
+                    self.logger.warning(
+                        f"integrate_metrics: 形状不一致 i={i}{Ai.shape}, j={j}{Aj.shape} -> "
+                        f"先頭 {n} 行・共通次元に合わせて比較します。"
+                    )
+                dmin = min(Ai.shape[1], Aj.shape[1])
+                Di = Ai[:n, :dmin] - Aj[:n, :dmin]  # 行対応の差分
+                row_dists = np.linalg.norm(Di, axis=1)  # 各サンプルの距離
+                res = {
+                    "i": i,
+                    "j": j,
+                    "mean": float(row_dists.mean()),
+                    "std": float(row_dists.std(ddof=0)),
+                    "n_rows_used": int(n),
+                    "dim_used": int(dmin),
+                }
+                results.append(res)
+
+            if not results:
+                return {"pairs": [], "summary": {}}
+
+            pair_means = np.array([r["mean"] for r in results], dtype=float)
+            summary = {
+                "pair_count": int(len(results)),
+                "mean_of_means": float(pair_means.mean()),
+                "std_of_means": float(pair_means.std(ddof=0)),
+                "min_mean": float(pair_means.min()),
+                "max_mean": float(pair_means.max()),
             }
-            results.append(res)
+            return {"pairs": results, "summary": summary}
 
-        if not results:
-            metrics = {"pairs": [], "summary": {}}
-            self.config.integ_metrics = 100000
-            return metrics
+        # 1) train 側: 各機関ごとに標準化し、標準化パラメータを保存
+        train_list = self.anchors_integ
+        if not train_list or len(train_list) < 2:
+            self.logger.warning("integrate_metrics: train 側のアンカー統合表現が不足しています。")
+            metrics_train = {"pairs": [], "summary": {}}
+            self.config.integ_metrics_train = 100000
+        else:
+            mus_stds = []
+            anchors_train_std = []
+            for Ak in train_list:
+                mu = np.nanmean(Ak, axis=0)
+                std = np.nanstd(Ak, axis=0, ddof=0)
+                anchors_train_std.append(_standardize_with_params(Ak, mu, std))
+                mus_stds.append((mu, std))
+            metrics_train = _compute_metrics(anchors_train_std)
+            if metrics_train.get("summary"):
+                val = float(metrics_train["summary"]["mean_of_means"])
+                self.config.integ_metrics_train = round(val, 5)
+            else:
+                self.config.integ_metrics_train = 100000
 
-        pair_means = np.array([r["mean"] for r in results], dtype=float)
-        summary = {
-            "pair_count": int(len(results)),
-            "mean_of_means": float(pair_means.mean()),
-            "std_of_means": float(pair_means.std(ddof=0)),
-            "min_mean": float(pair_means.min()),
-            "max_mean": float(pair_means.max()),
-        }
+        # 2) test 側: train の (mu,std) を用いて標準化
+        test_list = self.anchors_test_integ
+        if not test_list or len(test_list) < 2:
+            self.logger.warning("integrate_metrics: test 側のアンカー統合表現が不足しています。")
+            metrics_test = {"pairs": [], "summary": {}}
+            self.config.integ_metrics_test = 100000
+        else:
+            # train が妥当でないと (mu,std) が無い可能性
+            if 'mus_stds' not in locals() or len(mus_stds) != len(test_list):
+                # フォールバック: test 単独で標準化
+                anchors_test_std = [ _standardize(Ak) for Ak in test_list ]
+            else:
+                anchors_test_std = []
+                for (Ak_test, ms) in zip(test_list, mus_stds):
+                    mu, std = ms
+                    anchors_test_std.append(_standardize_with_params(Ak_test, mu, std))
+            metrics_test = _compute_metrics(anchors_test_std)
+            if metrics_test.get("summary"):
+                val = float(metrics_test["summary"]["mean_of_means"])
+                self.config.integ_metrics_test = round(val, 5)
+            else:
+                self.config.integ_metrics_test = 100000
 
-        metrics = {"pairs": results, "summary": summary}
-        self.config.integ_metrics = float(pair_means.mean())  # ← ここに保存（平均距離の平均）
-        self.config.integ_metrics = round(self.config.integ_metrics, 5)
-        # 簡易出力
-        print(f"[integrate_metrics/{which}] ペア数={summary['pair_count']}, "
-              f"mean_of_means={summary['mean_of_means']:.6g}, std_of_means={summary['std_of_means']:.6g}, "
-              f"min_mean={summary['min_mean']:.6g}, max_mean={summary['max_mean']:.6g}")
-        self.logger.info(f"[integrate_metrics/{which}] {summary}")
+        # 出力
+        if metrics_train.get("summary"):
+            s = metrics_train["summary"]
+            print(f"[integrate_metrics/train] ペア数={s['pair_count']}, "
+                  f"mean_of_means={s['mean_of_means']:.6g}, std_of_means={s['std_of_means']:.6g}, "
+                  f"min_mean={s['min_mean']:.6g}, max_mean={s['max_mean']:.6g}")
+            self.logger.info(f"[integrate_metrics/train] {s}")
+        if metrics_test.get("summary"):
+            s = metrics_test["summary"]
+            print(f"[integrate_metrics/test]  ペア数={s['pair_count']}, "
+                  f"mean_of_means={s['mean_of_means']:.6g}, std_of_means={s['std_of_means']:.6g}, "
+                  f"min_mean={s['min_mean']:.6g}, max_mean={s['max_mean']:.6g}")
+            self.logger.info(f"[integrate_metrics/test] {s}")
 
-        return metrics
+        return {"train": metrics_train, "test": metrics_test}

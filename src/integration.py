@@ -232,8 +232,12 @@ def build_nonlinear_projectors(
             gammas.append(1.0 / anchor_inter_k.shape[1])
     elif gamma_type == "X_tuning":
         for X_tr in Xs_train_inter:
-            gamma = 0.0001 # self_tuning_gamma(X_tr, standardize=False, k=3, summary='median')
+            gamma = self_tuning_gamma(X_tr, standardize=False, k=3, summary='median')
             gamma *= gamma_ratio_krr
+            gammas.append(float(gamma))
+    elif gamma_type == "fixed":
+        for X_tr in Xs_train_inter:
+            gamma =  gamma_ratio_krr
             gammas.append(float(gamma))
     else:
         # fallback

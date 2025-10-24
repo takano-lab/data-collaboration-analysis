@@ -381,9 +381,15 @@ def _run_kpca_family(X_train, X_test, n_components, *, mode: str, config=None, s
         ratio = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 1.0
         gamma *= ratio
     elif mode == "kernel_pca_self_tuning":
-        gamma = 0.0001 # self_tuning_gamma(Xts, standardize=False, k=7, summary='median')
+        gamma = self_tuning_gamma(Xts, standardize=False, k=7, summary='median')
         ratio = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 1.0
         gamma *= ratio
+        if config is not None:
+            if not hasattr(config, "nl_gammas") or config.nl_gammas is None:
+                config.nl_gammas = []
+            config.nl_gammas.append(gamma)
+    elif mode == "kernel_pca_gamma_fixed":
+        gamma = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 0.0001
         if config is not None:
             if not hasattr(config, "nl_gammas") or config.nl_gammas is None:
                 config.nl_gammas = []
@@ -700,6 +706,7 @@ _RUNNERS: Dict[str, Any] = {
     "kcca": _run_kcca,
     "kernel_pca": lambda *a, **kw: _run_kpca_family(*a, mode="auto", **kw),
     "kernel_pca_self_tuning": lambda *a, **kw: _run_kpca_family(*a, mode="kernel_pca_self_tuning", **kw),
+    "kernel_pca_gamma_fixed": lambda *a, **kw: _run_kpca_family(*a, mode="kernel_pca_gamma_fixed", **kw),
     # 追加
     "umap": _run_umap,
     "dm": _run_dm,
