@@ -41,7 +41,7 @@ class DataCollabVisualizer:
         save_dir = save_dir or a.config.output_path / "visualizations"
 
         # --- 必要なデータの存在チェック ---
-        train_attrs = ['anchor', 'anchors_inter', 'Z', 'anchors_integ']
+        train_attrs = ['anchor', 'anchors_inter', 'Z_integ', 'anchors_integ']
         test_attrs = ['anchor_test', 'anchors_test_inter', 'anchors_test_integ']
 
         has_train_data = all(hasattr(a, attr) and getattr(a, attr) is not None and len(getattr(a, attr, [])) > 0 for attr in train_attrs)
@@ -67,7 +67,7 @@ class DataCollabVisualizer:
         fig.suptitle("Anchor Data Transformation Flow (Top: Train, Bottom: Test)", fontsize=16, y=0.995)
 
         # --- PCAとスケール計算のためのデータ準備 ---
-        Z_train_plot = a.Z.T if has_train_data and getattr(a, "Z", None) is not None and a.Z.ndim == 2 and a.Z.shape[0] == a.config.dim_integrate else (a.Z if has_train_data else None)
+        Z_train_plot = a.Z_integ.T if has_train_data and getattr(a, "Z_integ", None) is not None and a.Z_integ.ndim == 2 and a.Z_integ.shape[0] == a.config.dim_integrate else (a.Z_integ if has_train_data else None)
 
         col1_data = ([a.anchor] if has_train_data else []) + ([a.anchor_test] if has_test_data else [])
         col2_data = (a.anchors_inter if has_train_data else []) + (a.anchors_test_inter if has_test_data else [])

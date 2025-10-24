@@ -368,7 +368,7 @@ def _run_kcca(X_train, X_test, n_components, *, y_train=None, anchor=None, ancho
 def _run_kpca_family(X_train, X_test, n_components, *, mode: str, config=None, seed=None,
                      anchor=None, anchor_test=None, **kwargs):
     """
-    mode in {"fixed", "self_tuning", "unfixed"}
+    mode in {"auto", "kernel_pca_self_tuning"}
     """
     scaler = StandardScaler()
     Xts = scaler.fit_transform(X_train)
@@ -376,10 +376,12 @@ def _run_kpca_family(X_train, X_test, n_components, *, mode: str, config=None, s
     Xas = scaler.transform(anchor) if anchor is not None else None
     Xats = scaler.transform(anchor_test) if anchor_test is not None else None
 
-    if mode == "fixed":
+    if mode == "auto":
         gamma = 1.0 / X_train.shape[1]
-    elif mode == "self_tuning":
-        gamma = self_tuning_gamma(Xts, standardize=False, k=7, summary='median')
+        ratio = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 1.0
+        gamma *= ratio
+    elif mode == "kernel_pca_self_tuning":
+        gamma = 0.0001 # self_tuning_gamma(Xts, standardize=False, k=7, summary='median')
         ratio = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 1.0
         gamma *= ratio
         if config is not None:
@@ -388,7 +390,7 @@ def _run_kpca_family(X_train, X_test, n_components, *, mode: str, config=None, s
             config.nl_gammas.append(gamma)
     else:
         raise ValueError(f"unknown kpca mode: {mode}")
-
+    
     model = KernelPCA(n_components=n_components, kernel="rbf", gamma=gamma, eigen_solver="auto", n_jobs=-1)
     Xt = model.fit_transform(Xts)
     Xv = model.transform(Xvs)
@@ -417,12 +419,28 @@ def _run_umap(
     metric = _cfg_str(config, "umap_metric", "euclidean")  # ← 修正
     seed = _cfg_int(config, "seed", 0)
 
+    # 追加オプション（必要に応じて）
+    extra_params = {}
+    tm = _cfg_str(config, "umap_transform_mode", None)
+    if tm:
+        extra_params["transform_mode"] = tm
+    rs = _cfg_float(config, "umap_repulsion_strength", None)
+    if rs is not None:
+        extra_params["repulsion_strength"] = float(rs)
+    init = _cfg_str(config, "umap_init", None)
+    if init:
+        extra_params["init"] = init
+    mix = _cfg_float(config, "umap_set_op_mix_ratio", None)
+    if mix is not None:
+        extra_params["set_op_mix_ratio"] = float(mix)
+
     model = UMAP(
         n_components=n_components,
         n_neighbors=int(n_neighbors),
         min_dist=float(min_dist),
         metric=metric,
         random_state=int(seed),
+        **extra_params,
     )
     Xt = model.fit_transform(Xts)
     Xv = model.transform(Xvs)
@@ -680,9 +698,8 @@ _RUNNERS: Dict[str, Any] = {
     "samespan": _run_samespan,
     "lpp": _run_lpp,
     "kcca": _run_kcca,
-    "kernel_pca": lambda *a, **kw: _run_kpca_family(*a, mode="fixed", **kw),
-    "kernel_pca_self_tuning": lambda *a, **kw: _run_kpca_family(*a, mode="self_tuning", **kw),
-    "kernel_pca_unfixed_gamma": lambda *a, **kw: _run_kpca_family(*a, mode="unfixed", **kw),
+    "kernel_pca": lambda *a, **kw: _run_kpca_family(*a, mode="auto", **kw),
+    "kernel_pca_self_tuning": lambda *a, **kw: _run_kpca_family(*a, mode="kernel_pca_self_tuning", **kw),
     # 追加
     "umap": _run_umap,
     "dm": _run_dm,

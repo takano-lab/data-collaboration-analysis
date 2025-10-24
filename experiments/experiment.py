@@ -16,6 +16,7 @@ from src.institution_data import prepare_institutional_dataset  # 新しい機�
 from src.institutional_analysis import (
     centralize_analysis,
     centralize_analysis_with_dimension_reduction,
+    centralize_analysis_with_institution_dimension_reduction,
     dca_analysis,
     fl_analysis,
     individual_analysis,
@@ -174,6 +175,7 @@ def run_once(config, logger):
         
         else:
             metrics_ind_dim = {config.metrics: np.nan}
+            metrics_centralized_dims = []
 
         # metrics = dca_analysis(
         #                 X_train_integ=data_collaboration.X_train_integ,
@@ -204,6 +206,22 @@ def run_once(config, logger):
             # even: 各機関ごとに独立テストをスライス
             test_counts = [len(y) for y in data_collaboration.ys_test]
             test_cum = np.concatenate(([0], np.cumsum(test_counts)))
+        print("division_mode", division_mode)
+        if division_mode:
+            pass
+            # for i in range(n_inst):
+            #     metrics_centralized_dim = centralize_analysis_with_institution_dimension_reduction(
+            #                             X_train=data_collaboration.train_df.drop(config.y_name, axis=1),
+            #                             X_test=data_collaboration.test_df.drop(config.y_name, axis=1),
+            #                             y_train=data_collaboration.train_df[config.y_name],
+            #                             y_test=data_collaboration.test_df[config.y_name],
+            #                             X_train_reduction=data_collaboration.Xs_train[i],   
+            #                             config=config,
+            #                             logger=logger,
+            #                         )
+            #     metrics_centralized_dims.append(metrics_centralized_dim)
+            # print("機関ごとの次元削減スコア")
+            # print(metrics_centralized_dims)
 
         inst_losses = []
         even_losses = []
@@ -215,6 +233,7 @@ def run_once(config, logger):
                 # 全機関同一テストセットをそのまま使う
                 X_te_i = data_collaboration.X_test_integ
                 y_te_i = data_collaboration.y_test_integ
+            
             else:
                 # 機関 i のテスト範囲
                 te_start, te_end = int(test_cum[i]), int(test_cum[i + 1])

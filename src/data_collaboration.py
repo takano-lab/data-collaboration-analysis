@@ -314,13 +314,17 @@ class DataCollaborationAnalysis:
                 raise RuntimeError("SMOTE anchor 生成には先に train_test_split が必要です。")
 
             # 元データ（train+test）を結合
-            X_train_all = np.vstack(self.Xs_train) if len(self.Xs_train) > 1 else self.Xs_train[0]
-            y_train_all = np.hstack(self.ys_train) if len(self.ys_train) > 1 else self.ys_train[0]
+            X_train_all = np.vstack([self.Xs_train[i][:3] for i in range (self.config.num_institution)]) if len(self.Xs_train) > 1 else self.Xs_train[0]
+            y_train_all = np.hstack([self.ys_train[i][:3] for i in range (self.config.num_institution)]) if len(self.ys_train) > 1 else self.ys_train[0]
             X_test_all  = np.vstack(self.Xs_test)  if len(self.Xs_test)  > 1 else self.Xs_test[0]
             y_test_all  = np.hstack(self.ys_test)  if len(self.ys_test)  > 1 else self.ys_test[0]
-
-            X0 = np.vstack([X_train_all, X_test_all])
-            y0 = np.hstack([y_train_all, y_test_all])
+            #print(X_train_all.mean())
+            print(len(y_train_all))
+            #print(len(y_test_all))
+            #print(len(self.ys_test))
+            #print(len(self.ys_train))
+            X0 = np.vstack([X_test_all])
+            y0 = np.hstack([y_test_all])
 
             # 列数を num_col に合わせる（過不足対策）
             if X0.shape[1] < num_col:
@@ -880,10 +884,13 @@ class DataCollaborationAnalysis:
     def integrate_metrics(self, which: str = "test") -> dict:
         """
         anchors_[test_]integ の機関間ペアごとに:
-          D_{ij} = A_i - A_j（行: サンプル, 列: 次元）
-          行ごとの L2 距離 ||D_{ij}[n,:]||_2 を合計（sum, mean, maxも記録）
-        結果を self.config.integ_metrics に保存して返す。
-        
+          1) 各機関のアンカー統合表現 A_k を列ごとに標準化（ゼロ平均・単位分散）
+          2) D_{ij} = A_i - A_j（行: サンプル, 列: 次元）
+          3) 行ごとの L2 距離 ||D_{ij}[n,:]||_2 の「平均」と「標準偏差」を記録
+
+        結果の集約（各ペアの平均距離の平均・標準偏差など）を metrics に入れ、
+        self.config.integ_metrics には各ペアの平均距離の平均（1桁丸め）を保存する。
+
         Args:
             which: "test" -> self.anchors_test_integ を対象
                    "train"-> self.anchors_integ を対象
@@ -902,10 +909,27 @@ class DataCollaborationAnalysis:
             self.config.integ_metrics = 100000
             return metrics
 
+        def _standardize(X: np.ndarray) -> np.ndarray:
+            """列ごとに標準化（ゼロ平均・単位分散）。分散0列はそのまま0で保持。"""
+            if X is None or X.size == 0:
+                return X
+            mu = np.nanmean(X, axis=0)
+            std = np.nanstd(X, axis=0, ddof=0)
+            std_safe = np.where(std > 0, std, 1.0)
+            Xz = (X - mu) / std_safe
+            # 分散0だった列は 0 に戻す（数値の安定性のため）
+            zero_var_cols = (std == 0)
+            if np.any(zero_var_cols):
+                Xz[:, zero_var_cols] = 0.0
+            return Xz
+
+        # 各機関ごとに独立に標準化
+        anchors_std = [ _standardize(A) for A in anchors_list ]
+
         results = []
-        for i, j in combinations(range(len(anchors_list)), 2):
-            Ai = anchors_list[i]
-            Aj = anchors_list[j]
+        for i, j in combinations(range(len(anchors_std)), 2):
+            Ai = anchors_std[i]
+            Aj = anchors_std[j]
 
             if Ai is None or Aj is None or Ai.size == 0 or Aj.size == 0:
                 self.logger.warning(f"integrate_metrics: 空の配列をスキップ (i={i}, j={j})")
@@ -924,9 +948,8 @@ class DataCollaborationAnalysis:
             res = {
                 "i": i,
                 "j": j,
-                "sum": float(row_dists.sum()),
                 "mean": float(row_dists.mean()),
-                "max": float(row_dists.max()),
+                "std": float(row_dists.std(ddof=0)),
                 "n_rows_used": int(n),
                 "dim_used": int(dmin),
             }
@@ -937,21 +960,22 @@ class DataCollaborationAnalysis:
             self.config.integ_metrics = 100000
             return metrics
 
-        sums = np.array([r["sum"] for r in results], dtype=float)
+        pair_means = np.array([r["mean"] for r in results], dtype=float)
         summary = {
             "pair_count": int(len(results)),
-            "sum_mean": float(sums.mean()),
-            "sum_min": float(sums.min()),
-            "sum_max": float(sums.max()),
+            "mean_of_means": float(pair_means.mean()),
+            "std_of_means": float(pair_means.std(ddof=0)),
+            "min_mean": float(pair_means.min()),
+            "max_mean": float(pair_means.max()),
         }
 
         metrics = {"pairs": results, "summary": summary}
-        self.config.integ_metrics = float(sums.mean())  # ← ここに保存
-        self.config.integ_metrics = round(self.config.integ_metrics, 1)
+        self.config.integ_metrics = float(pair_means.mean())  # ← ここに保存（平均距離の平均）
+        self.config.integ_metrics = round(self.config.integ_metrics, 5)
         # 簡易出力
         print(f"[integrate_metrics/{which}] ペア数={summary['pair_count']}, "
-              f"sum_mean={summary['sum_mean']:.6g}, "
-              f"min={summary['sum_min']:.6g}, max={summary['sum_max']:.6g}")
+              f"mean_of_means={summary['mean_of_means']:.6g}, std_of_means={summary['std_of_means']:.6g}, "
+              f"min_mean={summary['min_mean']:.6g}, max_mean={summary['max_mean']:.6g}")
         self.logger.info(f"[integrate_metrics/{which}] {summary}")
 
         return metrics

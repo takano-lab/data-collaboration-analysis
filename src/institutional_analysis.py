@@ -73,6 +73,46 @@ def centralize_analysis_with_dimension_reduction(config: Config, logger: logger,
     #record_value_to_cfg(config, "集中解析（次元削減）", metrics)
     return metrics
 
+
+def centralize_analysis_with_institution_dimension_reduction(
+    X_train: np.ndarray,
+    X_test: np.ndarray,
+    y_train: np.ndarray,
+    y_test: np.ndarray,
+    X_train_reduction: np.ndarray,
+    config: Config,
+    logger: logger,
+) -> None:
+    
+    _, X_tr, _, _= reduce_dimensions(
+        X_train_reduction,
+        X_train,
+        n_components=config.dim_intermediate,
+        F_type=config.F_type,
+        seed=config.f_seed,
+        config=config,
+    )
+    
+    _, X_te, _, _= reduce_dimensions(
+        X_train_reduction,
+        X_test,
+        n_components=config.dim_intermediate,
+        F_type=config.F_type,
+        seed=config.f_seed,
+        config=config,
+    )
+    
+    model_runner = ModelRunner(config)
+    metrics = model_runner.run(
+        X_train=X_tr,
+        y_train=y_train,
+        X_test=X_te,
+        y_test=y_test,
+    )
+    logger.info(f"提案手法の評価値: {metrics:.4f}")
+    #record_value_to_cfg(config, "提案手法", metrics)
+    return metrics
+
 # ----------------------------------------------------------------------
 # 個別解析
 # ----------------------------------------------------------------------

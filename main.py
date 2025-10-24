@@ -35,46 +35,49 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"har",
     #"diabetes130",
     #"bank_marketing",
-    #"mnist",
+    "mnist",
     #"mnist_1248",
     #"fashion_mnist",
+    #"cifar10",
     #'3D_gaussian_clusters',
-    "concentric_three_circles",
+    #"concentric_three_circles",
     #"iris",
     #"ecoli",
     #"vowel"
-],#"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
+    #"coil20"
+],#+ ["medmnist_{}".format(i) for i in [5, 6, 7]],
+    #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "F_type": ["kernel_pca_svd_mixed"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["Imakura"], #  "Imakura", "GEP", "ODC"'centralize', "individual", "Imakura", "GEP",  "ODC" # 'centralize', "individual", #"individual", "Imakura",
+    "F_type": ["kernel_pca_self_tuning"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
+    "G_type": ["nonlinear", "Imakura", "GEP", "ODC"], #  "Imakura", "GEP", "ODC"'centralize', "individual", "Imakura", "GEP",  "ODC" # 'centralize', "individual", #"individual", "Imakura",
     "gamma_ratio": [1],#[0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
     "gamma_type": ["X_tuning"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual", 
-    "gamma_ratio_krr": [1],
+    "gamma_ratio_krr": [10000],
     "num_anchor_data": [1000],
     "nl_lambda": [0.1],        # LOCKで止められる, 0.00001
     "lw_alpha": [0],
     "lambda_pred": [0],
     "lambda_offdiag": [0],
     "metrics": ["auc"],
-    "visualize": [True],
-    "feature_num": [2],
-    "dim_intermediate": [2],#[20, 10, 5, 2],
-    "dim_integrate": [2],#[20, 10, 5, 2],
-    #"num_institution_user": [10000000],
+    "visualize": [False],
+    #"feature_num": [2],
+    #"dim_intermediate": [20],#[20, 10, 5, 2],
+    #"dim_integrate": [20],#[20, 10, 5, 2],
+    #"num_institution_user": [70],
     #"num_institution": [4],
     "K_normalization":[False],
     "anchor_method":["gaussian"], #gaussian
-    "data_distribution":["even"],# "division" 
+    #"data_distribution":["even"],# "division" "even"
     "inter_integ_dim_ratio":[1],
     "inter_normalization":[False],
     })
 
 # 2) ループ回数（seed を 0..loop_num-1 で回します）
-LOOP_NUM = 1
+LOOP_NUM = 5
 
 # 3) DataFrameに保持したい「パラメータ列」（順序もこの通り）
 PARAM_COLUMNS: List[str] = [
-    "dataset", "h_model", "F_type", "G_type", "dim_intermediate", "dim_integrate", "num_institution_user", "anchor_method", "inter_integ_dim_ratio", "inter_normalization"
+    "dataset", "h_model", "F_type", "G_type", "dim_intermediate", "dim_integrate", "num_institution_user", "anchor_method", "inter_integ_dim_ratio", "inter_normalization", "gamma_ratio_krr"
 ]
 
 # 4) 条件ルール
@@ -106,8 +109,8 @@ _DATASET_DEFAULTS = {
     "breast_cancer":        {"feature_num": 15},#, "num_institution_user": 60},
     #"digits":               {"dim_intermediate": 15, "dim_integrate": 15, "num_institution_user": 100, "num_institution": 10},
     # "mnist":                {"dim_intermediate": 10, "dim_integrate": 10, "num_institution_user": 50, "num_institution": 10},
-    #"mnist":                {"dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 200, "num_institution": 4},
-    #"fashion_mnist":        {"dim_intermediate": 10, "dim_integrate": 10, "num_institution_user": 50, "num_institution": 10},
+    "mnist":                {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 70, "num_institution": 4, "data_distribution": "division", "gamma_ratio":1, "gamma_ratio_krr":10000},
+    "fashion_mnist":        {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 50, "num_institution": 10},
     "concentric_circles":   {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
     "concentric_three_circles": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
     "two_gaussian_distributions": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 50, "num_institution": 5},
@@ -124,12 +127,14 @@ _DATASET_DEFAULTS = {
     "iris":               {"dim_intermediate": 3},
     "ecoli":              {"dim_intermediate": 5},
     "vowel":              {"dim_intermediate": 4},
+    "cifar10":              {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user":70, "data_distribution": "division", "gamma_ratio":1, "gamma_ratio_krr":10000, "F_type": "kernel_pca_self_tuning"},
 }
 RULES: List[Dict[str, Any]] = [
     {"type": "LOCK", "when": {"G_type": ["centralize", "individual"]}, "lock": {"gamma_ratio": DEFAULTS["gamma_ratio"]}},
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"nl_lambda": DEFAULTS["nl_lambda"]}},
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"gamma_ratio_krr": DEFAULTS["gamma_ratio_krr"]}},
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"inter_integ_dim_ratio":  DEFAULTS["inter_integ_dim_ratio"]}},
+    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"inter_normalization":  DEFAULTS["inter_normalization"]}},
     #{"type": "SKIP", "when": {"F_type": ["kernel_pca"], "G_type": ["GEP_weighted"]}},
 ]
 # ============================================
@@ -361,8 +366,8 @@ def run_grid(
         for i in range(loop):
             cfg.seed = i
             cfg.dataset = dataset
-            cfg.metrics = metrics_name
-            cfg.plot_name = f"1019_{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}.png"
+            cfg.metrics = metrics_name 
+            cfg.plot_name = f"1019_{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}_{combo.get('gamma_ratio_krr','-')}.png"
 
             _set_config_from_combo(cfg, combo)
             _apply_defaults(cfg, dataset, combo)
@@ -422,7 +427,7 @@ from src.paths import CONFIG_DIR, OUTPUT_DIR, INPUT_DIR
 if __name__ == "__main__":
     # 引数処理はここだけ（デフォルトは 0912）
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run-name", type=str, default="実験可視化用")
+    parser.add_argument("--run-name", type=str, default="実験用1023")
     parser.add_argument("--use_csv", action="store_true", help="CSV由来のコンボを使わず、PARAM_GRIDのみで総当りする")
     args = parser.parse_args()
 

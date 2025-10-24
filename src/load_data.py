@@ -1,6 +1,8 @@
 # data_loader.py
 from __future__ import annotations
 
+import pickle as pkl
+import tarfile
 import zipfile
 from pathlib import Path
 from typing import Tuple
@@ -154,6 +156,49 @@ def _load_two_gaussian_distributions_df() -> pd.DataFrame:
 
     return df
 
+def _load_coil20_df() -> pd.DataFrame:
+    """
+    COIL-20 画像データを DataFrame 化して返す。
+    - 入力: input/archive/coil-20/<label>/obj<label>__<rotation>.png
+    - 出力: 各ピクセル列 + 'target'（= label）。rotation 列は作らない。
+    """
+    from PIL import Image
+
+    root = Path("input/archive/coil-20")
+    if not root.exists():
+        raise FileNotFoundError("input/archive/coil-20 が見つかりません。")
+
+    rows: list[tuple[int, np.ndarray]] = []
+    first_shape = None
+
+    # ラベルはサブフォルダ名（1..20）を想定
+    for label_dir in sorted([p for p in root.iterdir() if p.is_dir()]):
+        try:
+            label = int(label_dir.name)
+        except Exception:
+            # 非数値ディレクトリは無視
+            continue
+        for p in sorted(label_dir.iterdir()):
+            if p.suffix.lower() != ".png":
+                continue
+            # ファイル名パターンは気にせず rotation は使わない
+            img = Image.open(p).convert("L")  # グレースケール
+            arr = np.asarray(img, dtype=np.float32)
+            if first_shape is None:
+                first_shape = arr.shape
+            rows.append((label, arr.reshape(-1)))
+
+    if not rows:
+        raise FileNotFoundError("COIL-20 の画像が見つかりませんでした。")
+
+    d = rows[0][1].shape[0]
+    pix_cols = [f"pix_{i:05d}" for i in range(d)]
+    data = np.stack([x for (_, x) in rows], axis=0)
+    labels = [lab for (lab, _) in rows]
+    df = pd.DataFrame(data, columns=pix_cols)
+    df.insert(0, "target", labels)
+    return df
+
 def _load_3D_gaussian_clusters_df() -> pd.DataFrame:
     path = Path("input/3D_3_Gaussian_Clusters.csv")
     df = pd.read_csv(path)
@@ -250,6 +295,181 @@ def _load_fashion_mnist_df() -> pd.DataFrame:
     df = data.frame
     df = df.rename(columns={"class": "target"})  # ラベル列を統一
     return df
+
+def _load_cifar10_df() -> pd.DataFrame:
+    """
+    ローカルの CIFAR-10 (python 版) アーカイブから読み込み、DataFrame を返す。
+    - 入力ファイル候補: input/cifar-10-python.tar.gz（推奨）
+      フォールバック: C:\\Users\\sueya\\Git-Repositories\\takano_labo\\dca\\input\\cifar-10-python.tar.gz
+    - 特徴量: 32x32x3 = 3072 次元（pix_00000..）
+    - ラベル列: 'target'（クラス名: airplane, automobile, ...）
+    """
+    candidates = [
+        Path("input/cifar-10-python.tar.gz"),
+        Path(r"C:\\Users\\sueya\\Git-Repositories\\takano_labo\\dca\\input\\cifar-10-python.tar.gz"),
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is None:
+        raise FileNotFoundError("CIFAR-10 アーカイブが見つかりません: input/cifar-10-python.tar.gz")
+
+    def _pkl_load(fileobj):
+        return pkl.load(fileobj, encoding="latin1")
+
+    with tarfile.open(path, mode="r:gz") as tar:
+        # ラベル名を読み込む
+        meta_member = next((m for m in tar.getmembers() if m.name.endswith("batches.meta")), None)
+        if meta_member is None:
+            raise FileNotFoundError("batches.meta がアーカイブ内に見つかりません")
+        with tar.extractfile(meta_member) as f:
+            meta = _pkl_load(f)
+        label_names = meta.get("label_names") or meta.get(b"label_names")
+        # デコード（bytes -> str）
+        label_names = [ln.decode("utf-8") if isinstance(ln, (bytes, bytearray)) else str(ln) for ln in label_names]
+
+        # データバッチを順に読み込む（train: 1..5, test: test_batch）
+        batch_names = [
+            "data_batch_1", "data_batch_2", "data_batch_3", "data_batch_4", "data_batch_5", "test_batch",
+        ]
+        def _find_member(endswith_name: str):
+            return next((m for m in tar.getmembers() if m.name.endswith(endswith_name)), None)
+
+        X_list: list[np.ndarray] = []
+        y_list: list[int] = []
+        for bn in batch_names:
+            member = _find_member(bn)
+            if member is None:
+                # 訓練/テストのどちらかが欠けていても継続
+                continue
+            with tar.extractfile(member) as f:
+                d = _pkl_load(f)
+            data = d.get("data") if "data" in d else d.get(b"data")
+            labels = d.get("labels") if "labels" in d else d.get(b"labels")
+            if data is None or labels is None:
+                # CIFAR-10 の標準形式と異なる場合はスキップ
+                continue
+            X_arr = np.asarray(data, dtype=np.float32)  # (N, 3072)
+            y_arr = np.asarray(labels, dtype=int)
+            X_list.append(X_arr)
+            y_list.append(y_arr)
+
+    if not X_list:
+        raise RuntimeError("CIFAR-10 のデータバッチが読み込めませんでした。")
+
+    X = np.vstack(X_list)
+    y_idx = np.concatenate(y_list)
+    # インデックス -> クラス名
+    y = [label_names[i] if 0 <= i < len(label_names) else str(i) for i in y_idx]
+
+    pix_cols = [f"pix_{i:05d}" for i in range(X.shape[1])]
+    df = pd.DataFrame(X, columns=pix_cols)
+    df.insert(0, "target", y)
+    return df
+
+# =============================
+# MedMNIST loaders
+# =============================
+def _load_medmnist(kind: str) -> pd.DataFrame:
+    """
+    MedMNIST の各データセットを結合して DataFrame で返す。
+    - kind 例: 'pathmnist', 'chestmnist', 'dermamnist', 'octmnist', 'pneumoniamnist',
+              'retinamnist', 'breastmnist', 'bloodmnist', 'tissuemnist',
+              'organamnist_axial', 'organamnist_coronal', 'organamnist_sagittal'
+    - 画像はフラット化（pix_00000..）。
+    - ラベルは 'target' 列に保存。マルチラベル（例: chestmnist）は multi_010... の文字列に変換。
+    """
+    try:
+        import medmnist
+        from medmnist import INFO
+    except Exception as e:
+        raise RuntimeError("MedMNIST を利用するには 'medmnist' パッケージが必要です。'uv add medmnist' 済みか確認してください。") from e
+
+    key = kind.lower()
+    if key not in INFO:
+        raise ValueError(f"Unknown MedMNIST kind: {kind}")
+    info = INFO[key]
+    cls_name = info.get('python_class', None)
+    if not cls_name or not hasattr(medmnist, cls_name):
+        raise RuntimeError(f"MedMNIST dataset class not found for kind={kind} (python_class={cls_name})")
+    DataClass = getattr(medmnist, cls_name)
+
+    # as_rgb: 3ch のとき True に（flattenはどちらでも対応）
+    as_rgb = bool(info.get('n_channels', 1) == 3)
+
+    def _label_to_str(lbl: np.ndarray) -> str | int:
+        arr = np.asarray(lbl).reshape(-1)
+        if arr.size == 1:
+            # 単ラベルは int
+            try:
+                return int(arr[0])
+            except Exception:
+                return int(float(arr[0]))
+        # マルチラベルは multi_0101.. の文字列に
+        bits = ''.join(str(int(x)) for x in arr)
+        return f"multi_{bits}"
+
+    X_rows: list[np.ndarray] = []
+    y_rows: list[object] = []
+    for split in ("train", "val", "test"):
+        ds = DataClass(split=split, download=True, as_rgb=as_rgb)
+        # dataset は __getitem__ で (image, label) を返す
+        for i in range(len(ds)):
+            img, label = ds[i]
+            # 画像を ndarray 化してフラット
+            img_np = np.asarray(img)
+            X_rows.append(img_np.reshape(-1).astype(float))
+            y_rows.append(_label_to_str(label))
+
+    X = np.vstack(X_rows)
+    y = np.array(y_rows, dtype=object)
+    pix_cols = [f"pix_{i:05d}" for i in range(X.shape[1])]
+    df = pd.DataFrame(X, columns=pix_cols)
+    df.insert(0, "target", y)
+    return df
+
+#def _load_medmnist_1() -> pd.DataFrame:  # pathmnist
+#    return _load_medmnist('pathmnist')
+
+#def _load_medmnist_2() -> pd.DataFrame:  # chestmnist (multi-label)
+#    return _load_medmnist('chestmnist')
+
+def _load_medmnist_3() -> pd.DataFrame:  # dermamnist
+    """DermaMNIST を読み込み、クラスID 3 (Dermatofibroma) を除外して返す。"""
+    df = _load_medmnist('dermamnist')
+    # target は単一ラベル（int）想定
+    if 'target' in df.columns:
+        df = df[df['target'] != 3].reset_index(drop=True)
+    return df
+
+#def _load_medmnist_4() -> pd.DataFrame:  # octmnist
+#    return _load_medmnist('octmnist')
+
+def _load_medmnist_5() -> pd.DataFrame:  # pneumoniamnist
+    return _load_medmnist('pneumoniamnist')
+
+def _load_medmnist_6() -> pd.DataFrame:  # retinamnist
+    """RetinaMNIST を読み込み、クラスID 4 (Proliferative) を除外して返す。"""
+    df = _load_medmnist('retinamnist')
+    if 'target' in df.columns:
+        df = df[df['target'] != 4].reset_index(drop=True)
+    return df
+
+def _load_medmnist_7() -> pd.DataFrame:  # breastmnist
+    return _load_medmnist('breastmnist')
+
+#def _load_medmnist_8() -> pd.DataFrame:  # bloodmnist
+#    return _load_medmnist('bloodmnist')
+
+def _load_medmnist_9() -> pd.DataFrame:  # tissuemnist
+    return _load_medmnist('tissuemnist')
+
+def _load_medmnist_10() -> pd.DataFrame:  # organamnist_axial
+    return _load_medmnist('organamnist_axial')
+
+def _load_medmnist_11() -> pd.DataFrame:  # organamnist_coronal
+    return _load_medmnist('organamnist_coronal')
+
+def _load_medmnist_12() -> pd.DataFrame:  # organamnist_sagittal
+    return _load_medmnist('organamnist_sagittal')
 
 def _load_mice_df() -> pd.DataFrame:
     """
@@ -613,6 +833,21 @@ LOADERS = {
     "3D_8_gaussian_clusters": _load_3D_8_gaussian_clusters_df,
     "mice": _load_mice_df,
     "housing": _load_housing,
+    "coil20": _load_coil20_df,
+    "cifar10": _load_cifar10_df,
+    # === MedMNIST ===
+    #"medmnist_1": _load_medmnist_1,  # pathmnist (9)
+    #"medmnist_2": _load_medmnist_2,  # chestmnist (14, multi-label)
+    "medmnist_3": _load_medmnist_3,  # dermamnist (7)
+    #"medmnist_4": _load_medmnist_4,  # octmnist (4)
+    "medmnist_5": _load_medmnist_5,  # pneumoniamnist (2)
+    "medmnist_6": _load_medmnist_6,  # retinamnist (5)
+    "medmnist_7": _load_medmnist_7,  # breastmnist (2)
+    #"medmnist_8": _load_medmnist_8,  # bloodmnist (8)
+    "medmnist_9": _load_medmnist_9,  # tissuemnist (8)
+    "medmnist_10": _load_medmnist_10,  # organamnist_axial (11)
+    "medmnist_11": _load_medmnist_11,  # organamnist_coronal (11)
+    "medmnist_12": _load_medmnist_12,  # organamnist_sagittal (11)
     # New: classic ML small datasets
     "iris": _load_iris,
     "ecoli": _load_ecoli,
