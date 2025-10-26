@@ -66,6 +66,146 @@ class ModelRunner:
         
         return model_func(X_train, y_train, X_test, y_test, **kwargs)
 
+    def predict_with_proba(self, X_train: np.ndarray, y_train: np.ndarray, X_test: np.ndarray):
+        """
+        学習済みモデルで予測ラベルと確率を返すヘルパー。
+        戻り値: y_pred(元ラベル), y_proba(shape=(n_samples, n_classes)), classes(元ラベル順)
+        """
+        h_model = getattr(self.config, 'h_model', 'svm_classifier')
+        # ラベルのエンコード（各分類器実装に合わせて統一）
+        use_encoder = False
+        encoder = None
+        y_train_enc = y_train
+
+        # SVM/MLP/Softmax は内部でエンコードしているため合わせる
+        if h_model in ["svm_classifier", "svm_linear_classifier", "mlp", "softmax", "random_forest"]:
+            if not np.issubdtype(y_train.dtype, np.number):
+                from sklearn.preprocessing import LabelEncoder
+                encoder = LabelEncoder().fit(y_train)
+                y_train_enc = encoder.transform(y_train)
+                use_encoder = True
+
+        steps = [StandardScaler()]
+
+        eigenvalues = getattr(self.config, 'eigenvalues', None)
+        if eigenvalues is not None:
+            steps.append(EigenWeightingTransformer(eigenvalues=eigenvalues))
+
+        model = None
+        if h_model == "svm_classifier" or h_model == "svm_linear_classifier":
+            kernel = "rbf" if h_model == "svm_classifier" else "linear"
+            c_param = getattr(self.config, 'h_C', 1.0) or 1.0
+            svc_params = {
+                "kernel": kernel,
+                "C": c_param,
+                "probability": True,
+                "random_state": self.config.seed,
+            }
+            if kernel == "rbf":
+                svc_params["gamma"] = "scale"
+            steps.append(SVC(**svc_params))
+            pipeline = make_pipeline(*steps)
+            pipeline.fit(X_train, y_train_enc if use_encoder else y_train)
+            y_pred_enc = pipeline.predict(X_test)
+            y_proba = pipeline.predict_proba(X_test)
+            if use_encoder:
+                # pipeline.classes_ は存在しないため、末尾推定器から取得
+                classes_enc = pipeline[-1].classes_
+                classes = encoder.inverse_transform(classes_enc)
+                y_pred = encoder.inverse_transform(y_pred_enc)
+            else:
+                classes = pipeline[-1].classes_
+                y_pred = y_pred_enc
+
+            return y_pred, y_proba, np.array(classes)
+
+        elif h_model == "mlp":
+            mlp_model = MLPClassifier(
+                hidden_layer_sizes=(256,),
+                activation='relu',
+                solver='adam',
+                max_iter=1000,
+                early_stopping=True,
+                validation_fraction=0.1,
+                n_iter_no_change=10,
+                random_state=self.config.seed
+            )
+            steps_local = steps + [mlp_model]
+            pipeline = make_pipeline(*steps_local)
+            pipeline.fit(X_train, y_train_enc if use_encoder else y_train)
+            y_pred_enc = pipeline.predict(X_test)
+            y_proba = pipeline.predict_proba(X_test)
+            if use_encoder:
+                classes_enc = pipeline[-1].classes_
+                classes = encoder.inverse_transform(classes_enc)
+                y_pred = encoder.inverse_transform(y_pred_enc)
+            else:
+                classes = pipeline[-1].classes_
+                y_pred = y_pred_enc
+            return y_pred, y_proba, np.array(classes)
+
+        elif h_model == "softmax":
+            from sklearn.linear_model import LogisticRegression
+            clf = LogisticRegression(
+                multi_class='multinomial',
+                solver='lbfgs',
+                max_iter=1000,
+                random_state=self.config.seed
+            )
+            steps_local = steps + [clf]
+            pipeline = make_pipeline(*steps_local)
+            pipeline.fit(X_train, y_train_enc if use_encoder else y_train)
+            y_pred_enc = pipeline.predict(X_test)
+            y_proba = pipeline.predict_proba(X_test)
+            if use_encoder:
+                classes_enc = pipeline[-1].classes_
+                classes = encoder.inverse_transform(classes_enc)
+                y_pred = encoder.inverse_transform(y_pred_enc)
+            else:
+                classes = pipeline[-1].classes_
+                y_pred = y_pred_enc
+            return y_pred, y_proba, np.array(classes)
+
+        elif h_model == "random_forest":
+            # RF は本来エンコード無しでも動作するが、一貫性のため encoder を適用済みなら enc を使用
+            rf = RandomForestClassifier(random_state=self.config.seed)
+            pipeline = rf  # 標準化は RF には不要
+            pipeline.fit(X_train, y_train_enc if use_encoder else y_train)
+            y_pred_enc = pipeline.predict(X_test)
+            y_proba = pipeline.predict_proba(X_test)
+            if use_encoder:
+                classes_enc = pipeline.classes_
+                classes = encoder.inverse_transform(classes_enc)
+                y_pred = encoder.inverse_transform(y_pred_enc)
+            else:
+                classes = pipeline.classes_
+                y_pred = y_pred_enc
+            return y_pred, y_proba, np.array(classes)
+
+        else:
+            # フォールバック: SVM RBF と同様に扱う
+            c_param = getattr(self.config, 'h_C', 1.0) or 1.0
+            svc_params = {
+                "kernel": "rbf",
+                "C": c_param,
+                "probability": True,
+                "random_state": self.config.seed,
+                "gamma": "scale",
+            }
+            steps.append(SVC(**svc_params))
+            pipeline = make_pipeline(*steps)
+            pipeline.fit(X_train, y_train_enc if use_encoder else y_train)
+            y_pred_enc = pipeline.predict(X_test)
+            y_proba = pipeline.predict_proba(X_test)
+            if use_encoder:
+                classes_enc = pipeline[-1].classes_
+                classes = encoder.inverse_transform(classes_enc)
+                y_pred = encoder.inverse_transform(y_pred_enc)
+            else:
+                classes = pipeline[-1].classes_
+                y_pred = y_pred_enc
+            return y_pred, y_proba, np.array(classes)
+
     def _evaluate(self, y_true: np.ndarray, y_pred: np.ndarray, y_score: np.ndarray, n_classes: int) -> float:
         """
         config.metricsに基づいて評価指標を計算する。

@@ -210,7 +210,40 @@ class DataCollaborationAnalysis:
         else:
             print(f"Unknown G_type: {self.config.G_type}")
         
-        self.integrate_metrics()
+        if self.config.evaluate_integrate_metrics:
+            self.integrate_metrics()
+        # 追加: 線形近似R^2ベースの非線形度（LNI）を計算して config に保存
+        try:
+            self.evaluate_nonlinearity_indices()
+        except Exception as e:
+            # 要望: エラー内容を print でも表示
+            print(f"[ERROR] evaluate_nonlinearity_indices failed: {e}")
+            try:
+                import traceback
+                traceback.print_exc()
+            except Exception:
+                pass
+            self.logger.warning(f"evaluate_nonlinearity_indices failed: {e}")
+
+        # 追加: 生成済みの中間成果物を全保存（ファイル名末尾に config.df_name を付与）
+        try:
+            all_items = [
+                #"train_df", "test_df",
+                #"anchor", "anchor_test",
+                #"anchors_inter", "anchors_test_inter",
+                #"anchors_integ", "anchors_test_integ",
+                #"Xs_train_inter", "Xs_test_inter",
+                #"X_train_integ", "X_test_integ",
+            ]
+            self.save_artifacts(items=all_items)
+        except Exception as e:
+            try:
+                import traceback
+                print(f"[WARN] save_artifacts in run failed: {e}")
+                traceback.print_exc()
+            except Exception:
+                pass
+            self.logger.warning(f"save_artifacts in run failed: {e}")
 
     @staticmethod
     # この関数外に出したい
@@ -498,8 +531,7 @@ class DataCollaborationAnalysis:
         print()
         # シードを初期化（各機関で進める）
         self.config.f_seed = 0
-        self.config.f_seed_2 = 0
-
+        
         # True_F_type の解釈:
         # - 文字列: その方式を使用
         # - リスト/タプル: 機関ごとにローテーションして使用
@@ -517,6 +549,8 @@ class DataCollaborationAnalysis:
                 ftype_sequence = ["ae", "svd"]
             elif tf == "ae_dm_svd_mixed":
                 ftype_sequence = ["ae", "dm", "svd"]
+            elif tf == "ae_dm_kpca_svd_mixed":
+                ftype_sequence = ["ae", "dm", "kernel_pca_gamma_fixed", "svd"]
             else:
                 ftype_sequence = [tf]
         else:
@@ -591,6 +625,198 @@ class DataCollaborationAnalysis:
         print("中間表現の次元数: ", self.Xs_train_inter[0].shape[1])
 
         self.logger.info(f"中間表現（訓練データ）の数と次元数: {self.Xs_train_inter[0].shape}")
+
+    def save_artifacts(
+        self,
+        save_dir: Optional[str] = None,
+        items: Optional[Sequence[str]] = None,
+        filename_suffix: Optional[str] = None,
+    ) -> dict:
+        """
+        中間成果物をCSVで保存するユーティリティ。
+
+        デフォルトでは以下を保存:
+          - anchor: self.anchor を dim_1.. で保存
+          - anchors_inter: 機関ごとのアンカー中間表現(list)を縦結合し、列 dim_1.. と 'institution' を付与して保存
+
+        任意に指定できる items 例:
+          [
+            'train_df', 'test_df', 'anchor', 'anchor_test',
+            'anchors_inter', 'anchors_test_inter',
+            'Xs_train_inter', 'Xs_test_inter',
+              'X_train_integ', 'X_test_integ',
+              ]
+        
+            返り値は {item_name: 保存パス(str)}。
+            filename_suffix を指定すると、ファイル名の末尾に付与されます（例: anchor_<suffix>.csv）。
+            未指定時は config.df_name があればそれを使用します。
+            保存先は save_dir 未指定時、output_path/"dataframe" 配下に作成します。
+            """
+        out: dict = {}
+        default_dir = Path(getattr(self.config, "output_path", ".")) / "dataframe"
+        base = Path(save_dir) if save_dir is not None else default_dir
+        base.mkdir(parents=True, exist_ok=True)
+
+        # サフィックス決定
+        if filename_suffix is None:
+            df_name = getattr(self.config, "df_name", None)
+            filename_suffix = str(df_name) if df_name is not None else ""
+        # 簡易サニタイズと整形
+        if filename_suffix:
+            safe = str(filename_suffix).strip()
+            safe = safe.replace(" ", "_")
+            safe = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in safe)
+            suffix = f"_{safe}" if safe else ""
+        else:
+            suffix = ""
+
+        def _arr_to_df(arr: np.ndarray, *, add_cols: dict | None = None, col_prefix: str = "dim") -> pd.DataFrame:
+            if arr is None or (isinstance(arr, np.ndarray) and arr.size == 0):
+                return pd.DataFrame()
+            d = arr.shape[1] if arr.ndim == 2 else 1
+            cols = [f"{col_prefix}_{i+1}" for i in range(d)]
+            df = pd.DataFrame(arr if arr.ndim == 2 else arr.reshape(-1, 1), columns=cols)
+            if add_cols:
+                for k, v in add_cols.items():
+                    df[k] = v
+            return df
+
+        def _lists_to_df(lst: list[np.ndarray], *, add_cols_each: list[dict] | None = None, col_prefix: str = "dim") -> pd.DataFrame:
+            if not lst:
+                return pd.DataFrame()
+            # 列数の最小に合わせて整形
+            dmin = min((x.shape[1] for x in lst if x is not None and x.size > 0), default=0)
+            if dmin <= 0:
+                return pd.DataFrame()
+            frames = []
+            for i, x in enumerate(lst):
+                if x is None or x.size == 0:
+                    continue
+                df_i = pd.DataFrame(x[:, :dmin], columns=[f"{col_prefix}_{j+1}" for j in range(dmin)])
+                # add_cols_each[i] または institution を付与
+                if add_cols_each and i < len(add_cols_each) and add_cols_each[i] is not None:
+                    for k, v in add_cols_each[i].items():
+                        df_i[k] = v
+                else:
+                    df_i["institution"] = i
+                frames.append(df_i)
+            if not frames:
+                return pd.DataFrame()
+            return pd.concat(frames, ignore_index=True)
+
+        # デフォルト項目
+        items = list(items) if items is not None else ["anchor", "anchors_inter"]
+
+        try:
+            for name in items:
+                if name == "train_df":
+                    if isinstance(self.train_df, pd.DataFrame) and not self.train_df.empty:
+                        p = base / f"train_df{suffix}.csv"
+                        self.train_df.to_csv(p, index=False)
+                        out[name] = str(p)
+                elif name == "test_df":
+                    if isinstance(self.test_df, pd.DataFrame) and not self.test_df.empty:
+                        p = base / f"test_df{suffix}.csv"
+                        self.test_df.to_csv(p, index=False)
+                        out[name] = str(p)
+                elif name == "anchor":
+                    if isinstance(self.anchor, np.ndarray) and self.anchor.size > 0:
+                        df = _arr_to_df(self.anchor, col_prefix="dim")
+                        p = base / f"anchor{suffix}.csv"
+                        df.to_csv(p, index=False)
+                        out[name] = str(p)
+                elif name == "anchor_test":
+                    if isinstance(self.anchor_test, np.ndarray) and self.anchor_test.size > 0:
+                        df = _arr_to_df(self.anchor_test, col_prefix="dim")
+                        p = base / f"anchor_test{suffix}.csv"
+                        df.to_csv(p, index=False)
+                        out[name] = str(p)
+                elif name == "anchors_inter":
+                    if isinstance(self.anchors_inter, list) and len(self.anchors_inter) > 0:
+                        df = _lists_to_df(self.anchors_inter, col_prefix="dim")
+                        if not df.empty:
+                            p = base / f"anchors_inter{suffix}.csv"
+                            df.to_csv(p, index=False)
+                            out[name] = str(p)
+                elif name == "anchors_integ":
+                    if isinstance(self.anchors_integ, list) and len(self.anchors_integ) > 0:
+                        df = _lists_to_df(self.anchors_integ, col_prefix="dim")
+                        if not df.empty:
+                            p = base / f"anchors_integ{suffix}.csv"
+                            df.to_csv(p, index=False)
+                            out[name] = str(p)
+                elif name == "anchors_test_inter":
+                    if isinstance(self.anchors_test_inter, list) and len(self.anchors_test_inter) > 0:
+                        df = _lists_to_df(self.anchors_test_inter, col_prefix="dim")
+                        if not df.empty:
+                            p = base / f"anchors_test_inter{suffix}.csv"
+                            df.to_csv(p, index=False)
+                            out[name] = str(p)
+                elif name == "anchors_test_integ":
+                    if isinstance(self.anchors_test_integ, list) and len(self.anchors_test_integ) > 0:
+                        df = _lists_to_df(self.anchors_test_integ, col_prefix="dim")
+                        if not df.empty:
+                            p = base / f"anchors_test_integ{suffix}.csv"
+                            df.to_csv(p, index=False)
+                            out[name] = str(p)
+                elif name == "Xs_train_inter":
+                    if isinstance(self.Xs_train_inter, list) and len(self.Xs_train_inter) > 0:
+                        # y を機関ごとに付与可能なら付与
+                        add_cols_each = []
+                        if isinstance(self.ys_train, list) and len(self.ys_train) == len(self.Xs_train_inter):
+                            for i, y in enumerate(self.ys_train):
+                                add_cols_each.append({"institution": i, "data_type": "train"})
+                        else:
+                            add_cols_each = None
+                        df = _lists_to_df(self.Xs_train_inter, add_cols_each=add_cols_each, col_prefix="dim")
+                        if add_cols_each and len(self.ys_train) == len(self.Xs_train_inter):
+                            # y も別DFで保存 or 結合は列数不一致のためここでは省略（必要なら後続で拡張）
+                            pass
+                        if not df.empty:
+                            p = base / f"Xs_train_inter{suffix}.csv"
+                            df.to_csv(p, index=False)
+                            out[name] = str(p)
+                elif name == "Xs_test_inter":
+                    if isinstance(self.Xs_test_inter, list) and len(self.Xs_test_inter) > 0:
+                        add_cols_each = []
+                        if isinstance(self.ys_test, list) and len(self.ys_test) == len(self.Xs_test_inter):
+                            for i, y in enumerate(self.ys_test):
+                                add_cols_each.append({"institution": i, "data_type": "test"})
+                        else:
+                            add_cols_each = None
+                        df = _lists_to_df(self.Xs_test_inter, add_cols_each=add_cols_each, col_prefix="dim")
+                        if not df.empty:
+                            p = base / f"Xs_test_inter{suffix}.csv"
+                            df.to_csv(p, index=False)
+                            out[name] = str(p)
+                elif name == "X_train_integ":
+                    if isinstance(self.X_train_integ, np.ndarray) and self.X_train_integ.size > 0:
+                        df = _arr_to_df(self.X_train_integ, col_prefix="dim")
+                        if isinstance(self.y_train_integ, np.ndarray) and self.y_train_integ.size == df.shape[0]:
+                            df["y"] = self.y_train_integ
+                        p = base / f"X_train_integ{suffix}.csv"
+                        df.to_csv(p, index=False)
+                        out[name] = str(p)
+                elif name == "X_test_integ":
+                    if isinstance(self.X_test_integ, np.ndarray) and self.X_test_integ.size > 0:
+                        df = _arr_to_df(self.X_test_integ, col_prefix="dim")
+                        if isinstance(self.y_test_integ, np.ndarray) and self.y_test_integ.size == df.shape[0]:
+                            df["y"] = self.y_test_integ
+                        p = base / f"X_test_integ{suffix}.csv"
+                        df.to_csv(p, index=False)
+                        out[name] = str(p)
+                else:
+                    # 未知項目はスキップ
+                    continue
+        except Exception as ex:
+            print(f"[WARN] save_artifacts failed: {ex}")
+            try:
+                import traceback
+                traceback.print_exc()
+            except Exception:
+                pass
+            self.logger.warning(f"save_artifacts failed: {ex}")
+        return out
     
     # 統合関数の共通適用ヘルパ
     def _apply_integrator_per_institution(self, integrator_builder):
@@ -1034,3 +1260,137 @@ class DataCollaborationAnalysis:
             self.logger.info(f"[integrate_metrics/test] {s}")
 
         return {"train": metrics_train, "test": metrics_test}
+
+    # ------------------------------------------------------------
+    # 線形近似R^2による非線形度評価（LNI）
+    #   - anchor -> anchors_inter         : inter
+    #   - anchors_inter -> anchors_integ : integ
+    #   - anchor_test -> anchors_test_inter       : inter_test
+    #   - anchors_test_inter -> anchors_test_integ: integ_test
+    # 4つを各機関で計算し平均、config へ小数点4位で格納
+    # ------------------------------------------------------------
+    def evaluate_nonlinearity_indices(self) -> dict:
+        import traceback
+
+        import numpy as np
+        def _lni_from_pair(X: np.ndarray, Z: np.ndarray) -> float:
+            """X∈R^{n×d} から Z∈R^{n×k} への線形近似 Z_hat = X A + b を最小二乗で求め、
+            LNI = ||Z - Z_hat||_F^2 / ||Z - Z̄||_F^2 を返す。TSS=0 のときは 0。
+            行数が異なるときは先頭 min(n) 行に揃える。
+            """
+            if X is None or Z is None:
+                return np.nan
+            if X.size == 0 or Z.size == 0:
+                return np.nan
+            n = min(X.shape[0], Z.shape[0])
+            if n <= 1:
+                return np.nan
+            Xn = np.asarray(X[:n, :], dtype=float)
+            Zn = np.asarray(Z[:n, :], dtype=float)
+
+            # 線形回帰（切片あり）: [X, 1] W ≈ Z
+            ones = np.ones((n, 1), dtype=float)
+            X_aug = np.hstack([Xn, ones])
+            # 最小二乗解（複数目的をまとめて解く）
+            try:
+                W, *_ = np.linalg.lstsq(X_aug, Zn, rcond=None)
+                Z_hat = X_aug @ W
+            except Exception as ex:
+                print(f"[LNI] lstsq failed: {ex} | X_aug={X_aug.shape}, Z={Zn.shape}")
+                traceback.print_exc()
+                return np.nan
+
+            # RSS / TSS
+            diff = Zn - Z_hat
+            rss = float(np.linalg.norm(diff, ord='fro') ** 2)
+            Zbar = Zn.mean(axis=0, keepdims=True)
+            tss = float(np.linalg.norm(Zn - Zbar, ord='fro') ** 2)
+            if tss <= 1e-12:
+                return 0.0
+            lni = rss / tss
+            # 数値誤差対策で 0..1 にクリップ
+            if not np.isfinite(lni):
+                return np.nan
+            return float(np.clip(lni, 0.0, 1.0))
+
+        def _lni_list_over_institutions(pairs: list[tuple[np.ndarray, np.ndarray]]):
+            vals = []
+            for X, Z in pairs:
+                try:
+                    v = _lni_from_pair(X, Z)
+                except Exception as ex:
+                    print(f"[LNI] pair evaluation failed: {ex}")
+                    try:
+                        traceback.print_exc()
+                    except Exception:
+                        pass
+                    v = np.nan
+                vals.append(v)
+            return vals
+
+        def _mean_finite(vals: list[float]) -> float:
+            arr = np.array(vals, dtype=float)
+            arr = arr[np.isfinite(arr)]
+            if arr.size == 0:
+                return np.nan
+            return float(arr.mean())
+
+        # inter: anchor -> anchors_inter[k]
+        pairs_inter = [(self.anchor, Ak) for Ak in (self.anchors_inter or [])]
+        # integ: anchors_inter[k] -> anchors_integ[k]
+        pairs_integ = list(zip(self.anchors_inter or [], self.anchors_integ or []))
+        # inter_test: anchor_test -> anchors_test_inter[k]
+        pairs_inter_test = [(self.anchor_test, Ak) for Ak in (self.anchors_test_inter or [])]
+        # integ_test: anchors_test_inter[k] -> anchors_test_integ[k]
+        pairs_integ_test = list(zip(self.anchors_test_inter or [], self.anchors_test_integ or []))
+
+        list_inter = _lni_list_over_institutions(pairs_inter)
+        list_integ = _lni_list_over_institutions(pairs_integ)
+        list_inter_test = _lni_list_over_institutions(pairs_inter_test)
+        list_integ_test = _lni_list_over_institutions(pairs_integ_test)
+
+        # 機関ごとの LNI を print（フォーマット: 4桁）
+        def _fmt_list(vs):
+            def _fmt(x):
+                return "nan" if (x is None or not np.isfinite(x)) else f"{float(x):.4f}"
+            return '[' + ', '.join(_fmt(x) for x in vs) + ']'
+        try:
+            print("[LNI] inter per-institution:", _fmt_list(list_inter))
+            print("[LNI] integ per-institution:", _fmt_list(list_integ))
+        except Exception:
+            pass
+
+        # 平均（有限値のみ）
+        lni_inter = _mean_finite(list_inter)
+        lni_integ = _mean_finite(list_integ)
+        lni_inter_test = _mean_finite(list_inter_test)
+        lni_integ_test = _mean_finite(list_integ_test)
+        # config へ（小数点第4位に丸め）
+        try:
+            if np.isfinite(lni_inter):
+                self.config.lni_inter = round(lni_inter, 4)
+            #if np.isfinite(lni_inter_test):
+            #    self.config.lni_inter_test = round(lni_inter_test, 4)
+            if np.isfinite(lni_integ):
+                self.config.lni_integ = round(lni_integ, 4)
+            #if np.isfinite(lni_integ_test):
+            #    self.config.lni_integ_test = round(lni_integ_test, 4)
+        except Exception:
+            pass
+
+        result = {
+            "inter": lni_inter,
+            "integ": lni_integ,
+            "inter_test": lni_inter_test,
+            "integ_test": lni_integ_test,
+        }
+        # ログ出力
+        try:
+            self.logger.info({k: (None if (v is None or not np.isfinite(v)) else round(v, 6)) for k, v in result.items()})
+        except Exception as ex:
+            print(f"[WARN] logging LNI result failed: {ex}")
+            try:
+                traceback.print_exc()
+            except Exception:
+                pass
+        return result

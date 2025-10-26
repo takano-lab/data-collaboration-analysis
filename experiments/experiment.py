@@ -23,6 +23,7 @@ from src.institutional_analysis import (
     individual_analysis_with_dimension_reduction,
 )
 from src.load_data import load_data
+from src.model import ModelRunner
 from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 from src.visualization import DataCollabVisualizer
 
@@ -289,6 +290,87 @@ def run_once(config, logger):
         print(f"平均: {mean_val:.4f}, 最小: {min_val:.4f}, 最大: {max_val:.4f}")
         logger.info(f"機関ごとの {config.metrics}: {inst_losses_arr.tolist()}")
         logger.info(f"平均: {mean_val:.6f}, 最小: {min_val:.6f}, 最大: {max_val:.6f}")
+
+        # --- 機関ごとの「学習データの最頻ラベルに基づく評価」リストを算出して表示 ---
+        try:
+            per_inst_major_label_scores = []
+            runner = ModelRunner(config)
+            for i in range(n_inst):
+                # その機関の学習データで最頻ラベルを特定
+                y_train_i = data_collaboration.ys_train[i]
+                if len(y_train_i) == 0:
+                    per_inst_major_label_scores.append(np.nan)
+                    continue
+                # 最頻値
+                values, counts = np.unique(y_train_i, return_counts=True)
+                major_label = values[np.argmax(counts)]
+
+                # テストデータ（division/even）を取得
+                if division_mode:
+                    X_te_i = data_collaboration.X_test_integ
+                    y_te_i = data_collaboration.y_test_integ
+                else:
+                    te_start, te_end = int(test_cum[i]), int(test_cum[i + 1])
+                    te_take = min(config.num_institution_user, te_end - te_start)
+                    if te_take <= 0:
+                        per_inst_major_label_scores.append(np.nan)
+                        continue
+                    X_te_i = data_collaboration.X_test_integ[te_start : te_start + te_take, :]
+                    y_te_i = data_collaboration.y_test_integ[te_start : te_start + te_take]
+
+                # 学習済みモデルで予測（DCA と同じ学習データを用いる）
+                y_pred_i, y_proba_i, classes_i = runner.predict_with_proba(
+                    data_collaboration.X_train_integ,
+                    data_collaboration.y_train_integ,
+                    X_te_i,
+                )
+
+                metric_name = str(getattr(config, 'metrics', 'auc')).lower()
+                if metric_name == 'auc':
+                    # 1-vs-rest AUC をその最頻ラベルに対して計算
+                    # 該当クラスの列を抽出
+                    try:
+                        # classes_i は元ラベルの配列
+                        if major_label not in classes_i:
+                            per_inst_major_label_scores.append(np.nan)
+                            continue
+                        cls_idx = int(np.where(classes_i == major_label)[0][0])
+                        y_true_bin = (y_te_i == major_label).astype(int)
+                        # 正例と負例の両方がないと AUC は定義されない
+                        if len(np.unique(y_true_bin)) < 2:
+                            per_inst_major_label_scores.append(np.nan)
+                            continue
+                        from sklearn.metrics import roc_auc_score
+                        score_i = float(roc_auc_score(y_true_bin, y_proba_i[:, cls_idx]))
+                    except Exception as e:
+                        score_i = np.nan
+                elif metric_name == 'accuracy':
+                    # 「最頻ラベルに絞った」= そのラベルのテストサンプルに対する正解率（=再現率）
+                    mask = (y_te_i == major_label)
+                    if mask.sum() == 0:
+                        score_i = np.nan
+                    else:
+                        score_i = float(np.mean(y_pred_i[mask] == y_te_i[mask]))
+                else:
+                    # 未対応の評価指標は簡易に再現率で代替
+                    mask = (y_te_i == major_label)
+                    if mask.sum() == 0:
+                        score_i = np.nan
+                    else:
+                        score_i = float(np.mean(y_pred_i[mask] == y_te_i[mask]))
+
+                per_inst_major_label_scores.append(score_i)
+
+            print(f"各機関の最頻ラベルに基づくスコア: {np.round(per_inst_major_label_scores, 4).tolist()}")
+            logger.info(f"各機関の最頻ラベルに基づくスコア: {per_inst_major_label_scores}")
+        except Exception as e:
+            # ここはログ/表示のみ（失敗しても主計算には影響させない）
+            try:
+                import traceback
+                print(f"[WARN] 最頻ラベルスコア算出に失敗: {e}")
+                traceback.print_exc()
+            except Exception:
+                pass
 
         return mean_val
     

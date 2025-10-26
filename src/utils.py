@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -420,10 +421,17 @@ def _run_umap(
     Xas = scaler.transform(anchor) if anchor is not None else None
     Xats = scaler.transform(anchor_test) if anchor_test is not None else None
 
-    n_neighbors = _cfg_int(config, "max_umap_nb", 15)
-    min_dist = _cfg_float(config, "umap_min_dist", 0.1)
-    metric = _cfg_str(config, "umap_metric", "euclidean")  # ← 修正
-    seed = _cfg_int(config, "seed", 0)
+    # metric は seed%3 で切替、n_neighbors と min_dist は seed に応じてランダム化。
+    # f_seed を優先して使用（なければ seed）
+    seed = int(getattr(config, "f_seed", _cfg_int(config, "seed", 0)))
+    metric_choices = ("correlation", "cosine", "euclidean")
+    metric = metric_choices[seed % 3]
+    rng = np.random.default_rng(seed + 1337)
+    # n_neighbors: 5〜11 の一様整数から選び、データ数に合わせて安全にクリップ
+    nn_sample = int(rng.integers(low=3, high=11))  # high は排他的
+    n_neighbors = max(2, min(nn_sample, max(2, Xts.shape[0] - 1)))
+    # min_dist: 0.05〜0.8 の一様連続
+    min_dist = float(rng.uniform(0.0, 0.8))
 
     # 追加オプション（必要に応じて）
     extra_params = {}
@@ -611,6 +619,42 @@ def _run_autoencoder(
     except Exception as e:
         raise RuntimeError("AutoEncoderを使うには 'torch' が必要です。uv sync -E ae で導入してください。") from e
 
+    # 乱数・決定論モード設定（AE全体の再現性を担保）
+    ae_seed = 0
+    try:
+        base_seed = int(_cfg_int(config, "seed", 0))
+        fseed = int(getattr(config, "f_seed", 0))
+        ae_seed = int(base_seed + fseed)
+    except Exception:
+        ae_seed = 0
+    try:
+        import torch
+        torch.manual_seed(ae_seed)
+        try:
+            torch.cuda.manual_seed_all(ae_seed)
+        except Exception:
+            pass
+        try:
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
+        except Exception:
+            pass
+        try:
+            # 一部環境で未提供のため warn_only=True で呼ぶ
+            torch.use_deterministic_algorithms(True, warn_only=True)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        np.random.seed(ae_seed)
+    except Exception:
+        pass
+    try:
+        random.seed(ae_seed)
+    except Exception:
+        pass
+
     # スケーリング
     scaler = StandardScaler()
     Xts = scaler.fit_transform(X_train).astype(np.float32)
@@ -652,9 +696,11 @@ def _run_autoencoder(
         n_total = len(ds)
         n_val = max(1, int(0.1 * n_total))
         n_tr = max(1, n_total - n_val)
-        tr_set, va_set = random_split(ds, [n_tr, n_val], generator=torch.Generator().manual_seed(42))
-        dl_tr = DataLoader(tr_set, batch_size=batch, shuffle=True)
-        dl_va = DataLoader(va_set, batch_size=batch, shuffle=False)
+        # データ分割もシードを共有
+        tr_set, va_set = random_split(ds, [n_tr, n_val], generator=torch.Generator().manual_seed(ae_seed))
+        # DataLoader のシャッフルも決定論的（グローバルseed設定済み）
+        dl_tr = DataLoader(tr_set, batch_size=batch, shuffle=True, num_workers=0)
+        dl_va = DataLoader(va_set, batch_size=batch, shuffle=False, num_workers=0)
 
         best_state, best_val, patience, bad = None, float("inf"), 3, 0
         for _ in range(epochs):
