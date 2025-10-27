@@ -10,6 +10,7 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 from sklearn.datasets import fetch_olivetti_faces, fetch_openml, load_digits, make_moons, make_swiss_roll
+from sklearn.decomposition import PCA
 from sklearn.impute import KNNImputer
 from sklearn.model_selection import train_test_split
 from tdc.single_pred import ADME, HTS, Tox
@@ -363,6 +364,29 @@ def _load_cifar10_df() -> pd.DataFrame:
     pix_cols = [f"pix_{i:05d}" for i in range(X.shape[1])]
     df = pd.DataFrame(X, columns=pix_cols)
     df.insert(0, "target", y)
+    return df
+
+def _load_cifar10_800_df() -> pd.DataFrame:
+    """
+    CIFAR-10 を読み込み、ピクセル(3072次元)を標準化後 PCA で 800 次元に圧縮して返す。
+    - 返却: 'target' 列 + pc_1..pc_800 の数値列
+    - PCA は randomized SVD を用い、random_state=0 で決定論的に。
+    """
+    from sklearn.preprocessing import StandardScaler
+
+    base = _load_cifar10_df()
+    y = base["target"].copy()
+    X = base.drop(columns=["target"]).to_numpy(dtype=float)
+
+    scaler = StandardScaler()
+    Xs = scaler.fit_transform(X)
+
+    pca = PCA(n_components=800, svd_solver="randomized", random_state=0)
+    Z = pca.fit_transform(Xs)
+
+    cols = [f"pc_{i+1}" for i in range(Z.shape[1])]
+    df = pd.DataFrame(Z, columns=cols)
+    df.insert(0, "target", y.values)
     return df
 
 # =============================
@@ -835,6 +859,9 @@ LOADERS = {
     "housing": _load_housing,
     "coil20": _load_coil20_df,
     "cifar10": _load_cifar10_df,
+    # cifar10 -> 800 次元 PCA 版
+    "cifar10_800": _load_cifar10_800_df,
+    "cifer10_800": _load_cifar10_800_df,  # タイポ対策のエイリアス
     # === MedMNIST ===
     #"medmnist_1": _load_medmnist_1,  # pathmnist (9)
     #"medmnist_2": _load_medmnist_2,  # chestmnist (14, multi-label)

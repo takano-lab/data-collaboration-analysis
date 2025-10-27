@@ -1,22 +1,21 @@
 from __future__ import annotations
-from itertools import product
-from itertools import chain
+
 import argparse
-from logging import INFO, FileHandler, getLogger
 import statistics
-import pandas as pd
-from config.config import Config
-from config.config_logger import record_config_to_cfg, record_value_to_cfg
-from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
+from collections import OrderedDict
 
 # runners/runner_grid.py
-from itertools import product
-from collections import OrderedDict
-import statistics
-import pandas as pd
+from itertools import chain, product
+from logging import INFO, FileHandler, getLogger
 from typing import Any, Dict, List
-from experiments.experiment import run_once  # ←元main改名
+
+import pandas as pd
+
 from config.config import Config
+from config.config_logger import record_config_to_cfg, record_value_to_cfg
+from experiments.experiment import run_once  # ←元main改名
+from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
+
 # ====== ユーザーが編集するのはここだけ ======
 
 # 1) 全探索したいパラメータ（config.◯◯に代入）
@@ -35,39 +34,39 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"har",
     #"diabetes130",
     #"bank_marketing",
-    "mnist",
+    #"mnist",
     #"mnist_1248",
     #"fashion_mnist",
+    #"mnist",
     #"cifar10",
-    #'3D_gaussian_clusters',
+    #"cifar10_800",
+    '3D_gaussian_clusters',
     #"concentric_three_circles",
     #"iris",
     #"ecoli",
     #"vowel"
     #"coil20"
-], # + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
+]+ ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
     "F_type": ["kernel_pca_gamma_fixed"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["nonlinear"], #  "Imakura", "GEP", "ODC"'centralize', "individual", "Imakura", "GEP",  "ODC" # 'centralize', "individual", #"individual", "Imakura",
-    "gamma_ratio": [1e-3, 1e-4, 1e-5],#[0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
-    "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
-    "gamma_ratio_krr": [1],
+    "G_type": ["nonlinear", "Imakura", "GEP", "ODC"], #  "Imakura", "GEP", "ODC"'centralize', "individual", "Imakura", "GEP",  "ODC" # 'centralize', "individual", #"individual", "Imakura",
+    "gamma_ratio": [2],#[0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
+    "gamma_type": ["X_tuning"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
+    "gamma_ratio_krr": [0.1],
     "num_anchor_data": [1000],
     "nl_lambda": [0.1],        # LOCKで止められる, 0.00001
     "lw_alpha": [0],
-    "lambda_pred": [0],
-    "lambda_offdiag": [0],
     "metrics": ["auc"],
-    #"visualize": [True],
-    #"feature_num": [2],
-    "dim_intermediate": [10],#[20, 10, 5, 2],
-    "dim_integrate": [10],#[20, 10, 5, 2],
-    "num_institution_user": [200],
-    "num_institution": [3],
+    "visualize": [True],
+    "feature_num": [2],
+    "dim_intermediate": [2],#[20, 10, 5, 2],
+    "dim_integrate": [2],#[20, 10, 5, 2],
+    "num_institution_user": [100],
+    "num_institution": [2],
     "K_normalization":[False],
-    "anchor_method":["smote"], #gaussian
-    "data_distribution":["division"],# "division" "even"
+    "anchor_method":["gaussian"], #gaussian
+    "data_distribution":["even"],# "division" "even"
     "inter_integ_dim_ratio":[1],
     "inter_normalization":[False],
     "evaluate_integrate_metrics":[True]
@@ -78,7 +77,7 @@ LOOP_NUM = 1
 
 # 3) DataFrameに保持したい「パラメータ列」（順序もこの通り）
 PARAM_COLUMNS: List[str] = [
-    "dataset", "h_model", "F_type", "G_type", "dim_intermediate", "dim_integrate", "num_institution_user", "anchor_method", "inter_integ_dim_ratio", "inter_normalization", "gamma_ratio_krr", "lni_inter","lni_inter_test", "lni_integ", "lni_integ_test"
+    "dataset", "h_model", "F_type", "G_type", "data_distribution", "dim_intermediate", "dim_integrate", "num_institution_user", "num_institution", "anchor_method", "inter_normalization", "gamma_ratio_krr", "nl_lambda", "lw_alpha"
 ]
 
 # 4) 条件ルール
@@ -90,7 +89,7 @@ DEFAULTS = {
     "gamma_ratio": 1,
     "gamma_ratio_krr": 1,
     #"num_institution_user": 50,
-    "visualize": False,
+    "visualize": True,
     "feature_num": None,
     "dim_intermediate": None,
     #"dim_integrate": 3, ######
@@ -100,6 +99,7 @@ DEFAULTS = {
     "K_normalization":True,
     "inter_integ_dim_ratio":1,
     "inter_normalization":False,
+    "lw_alpha":False,
 }
 
 # --- 追加: dataset ごとのデフォルト適用（定数のみ。動的は未設定）---
@@ -138,6 +138,7 @@ RULES: List[Dict[str, Any]] = [
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"gamma_ratio_krr": DEFAULTS["gamma_ratio_krr"]}},
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"inter_integ_dim_ratio":  DEFAULTS["inter_integ_dim_ratio"]}},
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"inter_normalization":  DEFAULTS["inter_normalization"]}},
+    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"lw_alpha":  DEFAULTS["lw_alpha"]}},
     #{"type": "SKIP", "when": {"F_type": ["kernel_pca"], "G_type": ["GEP_weighted"]}},
 ]
 # ============================================
@@ -339,8 +340,8 @@ def run_grid(
     rows = []
     all_columns = PARAM_COLUMNS + [
         "loop_num", "score_mean", "score_stdev",
-        "even_ind_mean", "odd_ind_mean", "ind_mean",
-        "mean_mean", "even_mean", "odd_mean", "integ_metrics_mean"
+        # 新しい集計カラム（seed ループの平均）
+        "lni_inter", "lni_integ", "integ_metrics_train", "integ_metrics_test",
     ]
     # 追加: 注入値の優先適用
     grid = grid or PARAM_GRID
@@ -366,6 +367,12 @@ def run_grid(
         vals = []
         print(f"[pattern] { {k: combo[k] for k in PARAM_COLUMNS if k in combo} }")
 
+        # ループ内で集計するメトリクスの一時リスト
+        lni_inter_vals = []
+        lni_integ_vals = []
+        integ_train_vals = []
+        integ_test_vals = []
+
         for i in range(loop):
             cfg.seed = i
             cfg.dataset = dataset
@@ -381,6 +388,20 @@ def run_grid(
                 vals.append(float(val))
                 record_config_to_cfg(cfg)
                 record_value_to_cfg(cfg, "評価値", val)
+
+                # ループごとのメトリクスを収集（存在すれば）
+                try:
+                    v = getattr(cfg, "lni_inter", None)
+                    if v is not None:
+                        lni_inter_vals.append(float(v))
+                except Exception:
+                    pass
+                try:
+                    v = getattr(cfg, "lni_integ", None)
+                    if v is not None:
+                        lni_integ_vals.append(float(v))
+                except Exception:
+                    pass
             except Exception as e:
                 msg = f"[skip] seed={i}, dataset={dataset}, G_type={combo.get('G_type')}, reason={e}"
                 print(msg)
@@ -403,14 +424,17 @@ def run_grid(
             "score_mean": mean_val,
             "score_stdev": stdev_val,
         })
+        # seed ループで収集したメトリクスの平均を記録（有限値のみ平均）
+        def _mean_finite(xs: list[float]) -> float:
+            import math
+            vals_ = [float(x) for x in xs if x is not None and math.isfinite(float(x))]
+            return (sum(vals_) / len(vals_)) if vals_ else 0.0
+
         row.update({
-            "even_ind_mean": getattr(cfg, "losses_even_ind", 0),
-            "odd_ind_mean": getattr(cfg, "losses_odd_ind", 0),
-            "ind_mean": getattr(cfg, "losses_ind", 0),
-            "mean_mean": getattr(cfg, "losses_mean", 0),
-            "even_mean": getattr(cfg, "losses_even", 0),
-            "odd_mean": getattr(cfg, "losses_odd", 0),
-            "integ_metrics_mean": getattr(cfg, "integ_metrics", 0),
+            "lni_inter": _mean_finite(lni_inter_vals),
+            "lni_integ": _mean_finite(lni_integ_vals),
+            "integ_metrics_train": _mean_finite(integ_train_vals),
+            "integ_metrics_test": _mean_finite(integ_test_vals),
         })
 
         out_path = cfg.output_path / f"result_grid_{dataset}.csv"
@@ -426,12 +450,12 @@ def run_grid(
 
 # run.py
 from config.config import Config
-from src.paths import CONFIG_DIR, OUTPUT_DIR, INPUT_DIR
-    
+from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
+
 if __name__ == "__main__":
     # 引数処理はここだけ（デフォルトは 0912）
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run-name", type=str, default="非線形性評価")
+    parser.add_argument("--run-name", type=str, default="非線形性評価2")
     parser.add_argument("--use_csv", action="store_true", help="CSV由来のコンボを使わず、PARAM_GRIDのみで総当りする")
     args = parser.parse_args()
 

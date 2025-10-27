@@ -217,6 +217,9 @@ def build_nonlinear_projectors(
     gamma_ratio_krr: float = 1.0,
     K_normalization: bool = False,
     nl_lambda: float = 1e-2,
+    lw_alpha: float = 0.0,
+    L_within: Optional[np.ndarray] = None,
+    L_between: Optional[np.ndarray] = None,
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
     """
     Kernel (nonlinear) based projector builders.
@@ -260,8 +263,14 @@ def build_nonlinear_projectors(
     trace_M = np.trace(M)
     if trace_M > 1e-9:
         M = M / trace_M
-
-    Q = (M + M.T) * 0.5
+    
+    if lw_alpha == 0:
+        Q = (M + M.T) * 0.5
+    else:
+        print("aaaaaaaaaa")
+        print(lw_alpha)
+        print(L_within - L_between)
+        Q = (M + M.T) * 0.5 + lw_alpha *(L_within - L_between)
     eigvals, eigvecs = np.linalg.eigh(Q)
     eigvals[eigvals < 0] = 0.0
     order = np.argsort(eigvals)

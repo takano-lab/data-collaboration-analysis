@@ -78,6 +78,8 @@ class DataCollaborationAnalysis:
         self.y_test_integ: np.ndarray = np.array([])
         # Z_integ: r x m_integ で統一したターゲット（あれば設定）
         self.Z_integ: Optional[np.ndarray] = None
+        self.L_within: Optional[np.ndarray] = None
+        self.L_between: Optional[np.ndarray] = None
 
     # ------------------------------
     # 共通ヘルパ: インテグレータ（射影関数）
@@ -204,8 +206,10 @@ class DataCollaborationAnalysis:
         elif self.config.G_type == "ODC": # この分岐を追加
             self.make_integrate_expression_odc()
         elif self.config.G_type  == "nonlinear":
-            #self.assign_anchor_labels(k=5)
-            #self.build_laplacians_from_anchor_labels()
+            lw_alpha=getattr(self.config, "lw_alpha", 0.0),
+            if lw_alpha:
+                self.assign_anchor_labels(k=5)
+                self.build_laplacians_from_anchor_labels()
             self.make_integrate_nonlinear_expression()
         else:
             print(f"Unknown G_type: {self.config.G_type}")
@@ -1006,7 +1010,7 @@ class DataCollaborationAnalysis:
     def make_integrate_nonlinear_expression(self) -> None:
         """
         非線形（カーネル）版：アンカー同士の射影行列で共通ターゲット Z_integ を導き，
-    各機関データを同じ次元 m_inter へ写像する。
+        各機関データを同じ次元 m_inter へ写像する。
         """
         m_inter  = self.config.dim_integrate
         # integration.py のビルダーで projector を構築
@@ -1018,6 +1022,9 @@ class DataCollaborationAnalysis:
             gamma_ratio_krr=getattr(self.config, "gamma_ratio_krr", 1.0),
             K_normalization=bool(getattr(self.config, "K_normalization", False)),
             nl_lambda=getattr(self.config, "nl_lambda", 1e-2),
+            lw_alpha=getattr(self.config, "lw_alpha", 0.0),
+            L_within=self.L_within,
+            L_between=self.L_between,
         )
 
         # 以前と同様に gamma を表示
