@@ -21,55 +21,55 @@ from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 # 1) 全探索したいパラメータ（config.◯◯に代入）
 PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "dataset": [
-    #"mice",
-    #"statlog",
-    #"qsar",
-    #"breast_cancer",
+    "mice",
+    "statlog",
+    "qsar",
+    "breast_cancer",
     #"adult",
-    #"digits",
-    #"glass", 
-    #"seeds", 
-    #"letter_recognition",
-    #"wine_quality",
+    "digits",
+    "glass", 
+    "seeds", 
+    "letter_recognition",
+    "wine_quality",
     #"har",
     #"diabetes130",
     #"bank_marketing",
-    #"mnist",
-    #"mnist_1248",
     #"fashion_mnist",
     #"mnist",
-    #"cifar10",
+    #"mnist_1248",
+    #"mnist",
+    "cifar10",
     #"cifar10_800",
-    '3D_gaussian_clusters',
+    #'3D_gaussian_clusters',
     #"concentric_three_circles",
-    #"iris",
+    "iris",
     #"ecoli",
-    #"vowel"
+    "vowel"
     #"coil20"
-]+ ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
+], #+ ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "F_type": ["kernel_pca_gamma_fixed"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["nonlinear", "Imakura", "GEP", "ODC"], #  "Imakura", "GEP", "ODC"'centralize', "individual", "Imakura", "GEP",  "ODC" # 'centralize', "individual", #"individual", "Imakura",
-    "gamma_ratio": [2],#[0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
+    "F_type": ["umap"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
+    "gamma_ratio": [1],#[0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
     "gamma_type": ["X_tuning"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
-    "gamma_ratio_krr": [0.1],
+    "gamma_ratio_krr": [1],
     "num_anchor_data": [1000],
     "nl_lambda": [0.1],        # LOCKで止められる, 0.00001
     "lw_alpha": [0],
     "metrics": ["auc"],
-    "visualize": [True],
-    "feature_num": [2],
-    "dim_intermediate": [2],#[20, 10, 5, 2],
-    "dim_integrate": [2],#[20, 10, 5, 2],
-    "num_institution_user": [100],
-    "num_institution": [2],
+    "visualize": [False],
+    #"feature_num": [2],
+    "dim_intermediate": [4],#[20, 10, 5, 2],
+    "dim_integrate": [4],#[20, 10, 5, 2],
+    #"num_institution_user": [100],
+    #"num_institution": [2],
     "K_normalization":[False],
-    "anchor_method":["gaussian"], #gaussian
-    "data_distribution":["even"],# "division" "even"
+    "anchor_method":["smote"], #gaussian
+    "data_distribution":["bias"],# "division" "even"
     "inter_integ_dim_ratio":[1],
     "inter_normalization":[False],
-    "evaluate_integrate_metrics":[True]
+    "evaluate_integrate_metrics":[True],
+    "G_type": ["nonlinear", "Imakura", "GEP", "ODC"], # "nonlinear", "Imakura", "GEP", "ODC"'centralize
     })
 
 # 2) ループ回数（seed を 0..loop_num-1 で回します）
@@ -98,7 +98,7 @@ DEFAULTS = {
     "orth_ver": False,
     "K_normalization":True,
     "inter_integ_dim_ratio":1,
-    "inter_normalization":False,
+    "inter_normalization":True,
     "lw_alpha":False,
 }
 
@@ -455,7 +455,7 @@ from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 if __name__ == "__main__":
     # 引数処理はここだけ（デフォルトは 0912）
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run-name", type=str, default="非線形性評価2")
+    parser.add_argument("--run-name", type=str, default="非線形性評価10/29")
     parser.add_argument("--use_csv", action="store_true", help="CSV由来のコンボを使わず、PARAM_GRIDのみで総当りする")
     args = parser.parse_args()
 

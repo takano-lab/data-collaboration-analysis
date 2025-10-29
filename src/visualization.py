@@ -151,6 +151,8 @@ class DataCollabVisualizer:
         col2_2d, (xlim2, ylim2) = get_2d_data_and_limits(col2_data)
         col3_2d, (xlim3, ylim3) = get_2d_data_and_limits(col3_data)
         col4_2d, (xlim4, ylim4) = get_2d_data_and_limits(col4_data)
+        test_idx_start = num_institutions if has_train_data else 0
+        col3_test_2d_all = col3_2d[test_idx_start:test_idx_start + num_institutions] if has_test_data else []
 
         # 3D 用の表示範囲（必要な時のみ使用）
         col3_train_limits3d = get_3d_limits(a.anchors_integ) if has_train_data else ((0, 1), (0, 1), (0, 1))
@@ -303,8 +305,41 @@ class DataCollabVisualizer:
                     axes[test_row, 2].set_title("3. Projection S_hat (Test)" if i == 0 else "")
                     axes[test_row, 2].set_xlim(xlim3); axes[test_row, 2].set_ylim(ylim3)
 
-                # 4列目は空欄にする
-                axes[test_row, 3].set_visible(False)
+                # 4. Projection Composition (Test) - 全機関の射影を重ね合わせる
+                valid_test_3d = [d for d in col3_test_3d if d is not None] if 'col3_test_3d' in locals() else []
+                if valid_test_3d:
+                    ax3d_comp = to_3d_axes(axes[test_row, 3])
+                    for j, d3_other in enumerate(col3_test_3d):
+                        if d3_other is None:
+                            continue
+                        alpha_val = 1.0 if j == i else 1
+                        ax3d_comp.scatter(
+                            d3_other[:, 0], d3_other[:, 1], d3_other[:, 2],
+                            c=anchor_labels_test, cmap='viridis', s=14, depthshade=True, alpha=alpha_val
+                        )
+                    ax3d_comp.set_title('4. Projection Composition (Test)' if i == 0 else '')
+                    if 'xlim3d_test' in locals():
+                        ax3d_comp.set_xlim(xlim3d_test); ax3d_comp.set_ylim(ylim3d_test); ax3d_comp.set_zlim(zlim3d_test)
+                else:
+                    axis4 = axes[test_row, 3]
+                    has_drawn = False
+                    for j, data_other in enumerate(col3_test_2d_all):
+                        if data_other is None or getattr(data_other, 'ndim', 0) != 2:
+                            continue
+                        alpha_val = 1.0 if j == i else 1
+                        legend_option = legend_status if (j == i and i == 0 and legend_status) else False
+                        sns.scatterplot(
+                            x=data_other[:, 0], y=data_other[:, 1],
+                            hue=anchor_labels_test, palette='viridis',
+                            ax=axis4, legend=legend_option, alpha=alpha_val
+                        )
+                        has_drawn = True
+                    if has_drawn:
+                        axis4.set_visible(True)
+                        axis4.set_title('4. Projection Composition (Test)' if i == 0 else '')
+                        axis4.set_xlim(xlim3); axis4.set_ylim(ylim3)
+                    else:
+                        axis4.set_visible(False)
 
         # レイアウト調整と保存
         plt.tight_layout(rect=[0, 0.03, 1, 0.98])

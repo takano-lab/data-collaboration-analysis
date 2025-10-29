@@ -428,7 +428,7 @@ def _run_umap(
     metric = metric_choices[seed % 3]
     rng = np.random.default_rng(seed + 1337)
     # n_neighbors: 5〜11 の一様整数から選び、データ数に合わせて安全にクリップ
-    nn_sample = int(rng.integers(low=3, high=11))  # high は排他的
+    nn_sample = int(rng.integers(low=2, high=8))  # high は排他的
     n_neighbors = max(2, min(nn_sample, max(2, Xts.shape[0] - 1)))
     # min_dist: 0.05〜0.8 の一様連続
     min_dist = float(rng.uniform(0.0, 0.8))

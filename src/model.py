@@ -50,11 +50,36 @@ class ModelRunner:
             "mlp": self._run_mlp,  # MLPを追加
             "softmax": self._run_softmax,
         }
+        self._last_train_labels: Optional[np.ndarray] = None
+
+    
+    @staticmethod
+    def _drop_nan_labels(X, y):
+        """Remove samples whose labels are missing (None/NaN)."""
+        y_arr = np.asarray(y)
+        if y_arr.dtype.kind in {"f", "c"}:
+            mask = ~np.isnan(y_arr)
+        else:
+            def _is_valid(val):
+                return not (val is None or (isinstance(val, float) and np.isnan(val)))
+
+            mask = np.array([_is_valid(val) for val in y_arr], dtype=bool)
+
+        X_arr = np.asarray(X)
+        if X_arr.shape[0] != mask.size:
+            raise ValueError("Feature and label sizes do not match during NaN removal.")
+        if mask.all():
+            return X_arr, y_arr
+        return X_arr[mask], y_arr[mask]
 
     def run(self, X_train: np.ndarray, y_train: np.ndarray, X_test: np.ndarray, y_test: np.ndarray) -> float:
         """
         configで指定されたモデルを実行し、評価値を返す。
         """
+        X_train, y_train = self._drop_nan_labels(X_train, y_train)
+        if len(y_train) == 0:
+            raise ValueError("No labeled samples available after dropping NaNs.")
+        self._last_train_labels = np.unique(y_train)
         model_func = self._model_map.get(self.config.h_model)
         if model_func is None:
             raise ValueError(f"Unknown model name in config: {self.config.h_model}")
@@ -71,12 +96,15 @@ class ModelRunner:
         学習済みモデルで予測ラベルと確率を返すヘルパー。
         戻り値: y_pred(元ラベル), y_proba(shape=(n_samples, n_classes)), classes(元ラベル順)
         """
-        h_model = getattr(self.config, 'h_model', 'svm_classifier')
+        X_train, y_train = self._drop_nan_labels(X_train, y_train)
+        if len(y_train) == 0:
+            raise ValueError("No labeled samples available after dropping NaNs.")
+        self._last_train_labels = np.unique(y_train)
         # ラベルのエンコード（各分類器実装に合わせて統一）
         use_encoder = False
         encoder = None
         y_train_enc = y_train
-
+        h_model = getattr(self.config, 'h_model', 'svm_classifier')
         # SVM/MLP/Softmax は内部でエンコードしているため合わせる
         if h_model in ["svm_classifier", "svm_linear_classifier", "mlp", "softmax", "random_forest"]:
             if not np.issubdtype(y_train.dtype, np.number):
@@ -120,13 +148,18 @@ class ModelRunner:
             return y_pred, y_proba, np.array(classes)
 
         elif h_model == "mlp":
+            n_samples = X_train.shape[0]
+            base_val_fraction = 0.1
+            use_early_stopping = True
+            if n_samples * base_val_fraction < 2:
+                use_early_stopping = False
             mlp_model = MLPClassifier(
                 hidden_layer_sizes=(256,),
                 activation='relu',
                 solver='adam',
                 max_iter=1000,
-                early_stopping=True,
-                validation_fraction=0.1,
+                early_stopping=use_early_stopping,
+                validation_fraction=base_val_fraction,
                 n_iter_no_change=10,
                 random_state=self.config.seed
             )
@@ -206,33 +239,60 @@ class ModelRunner:
                 y_pred = y_pred_enc
             return y_pred, y_proba, np.array(classes)
 
-    def _evaluate(self, y_true: np.ndarray, y_pred: np.ndarray, y_score: np.ndarray, n_classes: int) -> float:
+    def _evaluate(
+        self,
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+        y_score: Optional[np.ndarray],
+        classes_pred: Optional[np.ndarray],
+    ) -> float:
         """
-        config.metricsに基づいて評価指標を計算する。
+        config.metrics に応じて評価指標を算出する
         """
-        metric = getattr(self.config, 'metrics', 'auc').lower()  # デフォルトはauc
-        
-        # 回帰指標
+        metric = getattr(self.config, 'metrics', 'auc').lower()
+
         if metric in ['rmse', 'r2']:
             if metric == 'rmse':
                 return np.sqrt(mean_squared_error(y_true, y_pred))
-            elif metric == 'r2':
-                from sklearn.metrics import r2_score
-                return r2_score(y_true, y_pred)
+            from sklearn.metrics import r2_score
+            return r2_score(y_true, y_pred)
 
         if metric == 'auc':
-            if y_score is None:
-                raise ValueError("AUCを計算するには予測確率(y_score)が必要です。")
-            if n_classes == 2:
-                return roc_auc_score(y_true, y_score[:, 1])
-            else:
+            if y_score is None or y_score.ndim != 2 or classes_pred is None:
+                return np.nan
+            classes_pred = np.asarray(classes_pred)
+            row_mask = np.isin(y_true, classes_pred)
+            if not row_mask.any():
+                return np.nan
+            y_true = y_true[row_mask]
+            y_pred = y_pred[row_mask]
+            y_score = y_score[row_mask]
+
+            present_classes = np.unique(y_true)
+            if present_classes.size <= 1:
+                return np.nan
+
+            col_indices = []
+            for cls in present_classes:
+                idx = np.where(classes_pred == cls)[0]
+                if idx.size == 0:
+                    continue
+                col_indices.append(int(idx[0]))
+            if not col_indices:
+                return np.nan
+            y_score = y_score[:, col_indices]
+
+            try:
+                if len(col_indices) == 2:
+                    return roc_auc_score(y_true, y_score[:, 1])
                 return roc_auc_score(y_true, y_score, multi_class="ovr", average="macro")
-        
-        elif metric == 'accuracy':
+            except ValueError:
+                return np.nan
+
+        if metric == 'accuracy':
             return accuracy_score(y_true, y_pred)
-        
-        else:
-            raise ValueError(f"未対応の評価指標です: {self.config.metrics}")
+
+        raise ValueError(f"未知の評価指標です: {self.config.metrics}")
 
     def _run_linear_regression(self, X_train, y_train, X_test, y_test, **kwargs) -> float:
         """線形回帰で評価指標を計算する"""
@@ -250,15 +310,15 @@ class ModelRunner:
             raise ValueError(f"未対応の回帰評価指標です: {self.config.metrics}")
 
     def _run_random_forest(self, X_train, y_train, X_test, y_test, **kwargs) -> float:
-        """ランダムフォレストで評価指標を計算する"""
+        """ランダムフォレストで評価指標を算出する"""
         model = RandomForestClassifier(random_state=self.config.seed)
         model.fit(X_train, y_train)
         
         y_pred = model.predict(X_test)
         y_score = model.predict_proba(X_test)
-        n_classes = len(model.classes_)
+        classes_pred = getattr(model, "classes_", None)
         
-        return self._evaluate(y_test, y_pred, y_score, n_classes)
+        return self._evaluate(y_test, y_pred, y_score, classes_pred)
 
     def _run_svm(self, X_train, y_train, X_test, y_test, **kwargs) -> float:
         """RBFカーネルSVMで評価指標を計算する"""
@@ -269,43 +329,46 @@ class ModelRunner:
         return self._execute_svm(X_train, y_train, X_test, y_test, kernel="linear", **kwargs)
 
     def _run_mlp(self, X_train, y_train, X_test, y_test, **kwargs) -> float:
-        """MLPで評価指標を計算する"""
+        """MLPで評価指標を算出する"""
         # ラベルのエンコード
         if not np.issubdtype(y_train.dtype, np.number):
             encoder = LabelEncoder().fit(y_train)
             y_train = encoder.transform(y_train)
             y_test = encoder.transform(y_test)
 
-        # パイプラインの構築
-        steps = [StandardScaler()]  # 常にStandardScalerを適用
+        # パイプラインの構成
+        steps = [StandardScaler()]  # 先に StandardScaler を適用
         eigenvalues = kwargs.get('eigenvalues', None)
         if eigenvalues is not None:
             steps.append(EigenWeightingTransformer(eigenvalues=eigenvalues))
 
-        # MLPモデルの追加
+        # MLP モデルを追加
+        n_samples = X_train.shape[0]
+        base_val_fraction = 0.1
+        use_early_stopping = True
+        if n_samples * base_val_fraction < 2:
+            use_early_stopping = False
         mlp_model = MLPClassifier(
             hidden_layer_sizes=(256,),
             activation='relu',
             solver='adam',
             max_iter=1000,
-            early_stopping=True,
-            validation_fraction=0.1,  # early_stoppingに必要
-            n_iter_no_change=10,      # early_stoppingに必要
+            early_stopping=use_early_stopping,
+            validation_fraction=base_val_fraction,
+            n_iter_no_change=10,
             random_state=self.config.seed
         )
         steps.append(mlp_model)
 
-        # パイプラインの作成
+        # モデルの学習と評価
         model = make_pipeline(*steps)
-
-        # 学習と評価
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
         y_score = model.predict_proba(X_test)
-        n_classes = len(model.classes_)
+        classes_pred = getattr(model, "classes_", None)
 
-        return self._evaluate(y_test, y_pred, y_score, n_classes)
-    
+        return self._evaluate(y_test, y_pred, y_score, classes_pred)
+
     def _run_softmax(self, X_train, y_train, X_test, y_test, **kwargs) -> float:
         """ロジスティック回帰（多クラスsoftmax）で評価指標を計算する"""
         from sklearn.linear_model import LogisticRegression
@@ -336,9 +399,9 @@ class ModelRunner:
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
         y_score = model.predict_proba(X_test)
-        n_classes = len(clf.classes_) if hasattr(clf, "classes_") else len(np.unique(y_train))
+        classes_pred = clf.classes_ if hasattr(clf, "classes_") else np.unique(y_train)
 
-        return self._evaluate(y_test, y_pred, y_score, n_classes)
+        return self._evaluate(y_test, y_pred, y_score, classes_pred)
 
     def _execute_svm(self, X_train, y_train, X_test, y_test, kernel: str, eigenvalues: Optional[list] = None) -> float:
         """SVMの共通処理"""
@@ -373,9 +436,9 @@ class ModelRunner:
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
         y_score = model.predict_proba(X_test)
-        n_classes = len(model.classes_)
-        
-        return self._evaluate(y_test, y_pred, y_score, n_classes)
+        classes_pred = getattr(model, "classes_", None)
+
+        return self._evaluate(y_test, y_pred, y_score, classes_pred)
 
 
 # --- エントリポイント関数 ---

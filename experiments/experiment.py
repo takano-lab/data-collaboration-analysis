@@ -199,7 +199,7 @@ def run_once(config, logger):
         # --- ここから機関ごとの metrics を算出 ---
         n_inst = config.num_institution
 
-        division_mode = getattr(config, "data_distribution", None) == "division"
+        division_mode = getattr(config, "data_distribution", None) in ("division", "bias", "semi") # , "bias", "semi"
         if division_mode:
             # division: テストは全機関共通セット（分割不要）
             test_cum = None

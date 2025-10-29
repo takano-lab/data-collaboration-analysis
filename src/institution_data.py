@@ -66,12 +66,136 @@ def ensure_institution_params(df: pd.DataFrame, config: Config) -> None:
         new_dim = int(round(orig * ratio))
         config.dim_integrate = new_dim
 
+    if _is_undefined(getattr(config, "labeling_ratio", None)):
+        config.labeling_ratio = 0.5
+    if _is_undefined(getattr(config, "bias_ratio", None)):
+        config.bias_ratio = 0.9
+
 def limit_feature_columns(df: pd.DataFrame, config: Config) -> pd.DataFrame:
     y_name = config.y_name
     feature_cols = [c for c in df.columns if c != y_name]
     limited = feature_cols[: config.feature_num]
     final_cols = limited + [y_name]
     return df[final_cols].copy()
+
+
+def _parse_ratio(raw_value, default: float) -> float:
+    try:
+        ratio = float(raw_value) if raw_value is not None else float(default)
+    except (TypeError, ValueError):
+        ratio = float(default)
+    if np.isnan(ratio):
+        ratio = float(default)
+    ratio = max(0.0, min(1.0, ratio))
+    return ratio
+
+
+def apply_semi_supervision(train_df: pd.DataFrame, config: Config) -> pd.DataFrame:
+    """even 分割後の学習データにラベル欠損を導入する."""
+    df = train_df.copy()
+    label_col = config.y_name
+    ratio = _parse_ratio(getattr(config, "labeling_ratio", None), 0.1)
+    if ratio >= 1.0:
+        return df
+    num_inst = int(getattr(config, "num_institution", 0) or 0)
+    per_inst = int(getattr(config, "num_institution_user", 0) or 0)
+    total_rows = len(df)
+    if total_rows == 0:
+        return df
+    rng = np.random.default_rng(getattr(config, "seed", 42))
+    keep_mask = np.zeros(total_rows, dtype=bool)
+    if num_inst > 0 and per_inst > 0 and num_inst * per_inst <= total_rows:
+        for inst_idx in range(num_inst):
+            start = inst_idx * per_inst
+            end = min(start + per_inst, total_rows)
+            inst_indices = np.arange(start, end)
+            if inst_indices.size == 0:
+                continue
+            inst_labels = df[label_col].to_numpy()[inst_indices]
+            unique_labels_inst = np.unique(inst_labels)
+            required_min = min(len(unique_labels_inst), inst_indices.size)
+            keep_count = int(round(inst_indices.size * ratio))
+            if ratio > 0.0 and keep_count == 0:
+                keep_count = 1
+            keep_count = max(keep_count, required_min)
+            keep_count = min(keep_count, inst_indices.size)
+            selected = []
+            for lab in unique_labels_inst:
+                lab_positions = inst_indices[inst_labels == lab]
+                if lab_positions.size == 0:
+                    continue
+                selected.append(int(rng.choice(lab_positions, size=1)))
+            selected = list(dict.fromkeys(selected))
+            if len(selected) > keep_count:
+                keep_count = len(selected)
+            remaining_needed = keep_count - len(selected)
+            if remaining_needed > 0:
+                remaining_candidates = np.array([idx for idx in inst_indices if idx not in selected], dtype=int)
+                if remaining_candidates.size > 0:
+                    take = min(remaining_needed, remaining_candidates.size)
+                    picked = rng.choice(remaining_candidates, size=take, replace=False)
+                    selected.extend([int(x) for x in picked])
+            keep_mask[selected] = True
+    else:
+        all_indices = np.arange(total_rows)
+        keep_count = int(round(total_rows * ratio))
+        if ratio > 0.0 and keep_count == 0:
+            keep_count = 1
+        if keep_count >= total_rows:
+            keep_mask[:] = True
+        else:
+            chosen = rng.choice(all_indices, size=keep_count, replace=False)
+            keep_mask[chosen] = True
+    unlabeled_indices = np.flatnonzero(~keep_mask)
+    if unlabeled_indices.size == 0:
+        return df
+    label_pos = df.columns.get_loc(label_col)
+    df.iloc[unlabeled_indices, label_pos] = np.nan
+    return df
+
+
+def apply_bias_mixing(train_df: pd.DataFrame, config: Config) -> pd.DataFrame:
+    """division 分割後の学習データにバイアス（他機関データ混入）を導入する."""
+    df = train_df.copy()
+    label_col = config.y_name
+    num_inst = int(getattr(config, "num_institution", 0) or 0)
+    per_inst = int(getattr(config, "num_institution_user", 0) or 0)
+    ratio = _parse_ratio(getattr(config, "bias_ratio", None), 0.8)
+    if (
+        df.empty
+        or num_inst <= 1
+        or per_inst <= 0
+        or ratio >= 1.0
+    ):
+        return df
+    contam_count = int(round(per_inst * (1.0 - ratio)))
+    if (1.0 - ratio) > 0.0 and contam_count == 0:
+        contam_count = 1
+    if contam_count <= 0:
+        return df
+    rng = np.random.default_rng(getattr(config, "seed", 42))
+    original = df.copy()
+    labels = sorted(original[label_col].unique().tolist())
+    for inst_idx, lab in enumerate(labels):
+        start = inst_idx * per_inst
+        end = min(start + per_inst, len(df))
+        if start >= end:
+            continue
+        replace_count = min(contam_count, end - start)
+        if replace_count <= 0:
+            continue
+        block_indices = np.arange(start, end)
+        replace_positions = rng.choice(block_indices, size=replace_count, replace=False)
+        other_candidates = original.index[original[label_col] != lab].to_numpy()
+        if other_candidates.size == 0:
+            continue
+        sampled = rng.choice(
+            other_candidates,
+            size=replace_count,
+            replace=other_candidates.size < replace_count,
+        )
+        df.iloc[replace_positions] = original.loc[sampled].to_numpy()
+    return df
 
 
 # ------------------------- even (joint) ------------------------- #
@@ -273,12 +397,13 @@ def to_institution_arrays(
     ys_train: List[np.ndarray] = []
     ys_test: List[np.ndarray] = []
 
-    if getattr(config, "data_distribution", None) == "division":
-        # --- train (各ラベル1 block) ---
+    dist = getattr(config, "data_distribution", None)
+
+    if dist in ("division", "bias"):
+        # --- train blocks (one block per label) ---
         y_train_ser = train_df[y_name]
         X_train_df = train_df.drop(columns=[y_name])
         labels = sorted(y_train_ser.unique())
-        # 検証: 行数 = num_institution * per_inst
         if len(train_df) != n_inst * per_inst:
             raise ValueError(
                 f"division train_df 行数不整合: {len(train_df)} != {n_inst * per_inst}"
@@ -286,9 +411,8 @@ def to_institution_arrays(
         for i, lab in enumerate(labels):
             block = X_train_df.iloc[i * per_inst : (i + 1) * per_inst]
             y_block = y_train_ser.iloc[i * per_inst : (i + 1) * per_inst]
-            # 念のため全て同ラベル
-            if len(set(y_block)) != 1:
-                raise ValueError("division train block 内に複数ラベルが混在")
+            if dist == "division" and len(set(y_block)) != 1:
+                raise ValueError("division train block に単一ラベル以外が含まれています")
             Xs_train.append(block.to_numpy())
             ys_train.append(y_block.to_numpy())
 
@@ -339,13 +463,25 @@ def prepare_institutional_dataset(
     dist = getattr(config, "data_distribution", None)
     if dist == "division":
         train_df, test_df = division_split(df_lim, config)
-    else:  # even (既定)
+    elif dist == "bias":
+        train_df, test_df = division_split(df_lim, config)
+        train_df = apply_bias_mixing(train_df, config)
+    elif dist == "semi":
         train_df, test_df = even_joint_split(
             df_lim,
             label_col=config.y_name,
             num_institution=config.num_institution,
             num_institution_user=config.num_institution_user,
-            random_state=42,  # 元実装互換
+            random_state=42,
+        )
+        train_df = apply_semi_supervision(train_df, config)
+    else:  # even
+        train_df, test_df = even_joint_split(
+            df_lim,
+            label_col=config.y_name,
+            num_institution=config.num_institution,
+            num_institution_user=config.num_institution_user,
+            random_state=42,  # ベースライン
         )
     Xs_train, Xs_test, ys_train, ys_test = to_institution_arrays(train_df, test_df, config)
     return Xs_train, Xs_test, ys_train, ys_test, train_df, test_df

@@ -95,11 +95,22 @@ class DataCollaborationAnalysis:
         X_train_all = np.vstack(self.Xs_train)
         y_train_all = np.hstack(self.ys_train)
 
-        # k-NNでラベル推定
+        def _valid_label_mask(y_array: np.ndarray) -> np.ndarray:
+            if y_array.dtype.kind in {"f", "c"}:
+                return ~np.isnan(y_array)
+            return np.array([not (val is None or (isinstance(val, float) and np.isnan(val))) for val in y_array], dtype=bool)
+
+        mask_valid = _valid_label_mask(y_train_all)
+        if not np.all(mask_valid):
+            X_train_all = X_train_all[mask_valid]
+            y_train_all = y_train_all[mask_valid]
+        if X_train_all.size == 0:
+            raise ValueError("Anchor label assignment failed: no valid labeled samples remain.")
+
         knn = KNeighborsClassifier(n_neighbors=k)
         knn.fit(X_train_all, y_train_all)
         self.anchor_y = knn.predict(self.anchor)
-        
+
         knn_test = KNeighborsClassifier(n_neighbors=k)
         knn_test.fit(X_train_all, y_train_all)
         self.anchor_y_test = knn_test.predict(self.anchor_test)
@@ -206,8 +217,8 @@ class DataCollaborationAnalysis:
         elif self.config.G_type == "ODC": # この分岐を追加
             self.make_integrate_expression_odc()
         elif self.config.G_type  == "nonlinear":
-            lw_alpha=getattr(self.config, "lw_alpha", 0.0),
-            if lw_alpha:
+            lw_alpha=getattr(self.config, "lw_alpha", 0.0)
+            if lw_alpha!=0.0:
                 self.assign_anchor_labels(k=5)
                 self.build_laplacians_from_anchor_labels()
             self.make_integrate_nonlinear_expression()
