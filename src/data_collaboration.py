@@ -1353,6 +1353,87 @@ class DataCollaborationAnalysis:
                 return np.nan
             return float(arr.mean())
 
+        def _compute_lni(Z_true: np.ndarray, Z_pred: np.ndarray) -> float:
+            diff = Z_true - Z_pred
+            rss = float(np.linalg.norm(diff, ord='fro') ** 2)
+            Zbar = Z_true.mean(axis=0, keepdims=True)
+            tss = float(np.linalg.norm(Z_true - Zbar, ord='fro') ** 2)
+            if tss <= 1e-12:
+                return 0.0
+            lni = rss / tss
+            if not np.isfinite(lni):
+                return np.nan
+            return float(np.clip(lni, 0.0, 1.0))
+
+        def _fit_lni_model(X: Optional[np.ndarray], Z: Optional[np.ndarray]) -> tuple[Optional[np.ndarray], float]:
+            if X is None or Z is None:
+                return None, np.nan
+            if X.size == 0 or Z.size == 0:
+                return None, np.nan
+            n = min(X.shape[0], Z.shape[0])
+            if n <= 1:
+                return None, np.nan
+            Xn = np.asarray(X[:n, :], dtype=float)
+            Zn = np.asarray(Z[:n, :], dtype=float)
+            ones = np.ones((n, 1), dtype=float)
+            X_aug = np.hstack([Xn, ones])
+            try:
+                W, *_ = np.linalg.lstsq(X_aug, Zn, rcond=None)
+                Z_hat = X_aug @ W
+            except Exception as ex:
+                print(f"[LNI] lstsq failed: {ex} | X_aug={X_aug.shape}, Z={Zn.shape}")
+                traceback.print_exc()
+                return None, np.nan
+            return W, _compute_lni(Zn, Z_hat)
+
+        def _eval_lni_with_model(
+            X: Optional[np.ndarray],
+            Z: Optional[np.ndarray],
+            W: Optional[np.ndarray],
+        ) -> float:
+            if W is None:
+                return np.nan
+            if X is None or Z is None:
+                return np.nan
+            if X.size == 0 or Z.size == 0:
+                return np.nan
+            n = min(X.shape[0], Z.shape[0])
+            if n <= 1:
+                return np.nan
+            Xn = np.asarray(X[:n, :], dtype=float)
+            Zn = np.asarray(Z[:n, :], dtype=float)
+            ones = np.ones((n, 1), dtype=float)
+            X_aug = np.hstack([Xn, ones])
+            if X_aug.shape[1] != W.shape[0]:
+                return np.nan
+            try:
+                Z_hat = X_aug @ W
+            except Exception as ex:
+                print(f"[LNI] evaluation failed: {ex} | X_aug={X_aug.shape}, W={W.shape}")
+                traceback.print_exc()
+                return np.nan
+            return _compute_lni(Zn, Z_hat)
+
+        def _fit_and_score_pairs(pairs: list[tuple[Optional[np.ndarray], Optional[np.ndarray]]]):
+            models = []
+            scores = []
+            for X, Z in pairs:
+                W, lni = _fit_lni_model(X, Z)
+                models.append(W)
+                scores.append(lni)
+            return models, scores
+
+        def _score_pairs_with_models(
+            pairs: list[tuple[Optional[np.ndarray], Optional[np.ndarray]]],
+            models: list[Optional[np.ndarray]]
+        ) -> list[float]:
+            results: list[float] = []
+            for idx in range(max(len(pairs), len(models))):
+                X, Z = (pairs[idx] if idx < len(pairs) else (None, None))
+                W = models[idx] if idx < len(models) else None
+                results.append(_eval_lni_with_model(X, Z, W))
+            return results
+
         # inter: anchor -> anchors_inter[k]
         pairs_inter = [(self.anchor, Ak) for Ak in (self.anchors_inter or [])]
         # integ: anchors_inter[k] -> anchors_integ[k]
@@ -1362,10 +1443,10 @@ class DataCollaborationAnalysis:
         # integ_test: anchors_test_inter[k] -> anchors_test_integ[k]
         pairs_integ_test = list(zip(self.anchors_test_inter or [], self.anchors_test_integ or []))
 
-        list_inter = _lni_list_over_institutions(pairs_inter)
-        list_integ = _lni_list_over_institutions(pairs_integ)
-        list_inter_test = _lni_list_over_institutions(pairs_inter_test)
-        list_integ_test = _lni_list_over_institutions(pairs_integ_test)
+        models_inter, list_inter = _fit_and_score_pairs(pairs_inter)
+        models_integ, list_integ = _fit_and_score_pairs(pairs_integ)
+        list_inter_test = _score_pairs_with_models(pairs_inter_test, models_inter)
+        list_integ_test = _score_pairs_with_models(pairs_integ_test, models_integ)
 
         # 機関ごとの LNI を print（フォーマット: 4桁）
         def _fmt_list(vs):
@@ -1375,6 +1456,8 @@ class DataCollaborationAnalysis:
         try:
             print("[LNI] inter per-institution:", _fmt_list(list_inter))
             print("[LNI] integ per-institution:", _fmt_list(list_integ))
+            print("[LNI] inter_test per-institution:", _fmt_list(list_inter_test))
+            print("[LNI] integ_test per-institution:", _fmt_list(list_integ_test))
         except Exception:
             pass
 
@@ -1387,12 +1470,12 @@ class DataCollaborationAnalysis:
         try:
             if np.isfinite(lni_inter):
                 self.config.lni_inter = round(lni_inter, 4)
-            #if np.isfinite(lni_inter_test):
-            #    self.config.lni_inter_test = round(lni_inter_test, 4)
+            if np.isfinite(lni_inter_test):
+                self.config.lni_inter_test = round(lni_inter_test, 4)
             if np.isfinite(lni_integ):
                 self.config.lni_integ = round(lni_integ, 4)
-            #if np.isfinite(lni_integ_test):
-            #    self.config.lni_integ_test = round(lni_integ_test, 4)
+            if np.isfinite(lni_integ_test):
+                self.config.lni_integ_test = round(lni_integ_test, 4)
         except Exception:
             pass
 

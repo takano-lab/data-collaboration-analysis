@@ -191,10 +191,10 @@ def individual_analysis_with_dimension_reduction(
         else:
             odd_losses.append(metrics)
 
-    config.losses_even_ind = round(sum(even_losses)/len(even_losses), 4)
-    config.losses_odd_ind = round(sum(odd_losses)/len(odd_losses), 4)
-    config.losses_ind = round(sum(losses)/len(losses), 4)
-    logger.info(f"個別解析の評価値: {np.mean(losses):.4f}")
+    # config.losses_even_ind = round(sum(even_losses)/len(even_losses), 4)
+    # config.losses_odd_ind = round(sum(odd_losses)/len(odd_losses), 4)
+    # config.losses_ind = round(sum(losses)/len(losses), 4)
+    # logger.info(f"個別解析の評価値: {np.mean(losses):.4f}")
     #record_value_to_cfg(config, "個別解析（次元削減）", np.mean(losses))
     return config.losses_ind
 

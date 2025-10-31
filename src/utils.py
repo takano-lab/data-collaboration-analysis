@@ -9,6 +9,7 @@ from sklearn.decomposition import PCA, KernelPCA, TruncatedSVD
 from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
+from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
 
 # torch, UMAP は遅延インポート（_run_umap 内で import）
 
@@ -323,6 +324,41 @@ def _run_samespan(X_train, X_test, n_components, *, config=None, anchor=None, an
     Xv = X_test @ F
     Xa = anchor @ F if anchor is not None else None
     Xat = anchor_test @ F if anchor_test is not None else None
+    return _to_tuple4(Xt, Xv, Xa, Xat)
+
+
+def _run_random_projection(
+    X_train,
+    X_test,
+    n_components,
+    *,
+    config=None,
+    anchor=None,
+    anchor_test=None,
+    seed=None,
+    **kwargs,
+):
+    seed_val = seed if seed is not None else _cfg_int(config, "seed", 0)
+    proj_kind = _cfg_str(config, "random_projection_type", "gaussian").lower()
+    if proj_kind not in ("gaussian", "sparse"):
+        proj_kind = "gaussian"
+
+    model_kwargs: Dict[str, Any] = {"n_components": n_components}
+    if seed_val is not None:
+        model_kwargs["random_state"] = int(seed_val)
+
+    if proj_kind == "sparse":
+        density = _cfg_float(config, "random_projection_density", -1.0)
+        if density > 0.0:
+            model_kwargs["density"] = float(max(min(density, 1.0), 1e-12))
+        model = SparseRandomProjection(**model_kwargs)
+    else:
+        model = GaussianRandomProjection(**model_kwargs)
+
+    Xt = model.fit_transform(X_train)
+    Xv = model.transform(X_test)
+    Xa = model.transform(anchor) if anchor is not None else None
+    Xat = model.transform(anchor_test) if anchor_test is not None else None
     return _to_tuple4(Xt, Xv, Xa, Xat)
 
 
@@ -748,6 +784,7 @@ _RUNNERS: Dict[str, Any] = {
     "diffspan": _run_diffspan,
     "samespan_orth": _run_samespan_orth,
     "samespan": _run_samespan,
+    "random_projection": _run_random_projection,
     "lpp": _run_lpp,
     "kcca": _run_kcca,
     "kernel_pca": lambda *a, **kw: _run_kpca_family(*a, mode="auto", **kw),

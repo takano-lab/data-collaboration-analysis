@@ -280,12 +280,12 @@ def run_once(config, logger):
         else:
             mean_val = min_val = max_val = float("nan")
 
-        config.losses_even = round(float(np.nanmean(even_losses)), 4) if even_losses else np.nan
-        config.losses_odd = round(float(np.nanmean(odd_losses)), 4) if odd_losses else np.nan
-        config.losses_mean = round(mean_val, 4) if not np.isnan(mean_val) else np.nan
+        #config.losses_even = round(float(np.nanmean(even_losses)), 4) if even_losses else np.nan
+        #config.losses_odd = round(float(np.nanmean(odd_losses)), 4) if odd_losses else np.nan
+        #config.losses_mean = round(mean_val, 4) if not np.isnan(mean_val) else np.nan
 
         print("評価値2", mean_val)
-        print("config.losses_mean", config.losses_mean)
+        #print("config.losses_mean", config.losses_mean)
         print(f"機関ごとの {config.metrics}: {np.round(inst_losses_arr, 4).tolist()}")
         print(f"平均: {mean_val:.4f}, 最小: {min_val:.4f}, 最大: {max_val:.4f}")
         logger.info(f"機関ごとの {config.metrics}: {inst_losses_arr.tolist()}")
