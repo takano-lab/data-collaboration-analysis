@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import statistics
 from logging import INFO, FileHandler, getLogger
+from pathlib import Path
 
 import numpy as np  # 追加
 import pandas as pd
@@ -26,6 +27,38 @@ from src.load_data import load_data
 from src.model import ModelRunner
 from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 from src.visualization import DataCollabVisualizer
+
+
+def _safe_preserve_name(name: object) -> str:
+    if not name:
+        return "unnamed"
+    cleaned = []
+    for ch in str(name):
+        if ch.isalnum() or ch in {"-", "_"}:
+            cleaned.append(ch)
+        else:
+            cleaned.append("_")
+    slug = "".join(cleaned)
+    slug = "_".join(filter(None, slug.split("_")))
+    return slug or "unnamed"
+
+
+def _preserved_df_path(config: Config) -> Path | None:
+    name = getattr(config, "df_name", None)
+    if not name:
+        return None
+    safe = _safe_preserve_name(name)
+    return OUTPUT_DIR / "preserved_df" / "df" / f"{safe}.pkl"
+
+
+def _has_preserved_df(config: Config) -> bool:
+    path = _preserved_df_path(config)
+    if not path:
+        return False
+    try:
+        return path.exists()
+    except Exception:
+        return False
 
 # # 引数の設定
 # parser = argparse.ArgumentParser()
@@ -57,13 +90,20 @@ def run_once(config, logger):
     #logger.info(f"データセット: {config.dataset}")
     print(f"データセット:{config.dataset}")
     
+    load_preserve = bool(getattr(config, "load_df_data", False))
+    preserved_available = _has_preserved_df(config) if load_preserve else False
     
-    # datasetの読み込み
-    # 1. 前処理まで（単一 df）
-    df = load_data(config=config)
-    # 2. 機関データへ変換 (内部で列制限/機関数補完/ train-test split / even|division)
-    Xs_train, Xs_test, ys_train, ys_test, train_df, test_df = prepare_institutional_dataset(df, config)
-    
+    if load_preserve and preserved_available:
+        Xs_train, Xs_test, ys_train, ys_test, train_df, test_df = [], [], [], [], [], []
+    else:
+        # datasetの読み込み
+        # 1. 前処理まで（単一 df）
+        print("データ新規読み込み中...")
+        df = load_data(config=config)
+        # 2. 機関データへ変換 (内部で列制限/機関数補完/ train-test split / even|division)
+        Xs_train, Xs_test, ys_train, ys_test, train_df, test_df = prepare_institutional_dataset(df, config)
+
+        
     metrics_dict = {}
     
     if config.F_type == "kernel_pca" and config.G_type == "GEP_weighted":
@@ -163,7 +203,7 @@ def run_once(config, logger):
         if getattr(config, "data_distribution", None) == "division":
             skip_individual = True
         else:
-            skip_individual = False
+            skip_individual = True
         if not skip_individual:
             metrics_ind_dim = individual_analysis_with_dimension_reduction(
                 config=config,
@@ -292,6 +332,7 @@ def run_once(config, logger):
         logger.info(f"平均: {mean_val:.6f}, 最小: {min_val:.6f}, 最大: {max_val:.6f}")
 
         # --- 機関ごとの「学習データの最頻ラベルに基づく評価」リストを算出して表示 ---
+        """         
         try:
             per_inst_major_label_scores = []
             runner = ModelRunner(config)
@@ -370,7 +411,7 @@ def run_once(config, logger):
                 print(f"[WARN] 最頻ラベルスコア算出に失敗: {e}")
                 traceback.print_exc()
             except Exception:
-                pass
+                pass """
 
         return mean_val
     

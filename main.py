@@ -7,7 +7,7 @@ from collections import OrderedDict
 # runners/runner_grid.py
 from itertools import chain, product
 from logging import INFO, FileHandler, getLogger
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Sequence
 
 import pandas as pd
 
@@ -25,7 +25,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"statlog",
     #"qsar",
     #"breast_cancer",
-    #"adult",
+    "adult",
     #"digits",
     #"glass", 
     #"seeds", 
@@ -35,7 +35,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"diabetes130",
     #"bank_marketing",
     #"fashion_mnist",
-    "mnist",
+    #"mnist",
     #"mnist_1248",
     #"mnist",
     #"cifar10",
@@ -46,23 +46,23 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"ecoli",
     #"vowel"
     #"coil20"
-], #+ ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
+],# + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
     "F_type": ["umap"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
     "G_type": ["nonlinear", "Imakura", "GEP", "ODC"], # "nonlinear", "Imakura", "GEP", "ODC"'centralize
-    "gamma_ratio": [1e-4],#[0.1, 0.3, 1, 3, 10],             # 例: [0.1,1,5]
+    "gamma_ratio": [1e-4],#[0.0001],             # 例: [0.1,1,5]
     "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
-    "gamma_ratio_krr": [50],
+    "gamma_ratio_krr": [1],
     "num_anchor_data": [1000],
-    "nl_lambda": [1],        # LOCKで止められる, 0.00001
+    "nl_lambda": [0.3],        # LOCKで止められる, 0.00001
     "lw_alpha": [0],
-    "metrics": ["auc"],
+    "metrics": ["accuracy"],
     "visualize": [False],
     #"feature_num": [2],
-    "dim_intermediate": [6],#[20, 10, 5, 2],
-    "dim_integrate": [6],#[20, 10, 5, 2],
-    #"num_institution_user": [300],
+    "dim_intermediate": [14],#[20, 10, 5, 2],
+    "dim_integrate": [14],#[20, 10, 5, 2],
+    "num_institution_user": [100],
     "num_institution": [3],
     "K_normalization":[False],
     "anchor_method":["smote"], #gaussian smote
@@ -70,14 +70,31 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "inter_integ_dim_ratio":[1],
     "inter_normalization":[False],
     "evaluate_integrate_metrics":[True],
+    "load_df_data":[True],
+    "load_intermediate_data":[True],
+    "seed_values":[0],
     })
 
 # 2) ループ回数（seed を 0..loop_num-1 で回します）
-LOOP_NUM = 1
+#    PARAM_GRID のコンボで "loop_num" を指定するとその値が優先されます
+LOOP_NUM = 30
+
+# 2-1) 実行失敗時の挙動（True でスキップ、False で例外をそのまま投げる）
+ERROR_SKIP = False
 
 # 3) DataFrameに保持したい「パラメータ列」（順序もこの通り）
 PARAM_COLUMNS: List[str] = [
-    "dataset", "h_model", "F_type", "G_type", "data_distribution", "dim_intermediate", "dim_integrate", "num_institution_user", "num_institution", "anchor_method", "inter_normalization", "gamma_ratio_krr", "nl_lambda", "lw_alpha"
+    "dataset", "h_model", "F_type", "G_type", "data_distribution", "dim_intermediate", "dim_integrate", "num_institution_user", "num_institution", "anchor_method", "inter_normalization", "gamma_ratio_krr", "nl_lambda", "lw_alpha", 
+]
+
+# 3-2) train/test_df のDataFrameに保持する名前
+DF_COLUMNS: List[str] = [
+    "dataset", "data_distribution", "num_institution_user", "num_institution", "seed_values",
+]
+
+# 3-3) 中間表現のDataFrameに保持する名前
+INTERMEDIATE_COLUMNS: List[str] = [
+    "dataset", "F_type", "gamma_ratio", "data_distribution", "dim_intermediate", "num_institution_user", "num_institution", "seed_values"
 ]
 
 # 4) 条件ルール
@@ -112,7 +129,7 @@ _DATASET_DEFAULTS = {
     #"digits":               {"dim_intermediate": 15, "dim_integrate": 15, "num_institution_user": 100, "num_institution": 10},
     # "mnist":                {"dim_intermediate": 10, "dim_integrate": 10, "num_institution_user": 50, "num_institution": 10},
     "mnist":                {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "data_distribution": "division", "gamma_ratio":1, "gamma_ratio_krr":1},
-    "mnist_1248":                {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "data_distribution": "division", "gamma_ratio":1, "gamma_ratio_krr":1},
+    "mnist_1248":           {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "data_distribution": "division", "gamma_ratio":1, "gamma_ratio_krr":1},
     "fashion_mnist":        {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10},
     "concentric_circles":   {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
     "concentric_three_circles": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
@@ -239,7 +256,7 @@ def _generate_unique_combos(grid: Dict[str, List[Any]]):
         after = _apply_lock_rules(base)
         if _skip_by_rules(after):
             continue
-        norm = tuple(sorted(after.items()))
+        norm = tuple((k, _make_hashable(after.get(k))) for k, _ in pairs)
         if norm in seen:
             continue
         seen.add(norm)
@@ -304,6 +321,48 @@ def _apply_defaults(cfg: Config, dataset: str, combo: dict | None = None) -> Non
         if _is_empty(cur) and not _is_empty(v):
             setattr(cfg, k, v)
 
+def _make_hashable(v: Any) -> Any:
+    if isinstance(v, dict):
+        return tuple(sorted((k, _make_hashable(val)) for k, val in v.items()))
+    if isinstance(v, (list, tuple)):
+        return tuple(_make_hashable(x) for x in v)
+    if isinstance(v, set):
+        return tuple(sorted(_make_hashable(x) for x in v))
+    return v
+
+def _sanitize_for_identifier(value: Any) -> str:
+    if value is None:
+        return "none"
+    if isinstance(value, bool):
+        value_str = "true" if value else "false"
+    elif isinstance(value, float):
+        if value.is_integer():
+            value_str = str(int(value))
+        else:
+            value_str = f"{value}".rstrip("0").rstrip(".") if isinstance(value, float) else str(value)
+    else:
+        value_str = str(value)
+    value_str = value_str.strip()
+    if not value_str:
+        return "none"
+    value_str = value_str.replace(" ", "_")
+    cleaned = []
+    for ch in value_str:
+        if ch.isalnum() or ch in {"-", "_"}:
+            cleaned.append(ch)
+        else:
+            cleaned.append("_")
+    normalized = "".join(cleaned)
+    normalized = "_".join(filter(None, normalized.split("_")))
+    return normalized.lower() or "none"
+
+def _build_identifier(columns: Sequence[str], cfg: Config) -> str:
+    parts: list[str] = []
+    for col in columns:
+        val = getattr(cfg, col, None)
+        parts.append(f"{col}_{_sanitize_for_identifier(val)}")
+    return "_".join(parts)
+
 def _generate_unique_combos(grid: Dict[str, List[Any]]):
     keys = list(grid.keys())
     seen = set()
@@ -312,7 +371,7 @@ def _generate_unique_combos(grid: Dict[str, List[Any]]):
         after = _apply_lock_rules(base)
         if _skip_by_rules(after):
             continue
-        norm = tuple((k, after.get(k)) for k in keys)
+        norm = tuple((k, _make_hashable(after.get(k))) for k in keys)
         if norm in seen:
             continue
         seen.add(norm)
@@ -321,7 +380,7 @@ def _generate_unique_combos(grid: Dict[str, List[Any]]):
 def _set_config_from_combo(cfg: Config, combo: Dict[str, Any]) -> None:
     """dataset/metrics/visualize以外は config に流し込む。 ???"""
     for k, v in combo.items():
-        if k in ("dataset", "metrics"):
+        if k in ("dataset", "metrics", "loop_num", "seed_values", "seeds"):
             continue
         setattr(cfg, k, v)
     # True_F_type を常に同期
@@ -341,11 +400,11 @@ def run_grid(
     all_columns = PARAM_COLUMNS + [
         "loop_num", "score_mean", "score_stdev",
         # 新しい集計カラム（seed ループの平均）
-        "lni_inter", "lni_integ", "integ_metrics_train", "integ_metrics_test",
+        "lni_inter_test", "lni_integ_test", "integ_metrics_train", "integ_metrics_test",
     ]
     # 追加: 注入値の優先適用
     grid = grid or PARAM_GRID
-    loop = LOOP_NUM if loop_num is None else int(loop_num)
+    default_loop = LOOP_NUM if loop_num is None else int(loop_num)
     use_csv_flag = True if use_csv is None else bool(use_csv)
     override_map = CSV_OVERRIDE_MAP if csv_override_map is None else csv_override_map
     csv_path = CSV_COMBO_PATH if csv_combo_path is None else csv_combo_path
@@ -373,17 +432,53 @@ def run_grid(
         integ_train_vals = []
         integ_test_vals = []
 
-        for i in range(loop):
-            cfg.seed = i
+        seeds_raw = None
+        for key in ("seed_values", "seeds"):
+            if key in combo:
+                seeds_raw = combo[key]
+                break
+
+        seeds_list: list[int]
+        if seeds_raw is not None:
+            if isinstance(seeds_raw, (int, float, str)):
+                seeds_list = [int(seeds_raw)]
+            else:
+                try:
+                    seeds_list = [int(s) for s in seeds_raw]
+                except TypeError:
+                    seeds_list = [int(seeds_raw)]
+        else:
+            loop_value = combo.get("loop_num", default_loop)
+            try:
+                seed_loop_count = int(loop_value)
+            except (TypeError, ValueError):
+                seed_loop_count = int(default_loop)
+            if seed_loop_count <= 0:
+                seed_loop_count = int(default_loop)
+            seeds_list = list(range(seed_loop_count))
+
+        if not seeds_list:
+            seeds_list = list(range(int(default_loop)))
+
+        seed_loop_count = len(seeds_list)
+        cfg.loop_num = seed_loop_count
+        try:
+            setattr(cfg, "seed_values", list(seeds_list))
+        except Exception:
+            pass
+
+        for i in seeds_list:
+            cfg.seed = int(i)
             cfg.dataset = dataset
             cfg.metrics = metrics_name 
-            cfg.df_name = f"{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}_{combo.get('gamma_ratio_krr','-')}"
             cfg.plot_name = f"1019_{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}_{combo.get('gamma_ratio_krr','-')}.png"
 
             _set_config_from_combo(cfg, combo)
             _apply_defaults(cfg, dataset, combo)
+            cfg.df_name = _build_identifier(DF_COLUMNS, cfg)
+            cfg.intermediate_name = _build_identifier(INTERMEDIATE_COLUMNS, cfg)
 
-            try:
+            def _run_and_collect() -> float:
                 val = run_once(cfg, log)
                 vals.append(float(val))
                 record_config_to_cfg(cfg)
@@ -391,36 +486,39 @@ def run_grid(
 
                 # ループごとのメトリクスを収集（存在すれば）
                 try:
-                    v = getattr(cfg, "lni_inter", None)
+                    v = getattr(cfg, "lni_inter_test", None)
                     if v is not None:
                         lni_inter_vals.append(float(v))
                 except Exception:
                     pass
                 try:
-                    v = getattr(cfg, "lni_integ", None)
+                    v = getattr(cfg, "lni_integ_test", None)
                     if v is not None:
                         lni_integ_vals.append(float(v))
                 except Exception:
                     pass
-            except Exception as e:
-                msg = f"[skip] seed={i}, dataset={dataset}, G_type={combo.get('G_type')}, reason={e}"
-                print(msg)
+                return float(val)
+
+            if ERROR_SKIP:
                 try:
-                    log.exception(msg)
-                except Exception:
-                    pass
-                try:
-                    record_value_to_cfg(cfg, "error", str(e))
-                except Exception:
-                    pass
-                continue
+                    _run_and_collect()
+                except Exception as e:
+                    msg = f"[skip] seed={i}, dataset={dataset}, G_type={combo.get('G_type')}, reason={e}"
+                    print(msg)
+                    try:
+                        log.exception(msg)
+                    except Exception:
+                        pass
+                    continue
+            else:
+                _run_and_collect()
 
         mean_val = sum(vals) / len(vals) if vals else 0.0
         stdev_val = statistics.stdev(vals) if len(vals) > 1 else 0.0
 
         row = {k: combo.get(k, None) for k in PARAM_COLUMNS}
         row.update({
-            "loop_num": loop,
+            "loop_num": seed_loop_count,
             "score_mean": mean_val,
             "score_stdev": stdev_val,
         })
@@ -431,8 +529,8 @@ def run_grid(
             return (sum(vals_) / len(vals_)) if vals_ else 0.0
 
         row.update({
-            "lni_inter": _mean_finite(lni_inter_vals),
-            "lni_integ": _mean_finite(lni_integ_vals),
+            "lni_inter_test": _mean_finite(lni_inter_vals),
+            "lni_integ_test": _mean_finite(lni_integ_vals),
             "integ_metrics_train": _mean_finite(integ_train_vals),
             "integ_metrics_test": _mean_finite(integ_test_vals),
         })

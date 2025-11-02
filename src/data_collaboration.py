@@ -25,6 +25,7 @@ from src.integration import (
     build_odc_projectors,
     build_targetvec_projectors,
 )
+from src.paths import OUTPUT_DIR
 from src.utils import reduce_dimensions, self_tuning_gamma
 
 logger = TypeVar("logger")
@@ -81,6 +82,116 @@ class DataCollaborationAnalysis:
         self.L_within: Optional[np.ndarray] = None
         self.L_between: Optional[np.ndarray] = None
 
+    # ------------------------------
+    # preserved data helpers
+    # ------------------------------
+    def _preserved_root(self) -> Path:
+        return OUTPUT_DIR / "preserved_df"
+
+    def _safe_name(self, name: Optional[str]) -> str:
+        if not name:
+            return "unnamed"
+        cleaned = []
+        for ch in str(name):
+            if ch.isalnum() or ch in {"-", "_"}:
+                cleaned.append(ch)
+            else:
+                cleaned.append("_")
+        slug = "".join(cleaned)
+        slug = "_".join(filter(None, slug.split("_")))
+        return slug or "unnamed"
+
+    def _preserved_path(self, category: str, name: Optional[str]) -> Path:
+        safe = self._safe_name(name)
+        base = self._preserved_root() / category
+        return base / f"{safe}.pkl"
+
+    @staticmethod
+    def _bundle_to_dataframe(bundle: Dict[str, Sequence[object]]) -> pd.DataFrame:
+        rows: list[dict[str, object]] = []
+        for key, arrays in bundle.items():
+            stored: list[object] = []
+            for arr in arrays:
+                if isinstance(arr, (pd.DataFrame, pd.Series)):
+                    stored.append(arr.copy(deep=True))
+                else:
+                    stored.append(np.asarray(arr))
+            rows.append({"part": key, "values": stored})
+        return pd.DataFrame(rows, columns=["part", "values"])
+
+    @staticmethod
+    def _dataframe_to_bundle(df: pd.DataFrame) -> Dict[str, list[object]]:
+        bundle: Dict[str, list[object]] = {}
+        for _, row in df.iterrows():
+            key = str(row.get("part"))
+            raw_vals = row.get("values", [])
+            arrays: list[object] = []
+            try:
+                for arr in raw_vals:
+                    if isinstance(arr, (pd.DataFrame, pd.Series)):
+                        arrays.append(arr.copy(deep=True))
+                    else:
+                        arrays.append(np.asarray(arr))
+            except Exception:
+                arrays = []
+            bundle[key] = arrays
+        return bundle
+
+    def _load_preserved_bundle(self, category: str, name: Optional[str]) -> Optional[Dict[str, list[object]]]:
+        path = self._preserved_path(category, name)
+        if not path.exists():
+            return None
+        try:
+            df = pd.read_pickle(path)
+        except Exception as exc:
+            try:
+                self.logger.warning(f"[preserved] failed to load {path}: {exc}")
+            except Exception:
+                print(f"[preserved] failed to load {path}: {exc}")
+            return None
+        if not isinstance(df, pd.DataFrame):
+            return None
+        return self._dataframe_to_bundle(df)
+
+    def _save_preserved_bundle(self, category: str, name: Optional[str], bundle: Dict[str, Sequence[object]]) -> None:
+        path = self._preserved_path(category, name)
+        if not bundle:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        try:
+            df = self._bundle_to_dataframe(bundle)
+            df.to_pickle(path)
+        except Exception as exc:
+            try:
+                self.logger.warning(f"[preserved] failed to save {path}: {exc}")
+            except Exception:
+                print(f"[preserved] failed to save {path}: {exc}")
+
+    def _build_df_bundle(self) -> dict[str, Sequence[object]]:
+        bundle: dict[str, Sequence[object]] = {}
+        if self.Xs_train:
+            bundle["Xs_train"] = list(self.Xs_train)
+        if self.Xs_test:
+            bundle["Xs_test"] = list(self.Xs_test)
+        if self.ys_train:
+            bundle["ys_train"] = list(self.ys_train)
+        if self.ys_test:
+            bundle["ys_test"] = list(self.ys_test)
+        if isinstance(self.train_df, pd.DataFrame):
+            bundle["train_df"] = [self.train_df.copy(deep=True)]
+        if isinstance(self.test_df, pd.DataFrame):
+            bundle["test_df"] = [self.test_df.copy(deep=True)]
+        return bundle
+
+    def _save_current_df_bundle(self) -> None:
+        if not bool(getattr(self.config, "load_df_data", False)):
+            return
+        bundle = self._build_df_bundle()
+        if bundle:
+            self._save_preserved_bundle("df", getattr(self.config, "df_name", None), bundle)
     # ------------------------------
     # 共通ヘルパ: インテグレータ（射影関数）
     # ------------------------------
@@ -177,11 +288,46 @@ class DataCollaborationAnalysis:
         self.logger.info(f"異ラベル分離ラプラシアン (L_between) を構築しました。Shape: {self.L_between.shape}")
 
 
-    def run(self) -> None:
-        """
-        データ分割、中間表現の生成、統合表現の生成を一気に行う関数
-        """
-        # データの分割（既に渡されていない場合のみ内部で旧分割を実行: 後方互換）
+
+    def load_existing_df_data(self) -> None:
+        # 保存読み込み or train から Xs 作成     
+        loaded = False
+        preserved = self._load_preserved_bundle("df", getattr(self.config, "df_name", None))
+        if preserved:
+            def _restore_dataframe(saved: Sequence[object], current: pd.DataFrame) -> pd.DataFrame:
+                if not saved:
+                    return current
+                for candidate in saved:
+                    if isinstance(candidate, pd.DataFrame):
+                        return candidate.copy(deep=True)
+                first = next((candidate for candidate in saved if candidate is not None), None)
+                if first is None:
+                    return current
+                arr = np.asarray(first)
+                if arr.ndim != 2:
+                    return current
+                columns = list(current.columns) if isinstance(current, pd.DataFrame) else None
+                try:
+                    if columns and len(columns) == arr.shape[1]:
+                        return pd.DataFrame(arr, columns=columns)
+                    return pd.DataFrame(arr)
+                except Exception:
+                    return current
+
+            self.Xs_train = list(preserved.get("Xs_train", self.Xs_train) or [])
+            self.Xs_test = list(preserved.get("Xs_test", self.Xs_test) or [])
+            self.ys_train = list(preserved.get("ys_train", self.ys_train) or [])
+            self.ys_test = list(preserved.get("ys_test", self.ys_test) or [])
+            self.train_df = _restore_dataframe(list(preserved.get("train_df", [])), self.train_df)
+            self.test_df = _restore_dataframe(list(preserved.get("test_df", [])), self.test_df)
+            loaded = bool(self.Xs_train and self.Xs_test)
+            print(f"保存済みデータ読み込み結果 {loaded}")
+        if not loaded:
+            print("[preserved] df data not found or invalid; rebuilding.")
+        
+        # 現状Xs渡しているのでこの if は不要
+        should_preserve = bool(getattr(self.config, "load_df_data", False))
+        print(f"should_preserve_{should_preserve}")
         if not self.Xs_train or not self.Xs_test:
             self.Xs_train, self.Xs_test, self.ys_train, self.ys_test = self.train_test_split(
                 train_df=self.train_df,
@@ -190,22 +336,82 @@ class DataCollaborationAnalysis:
                 num_institution_user=self.config.num_institution_user,
                 y_name=self.config.y_name,
             )
-        self.logger.info(f"各機関（訓練データ）の数と次元数: {self.Xs_train[0].shape}")
+            
+            if should_preserve:
+                self._save_current_df_bundle()
+                print("保存済みデータを新規保存しました。")
+
+    def load_intermediate_data(self) -> None:
+        should_preserve = bool(getattr(self.config, "load_intermediate_data", False))
+        loaded = False
+        if should_preserve:
+            preserved = self._load_preserved_bundle("intermediate", getattr(self.config, "intermediate_name", None))
+            if preserved:
+                self.Xs_train_inter = list(preserved.get("Xs_train_inter", self.Xs_train_inter) or [])
+                self.Xs_test_inter = list(preserved.get("Xs_test_inter", self.Xs_test_inter) or [])
+                self.anchors_inter = list(preserved.get("anchors_inter", self.anchors_inter) or [])
+                self.anchors_test_inter = list(preserved.get("anchors_test_inter", self.anchors_test_inter) or [])
+                loaded = bool(
+                    self.Xs_train_inter
+                    and self.Xs_test_inter
+                    and self.anchors_inter
+                    and self.anchors_test_inter
+                )
+                print(f"保存済み中間表現読み込み結果 {loaded}")
+            if not loaded:
+                try:
+                    self.logger.info("[preserved] intermediate data not found or invalid; rebuilding.")
+                except Exception:
+                    print("[preserved] intermediate data not found or invalid; rebuilding.")
+        if (
+            not self.Xs_train_inter
+            or not self.Xs_test_inter
+            or not self.anchors_inter
+            or not self.anchors_test_inter
+        ):
+            self.make_intermediate_expression()
+            if should_preserve:
+                bundle = {
+                    "Xs_train_inter": list(self.Xs_train_inter or []),
+                    "Xs_test_inter": list(self.Xs_test_inter or []),
+                    "anchors_inter": list(self.anchors_inter or []),
+                    "anchors_test_inter": list(self.anchors_test_inter or []),
+                }
+                self._save_preserved_bundle("intermediate", getattr(self.config, "intermediate_name", None), bundle)
+                print("読み込んだ中間表現を新規保存しました。")
+
+    def run(self) -> None:
+        """
+        データ分割、中間表現の生成、統合表現の生成を一気に行う関数
+        """
+        should_preserve = bool(getattr(self.config, "load_df_data", False))
+        if not self.Xs_train or not self.Xs_test:
+            self.load_existing_df_data()
+        elif should_preserve and self.Xs_train and self.Xs_test:
+            self._save_current_df_bundle()
+            print("読み込んだデータを新規保存しました。")
+        
         # アンカーデータの生成
         self.anchor = self.produce_anchor(
             num_row=self.config.num_anchor_data, num_col=self.Xs_train[0].shape[1], seed=self.config.seed
         )
         
-        
         # アンカーデータの生成
         self.anchor_test = self.produce_anchor(
             num_row=self.config.num_anchor_data, num_col=self.Xs_train[0].shape[1], seed=self.config.seed+1
         )
+
+        if (
+            not self.Xs_train_inter
+            or not self.Xs_test_inter
+            or not self.anchors_inter
+            or not self.anchors_test_inter
+        ):
+            self.load_intermediate_data()
+        
         print("num_row", self.config.num_anchor_data, "num_col", self.Xs_train[0].shape[1])
         print("Xs_train[0].shape", self.Xs_train[0].shape, "Xs_test[0].shape", self.Xs_test[0].shape)
         # 中間表現の生成
-        self.make_intermediate_expression()
-        #self.make_intermediate_expression(USE_KERNEL=True)
         self.config.now = "g"
         # 統合表現の生成
         if self.config.G_type == "Imakura":
@@ -362,12 +568,12 @@ class DataCollaborationAnalysis:
                 raise RuntimeError("SMOTE anchor 生成には先に train_test_split が必要です。")
 
             # 元データ（train+test）を結合
-            X_train_all = np.vstack([self.Xs_train[i][:3] for i in range (self.config.num_institution)]) if len(self.Xs_train) > 1 else self.Xs_train[0]
-            y_train_all = np.hstack([self.ys_train[i][:3] for i in range (self.config.num_institution)]) if len(self.ys_train) > 1 else self.ys_train[0]
+            #X_train_all = np.vstack([self.Xs_train[i][:3] for i in range (self.config.num_institution)]) if len(self.Xs_train) > 1 else self.Xs_train[0]
+            #y_train_all = np.hstack([self.ys_train[i][:3] for i in range (self.config.num_institution)]) if len(self.ys_train) > 1 else self.ys_train[0]
             X_test_all  = np.vstack(self.Xs_test)  if len(self.Xs_test)  > 1 else self.Xs_test[0]
             y_test_all  = np.hstack(self.ys_test)  if len(self.ys_test)  > 1 else self.ys_test[0]
             #print(X_train_all.mean())
-            print(len(y_train_all))
+            #print(len(y_train_all))
             #print(len(y_test_all))
             #print(len(self.ys_test))
             #print(len(self.ys_train))
