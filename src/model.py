@@ -439,20 +439,3 @@ class ModelRunner:
         classes_pred = getattr(model, "classes_", None)
 
         return self._evaluate(y_test, y_pred, y_score, classes_pred)
-
-
-# --- エントリポイント関数 ---
-
-def h_ml_model(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    config: Any,
-) -> float:
-    """
-    ModelRunnerを介して機械学習モデルを実行し、評価値を返す。
-    """
-    runner = ModelRunner(config)
-    metrics = runner.run(X_train, y_train, X_test, y_test)
-    return metrics

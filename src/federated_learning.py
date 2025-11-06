@@ -87,7 +87,7 @@ def run_federated_learning(
         try:
             logger.warning(msg_total)
         except Exception:
-            print(msg_total)
+            logger.error(msg_total)
         per_feature = nan_mask.sum(axis=0)
         bad_cols = np.where(per_feature > 0)[0]
         for col in bad_cols:
@@ -100,7 +100,7 @@ def run_federated_learning(
             try:
                 logger.warning(msg_col)
             except Exception:
-                print(msg_col)
+                logger.error(msg_col)
 
     for idx, client_X in enumerate(clients_X_train):
         _debug_report_nan(f"client[{idx}]_X_train", client_X)

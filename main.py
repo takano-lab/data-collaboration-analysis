@@ -1,12 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import statistics
 from collections import OrderedDict
 
 # runners/runner_grid.py
-from itertools import chain, product
-from logging import INFO, FileHandler, getLogger
+from itertools import product
+from logging import Formatter, INFO, FileHandler, StreamHandler, getLogger
 from typing import Any, Dict, List, Sequence
 
 import pandas as pd
@@ -49,7 +49,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
 ],# + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "F_type": ["umap"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
+    "F_type": ["kernel_pca_gamma_fixed"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
     "G_type": ["fl", "centralize", "individual", "nonlinear", "Imakura", "GEP", "ODC"], # , "nonlinear", "Imakura", "GEP", "ODC" "nonlinear", "Imakura", "GEP", "ODC"'centralize
     "gamma_ratio": [1e-4],#[0.0001],             # 例: [0.1,1,5]
     "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
@@ -65,14 +65,14 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "num_institution_user": [100],
     "num_institution": [3],
     "K_normalization":[False],
-    "anchor_method":["smote"], #gaussian smote
+    "anchor_method":["gaussian"], #gaussian smote
     "data_distribution":["division"],# "division" "even"
     "inter_integ_dim_ratio":[1],
     "inter_normalization":[False],
     "evaluate_integrate_metrics":[True],
     "load_df_data":[True],
     "load_intermediate_data":[True],
-    "seed_values":[1, ],
+    "seed_values":[1],
     })
 
 # 2) ループ回数（seed を 0..loop_num-1 で回します）
@@ -80,7 +80,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
 LOOP_NUM = 2
 
 # 2-1) 実行失敗時の挙動（True でスキップ、False で例外をそのまま投げる）
-ERROR_SKIP = False
+ERROR_SKIP = True
 
 # 3) DataFrameに保持したい「パラメータ列」（順序もこの通り）
 PARAM_COLUMNS: List[str] = [
@@ -160,78 +160,7 @@ RULES: List[Dict[str, Any]] = [
 ]
 # ============================================
 
-# ↓ 追記: CSV 由来のコンボ設定（汎用）
-CSV_COMBO_PATH = r"c:\Users\sueya\Downloads\imakura_odc_condition_results.csv"
-CSV_OVERRIDE_MAP: Dict[str, List[str]] = {
-    # G_type ごとに、CSVの値で上書き・固定するカラム名を列挙
-    "Imakura": ["dataset", "h_model", "F_type", "gamma_ratio", "dim_intermediate", "num_institution_user"],
-}
-# CSV 抽出の cond フィルタはオフ（必要なら True に）
-CSV_USE_COND = False
 
-def _iter_csv_combos(grid: Dict[str, List[Any]], csv_path: str, override_map: Dict[str, List[str]]):
-    """
-    CSVの特定G_type行を抽出し、override_mapで指定したキーだけCSV値で固定。
-    それ以外のキーは PARAM_GRID を総当り（空は DEFAULTS、G_type が空なら CSV の G_type）で回す。
-    抽出に使った G_type は“固定しない”。
-    """
-    try:
-        df = pd.read_csv(csv_path)
-    except Exception:
-        return
-
-    if CSV_USE_COND and "cond" in df.columns:
-        df = df[df["cond"] == True]
-
-    targets = set(override_map.keys())
-    df = df[df["G_type"].isin(targets)].copy()
-    if df.empty:
-        return
-
-    for g in targets:
-        keys = override_map[g]
-        sub = df[df["G_type"] == g]
-        if sub.empty:
-            continue
-
-        sub = sub.dropna(subset=keys).drop_duplicates(subset=keys)
-
-        for _, row in sub.iterrows():
-            # CSVで固定するのは指定6項目のみ（G_typeは固定しない）
-            fixed = {k: row[k] for k in keys}
-
-            # 残りのキーは PARAM_GRID（空は DEFAULTS、G_type が空なら CSV の G_type）で総当り
-            pairs: list[tuple[str, list[Any]]] = []
-            for k in grid.keys():
-                if k in keys:
-                    continue
-                vals = list(grid.get(k, []))
-                if not vals:
-                    if k == "G_type":
-                        csv_g = row.get("G_type", None)
-                        if pd.notna(csv_g):
-                            vals = [csv_g]  # 抽出条件の G_type をフォールバックに使用
-                    elif (k in DEFAULTS) and (DEFAULTS[k] is not None):
-                        vals = [DEFAULTS[k]]
-                    else:
-                        # product 対象外（後段の _apply_defaults が埋める）
-                        continue
-                pairs.append((k, vals))
-
-            if pairs:
-                for tup in product(*(vals for _, vals in pairs)):
-                    base = {k: v for (k, _), v in zip(pairs, tup)}
-                    base.update(fixed)
-                    after = _apply_lock_rules(base)
-                    if _skip_by_rules(after):
-                        continue
-                    yield after
-            else:
-                # すべてCSV固定で他に回すものが無い場合（G_type が無ければこの分岐には来ない想定）
-                after = _apply_lock_rules(dict(fixed))
-                if not _skip_by_rules(after):
-                    yield after
-                    
 def _generate_unique_combos(grid: Dict[str, List[Any]]):
     """
     通常グリッド生成。空リストは DEFAULTS にフォールバック、DEFAULTS も無ければ product 対象外。
@@ -262,13 +191,6 @@ def _generate_unique_combos(grid: Dict[str, List[Any]]):
         seen.add(norm)
         yield after
             
-def _iter_default_combos_excluding(grid: Dict[str, List[Any]], excluded_gtypes: set[str]):
-    """除外 G_type を除いた通常のPARAM_GRIDコンボ"""
-    for combo in _generate_unique_combos(grid):
-        if combo.get("G_type") in excluded_gtypes:
-            continue
-        yield combo
-
 def _match(cond: Dict[str, List[Any]], combo: Dict[str, Any]) -> bool:
     return all(k in combo and combo[k] in vals for k, vals in cond.items())
 
@@ -389,11 +311,8 @@ def _set_config_from_combo(cfg: Config, combo: Dict[str, Any]) -> None:
 
 def run_grid(
     config: Config,
-    use_csv: bool | None = None,
     grid: Dict[str, List[Any]] | None = None,
     loop_num: int | None = None,
-    csv_override_map: Dict[str, List[str]] | None = None,
-    csv_combo_path: str | None = None,
     logger_=None,
 ) -> pd.DataFrame:
     rows = []
@@ -405,26 +324,17 @@ def run_grid(
     # 追加: 注入値の優先適用
     grid = grid or PARAM_GRID
     default_loop = LOOP_NUM if loop_num is None else int(loop_num)
-    use_csv_flag = True if use_csv is None else bool(use_csv)
-    override_map = CSV_OVERRIDE_MAP if csv_override_map is None else csv_override_map
-    csv_path = CSV_COMBO_PATH if csv_combo_path is None else csv_combo_path
     log = logger_ if logger_ is not None else getLogger(__name__)
 
     base_paths = dict(output_path=config.output_path, input_path=INPUT_DIR)
-
-    if use_csv_flag and override_map:
-        csv_iter = _iter_csv_combos(grid, csv_path, override_map) or iter(())
-        def_iter = _iter_default_combos_excluding(grid, set(override_map.keys()))
-        combos_iter = chain(csv_iter, def_iter)
-    else:
-        combos_iter = _generate_unique_combos(grid)
+    combos_iter = _generate_unique_combos(grid)
 
     for combo in combos_iter:
         dataset = combo["dataset"]
         metrics_name = combo["metrics"]
         cfg = Config(**base_paths)
         vals = []
-        print(f"[pattern] { {k: combo[k] for k in PARAM_COLUMNS if k in combo} }")
+        log.info(f"[pattern] { {k: combo[k] for k in PARAM_COLUMNS if k in combo} }")
 
         # ループ内で集計するメトリクスの一時リスト
         lni_inter_vals = []
@@ -468,16 +378,16 @@ def run_grid(
             pass
 
         for i in seeds_list:
-            cfg.seed = int(i)
+            seed_value = int(i)
+            cfg.seed = seed_value
+            cfg.seed_values = seed_value
             cfg.dataset = dataset
-            cfg.metrics = metrics_name 
-            cfg.plot_name = f"1019_{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}_{combo.get('gamma_ratio_krr','-')}.png"
-
+            cfg.metrics = metrics_name
+            cfg.plot_name = f"1019_{dataset}{combo.get('F_type','-')}{combo.get('G_type','-')}_{combo.get('gamma_ratio_krr','-')}.png"
             _set_config_from_combo(cfg, combo)
             _apply_defaults(cfg, dataset, combo)
             cfg.df_name = _build_identifier(DF_COLUMNS, cfg)
             cfg.intermediate_name = _build_identifier(INTERMEDIATE_COLUMNS, cfg)
-
             def _run_and_collect() -> float:
                 val = run_once(cfg, log)
                 vals.append(float(val))
@@ -504,7 +414,7 @@ def run_grid(
                     _run_and_collect()
                 except Exception as e:
                     msg = f"[skip] seed={i}, dataset={dataset}, G_type={combo.get('G_type')}, reason={e}"
-                    print(msg)
+                    log.info(msg)
                     try:
                         log.exception(msg)
                     except Exception:
@@ -539,7 +449,7 @@ def run_grid(
         one = pd.DataFrame([row], columns=all_columns)
         header_needed = not out_path.exists()
         one.to_csv(out_path, mode="a", header=header_needed, index=False, encoding="utf-8-sig")
-        print(f"[saved] {out_path}")
+        log.info(f"[saved] {out_path}")
 
         rows.append(row)
 
@@ -553,8 +463,7 @@ from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 if __name__ == "__main__":
     # 引数処理はここだけ（デフォルトは 0912）
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run-name", type=str, default="非線形性評価10/29")
-    parser.add_argument("--use_csv", action="store_true", help="CSV由来のコンボを使わず、PARAM_GRIDのみで総当りする")
+    parser.add_argument("--run-name", type=str, default="1106")
     args = parser.parse_args()
 
     # 出力先を決定
@@ -566,10 +475,17 @@ if __name__ == "__main__":
 
     logger = getLogger(__name__)
     logger.setLevel(INFO)
-    logger.handlers.clear()  # 重複防止
-    handler = FileHandler(filename=config.output_path / "result.log", encoding="utf-8")
-    logger.addHandler(handler)
+    logger.handlers.clear()  # reset handlers
+
+    file_handler = FileHandler(filename=config.output_path / "result.log", encoding="utf-8")
+    file_handler.setLevel(INFO)
+    logger.addHandler(file_handler)
+
+    console_handler = StreamHandler()
+    console_handler.setLevel(INFO)
+    console_handler.setFormatter(Formatter("%(message)s"))
+    logger.addHandler(console_handler)
 
     # 実行
-    df = run_grid(config, use_csv=(args.use_csv), logger_=logger)
+    df = run_grid(config, logger_=logger)
     df.to_csv(config.output_path / "result_grid_all.csv", index=False, encoding="utf-8-sig")

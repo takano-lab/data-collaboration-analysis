@@ -49,7 +49,6 @@ class DataCollabVisualizer:
 
         if not has_train_data and not has_test_data:
             self._log("可視化に必要な訓練データもテストデータも存在しません。")
-            print("可視化に必要な訓練データもテストデータも存在しません。")
             return
 
         num_institutions = len(a.anchors_inter) if has_train_data else len(a.anchors_test_inter)
@@ -364,7 +363,7 @@ class DataCollabVisualizer:
 
         save_dir = save_dir or a.config.output_path / "visualizations"
         if not a.Xs_train or not a.Xs_train_inter or not a.Xs_train_integ:
-            print("可視化する表現が生成されていません。run()メソッドを実行してください。")
+            self._log("可視化する表現が生成されていません。run()メソッドを実行してください。")
             return
 
         num_institutions = a.config.num_institution

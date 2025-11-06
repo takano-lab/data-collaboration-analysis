@@ -538,7 +538,6 @@ def _load_har() -> pd.DataFrame:
     
     cnt = Counter(features)
     dupes = [name for name, c in cnt.items() if c > 1]
-    print(dupes)
 
     def make_unique(names: list[str]) -> list[str]:
         counter = Counter()
@@ -952,4 +951,3 @@ def load_data(config: Config) -> pd.DataFrame:
 if __name__ == "__main__":
     cfg = Config(name="statlog", output_path=Path("./statlog_split"))
     load_data(cfg)
-    print("done")

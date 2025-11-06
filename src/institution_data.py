@@ -370,8 +370,7 @@ def division_split(
 
     # test_df は 1 セットのみ（配列化で複製）
     test_df = test_base_df
-    print(per_inst)
-    print(config.num_institution_user, 999999999)
+    
     return train_df, test_df
 
 
@@ -422,7 +421,7 @@ def to_institution_arrays(
         # ラベル均等性 (警告のみ) ※ 厳密には各ラベル per_inst 行が理想
         counts = y_test_ser.value_counts()
         if (counts < per_inst).any():
-            print(
+            self.logger.warning(
                 f"[WARN] division test: 一部ラベル不足 counts={counts.to_dict()} < {per_inst}. 利用可能件数で進行"
             )
         # そのままの順序で base セット化
@@ -459,7 +458,6 @@ def prepare_institutional_dataset(
     """前処理済み df から機関配列を構築 (even / division)"""
     ensure_institution_params(df, config)
     df_lim = limit_feature_columns(df, config)
-    print(df_lim.columns)
     dist = getattr(config, "data_distribution", None)
     if dist == "division":
         train_df, test_df = division_split(df_lim, config)

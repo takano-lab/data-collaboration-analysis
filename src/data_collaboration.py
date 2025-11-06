@@ -26,7 +26,7 @@ from src.integration import (
     build_targetvec_projectors,
 )
 from src.paths import OUTPUT_DIR
-from src.utils import reduce_dimensions, self_tuning_gamma
+from src.dimensionality_reduction import reduce_dimensions, self_tuning_gamma
 
 logger = TypeVar("logger")
 import csv
@@ -147,7 +147,7 @@ class DataCollaborationAnalysis:
             try:
                 self.logger.warning(f"[preserved] failed to load {path}: {exc}")
             except Exception:
-                print(f"[preserved] failed to load {path}: {exc}")
+                self.logger.error(f"[preserved] failed to load {path}: {exc}")
             return None
         if not isinstance(df, pd.DataFrame):
             return None
@@ -168,7 +168,7 @@ class DataCollaborationAnalysis:
             try:
                 self.logger.warning(f"[preserved] failed to save {path}: {exc}")
             except Exception:
-                print(f"[preserved] failed to save {path}: {exc}")
+                self.logger.error(f"[preserved] failed to save {path}: {exc}")
 
     def _build_df_bundle(self) -> dict[str, Sequence[object]]:
         bundle: dict[str, Sequence[object]] = {}
@@ -268,7 +268,7 @@ class DataCollaborationAnalysis:
             self.logger.warning("アンカーデータまたはアンカーラベルが未生成のため、ラプラシアンを構築できません。")
             return
 
-        print("******************** ラプラシアン行列の構築 ********************")
+        self.logger.info("******************** ラプラシアン行列の構築 ********************")
         from sklearn.metrics.pairwise import rbf_kernel
 
         n_anchors = self.anchor.shape[0]
@@ -353,13 +353,12 @@ class DataCollaborationAnalysis:
             self.train_df = _restore_dataframe(list(preserved.get("train_df", [])), self.train_df)
             self.test_df = _restore_dataframe(list(preserved.get("test_df", [])), self.test_df)
             loaded = bool(self.Xs_train and self.Xs_test)
-            print(f"保存済みデータ読み込み結果 {loaded}")
+            self.logger.info(f"保存済みデータ読み込み結果 {loaded}")
         if not loaded:
-            print("[preserved] df data not found or invalid; rebuilding.")
-        
+            self.logger.warning("[preserved] df data not found or invalid; rebuilding.")
+
         # 現状Xs渡しているのでこの if は不要
         should_preserve = bool(getattr(self.config, "load_df_data", False))
-        print(f"should_preserve_{should_preserve}")
         if not self.Xs_train or not self.Xs_test:
             self.Xs_train, self.Xs_test, self.ys_train, self.ys_test = self.train_test_split(
                 train_df=self.train_df,
@@ -371,7 +370,7 @@ class DataCollaborationAnalysis:
             
             if should_preserve:
                 self._save_current_df_bundle()
-                print("保存済みデータを新規保存しました。")
+                self.logger.info("保存済みデータを新規保存しました。")
 
     def load_intermediate_data(self) -> None:
         should_preserve = bool(getattr(self.config, "load_intermediate_data", False))
@@ -389,12 +388,12 @@ class DataCollaborationAnalysis:
                     and self.anchors_inter
                     and self.anchors_test_inter
                 )
-                print(f"保存済み中間表現読み込み結果 {loaded}")
+                self.logger.info(f"保存済み中間表現読み込み結果 {loaded}")
             if not loaded:
                 try:
                     self.logger.info("[preserved] intermediate data not found or invalid; rebuilding.")
                 except Exception:
-                    print("[preserved] intermediate data not found or invalid; rebuilding.")
+                    self.logger.error("[preserved] intermediate data not found or invalid; rebuilding.")
         if (
             not self.Xs_train_inter
             or not self.Xs_test_inter
@@ -410,7 +409,7 @@ class DataCollaborationAnalysis:
                     "anchors_test_inter": list(self.anchors_test_inter or []),
                 }
                 self._save_preserved_bundle("intermediate", getattr(self.config, "intermediate_name", None), bundle)
-                print("読み込んだ中間表現を新規保存しました。")
+                self.logger.info("読み込んだ中間表現を新規保存しました。")
 
     def run(self) -> None:
         """
@@ -421,7 +420,7 @@ class DataCollaborationAnalysis:
             self.load_existing_df_data()
         elif should_preserve and self.Xs_train and self.Xs_test:
             self._save_current_df_bundle()
-            print("読み込んだデータを新規保存しました。")
+            self.logger.info("読み込んだデータを新規保存しました。")
         
         # アンカーデータの生成
         self.anchor = self.produce_anchor(
@@ -440,9 +439,6 @@ class DataCollaborationAnalysis:
             or not self.anchors_test_inter
         ):
             self.load_intermediate_data()
-        
-        print("num_row", self.config.num_anchor_data, "num_col", self.Xs_train[0].shape[1])
-        print("Xs_train[0].shape", self.Xs_train[0].shape, "Xs_test[0].shape", self.Xs_test[0].shape)
         # 中間表現の生成
         self.config.now = "g"
         # 統合表現の生成
@@ -461,7 +457,7 @@ class DataCollaborationAnalysis:
                 self.build_laplacians_from_anchor_labels()
             self.make_integrate_nonlinear_expression()
         else:
-            print(f"Unknown G_type: {self.config.G_type}")
+            self.logger.warning(f"Unknown G_type: {self.config.G_type}")
         
         if self.config.evaluate_integrate_metrics:
             self.integrate_metrics()
@@ -470,7 +466,7 @@ class DataCollaborationAnalysis:
             self.evaluate_nonlinearity_indices()
         except Exception as e:
             # 要望: エラー内容を print でも表示
-            print(f"[ERROR] evaluate_nonlinearity_indices failed: {e}")
+            self.logger.error(f"[ERROR] evaluate_nonlinearity_indices failed: {e}")
             try:
                 import traceback
                 traceback.print_exc()
@@ -492,7 +488,7 @@ class DataCollaborationAnalysis:
         except Exception as e:
             try:
                 import traceback
-                print(f"[WARN] save_artifacts in run failed: {e}")
+                self.logger.warning(f"[WARN] save_artifacts in run failed: {e}")
                 traceback.print_exc()
             except Exception:
                 pass
@@ -503,7 +499,7 @@ class DataCollaborationAnalysis:
     def train_test_split(
         train_df: pd.DataFrame, test_df: pd.DataFrame, num_institution: int, num_institution_user: int, y_name: str = "target"
     ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
-        print("********************データの分割********************")
+        self.logger.info("********************データの分割********************")
         """
         複数機関を想定してデータセットを分割する関数
         """
@@ -604,11 +600,6 @@ class DataCollaborationAnalysis:
             #y_train_all = np.hstack([self.ys_train[i][:3] for i in range (self.config.num_institution)]) if len(self.ys_train) > 1 else self.ys_train[0]
             X_test_all  = np.vstack(self.Xs_test)  if len(self.Xs_test)  > 1 else self.Xs_test[0]
             y_test_all  = np.hstack(self.ys_test)  if len(self.ys_test)  > 1 else self.ys_test[0]
-            #print(X_train_all.mean())
-            #print(len(y_train_all))
-            #print(len(y_test_all))
-            #print(len(self.ys_test))
-            #print(len(self.ys_train))
             X0 = np.vstack([X_test_all])
             y0 = np.hstack([y_test_all])
 
@@ -775,13 +766,10 @@ class DataCollaborationAnalysis:
             return Xpub_syn
 
     def make_intermediate_expression(self) -> None:
-        print("********************中間表現の生成********************")
+        self.logger.info("********************中間表現の生成********************")
         """
         中間表現を生成する関数
         """
-        print(self.config)
-        print("self.config.dim_intermediate", self.config.dim_intermediate)
-        print()
         # シードを初期化（各機関で進める）
         self.config.f_seed = 0
         
@@ -838,7 +826,6 @@ class DataCollaborationAnalysis:
 
             # shift_vec = np.zeros(X_train_svd.shape[1], dtype=float)
             # shift_vec[axis_idx] = 10.0
-            # print(shift_vec, 444444444444444)
             # # 全データ (train/test/anchor/anchor_test) を同じだけ平行移動
             # X_train_svd = X_train_svd + shift_vec
             # X_test_svd = X_test_svd + shift_vec
@@ -874,8 +861,6 @@ class DataCollaborationAnalysis:
                 # テスト用アンカーデータの標準化
                 anchor_test_svd = scaler.transform(anchor_test_svd)
                 self.anchors_test_inter.append(anchor_test_svd)
-
-        print("中間表現の次元数: ", self.Xs_train_inter[0].shape[1])
 
         self.logger.info(f"中間表現（訓練データ）の数と次元数: {self.Xs_train_inter[0].shape}")
 
@@ -1062,7 +1047,6 @@ class DataCollaborationAnalysis:
                     # 未知項目はスキップ
                     continue
         except Exception as ex:
-            print(f"[WARN] save_artifacts failed: {ex}")
             try:
                 import traceback
                 traceback.print_exc()
@@ -1116,7 +1100,7 @@ class DataCollaborationAnalysis:
         return Xs_train_integ, Xs_test_integ
         
     def make_integrate_expression(self) -> None:
-        print("********************統合表現の生成********************")
+        self.logger.info("********************統合表現の生成********************")
         """
         統合表現を生成する関数
         """
@@ -1129,12 +1113,9 @@ class DataCollaborationAnalysis:
         self._apply_projectors_and_set(projs)
 
         # メトリクス（従来と同様に出力）
-        self.config.g_abs_sum = g_abs_sum
-        print(f"擬似逆行列の絶対値の総和: {self.config.g_abs_sum}")
-        print("統合表現の次元数: ", self.X_train_integ.shape[1])
-
-        # logにも出力
-        self.logger.info(f"統合表現（訓練データ）の数と次元数: {self.X_train_integ.shape}")
+        # self.config.g_abs_sum = g_abs_sum
+        # self.logger.info(f"擬似逆行列の絶対値の総和: {self.config.g_abs_sum}")
+        # self.logger.info(f"統合表現の次元数: {self.X_train_integ.shape[1]}")
 
     def make_integrate_expression_targetvec(self) -> None:
         """
@@ -1146,7 +1127,7 @@ class DataCollaborationAnalysis:
             self.config.num_institution   : 機関数 m
             self.config.num_anchor_data   : アンカー数 r
         """
-        print("********************統合表現の生成 (目標ベクトル型) ********************")
+        self.logger.info("********************統合表現の生成 (目標ベクトル型) ********************")
         c = self.config.num_institution  # 機関数（c に統一）
         r = self.config.num_anchor_data
         I_r = np.eye(r)
@@ -1177,13 +1158,13 @@ class DataCollaborationAnalysis:
         川上・高野 (2024) §3   一般化固有値問題による統合関数
         + オプションで λ に基づくウェイト付け   (exp(-(λ_j-λ1)/(λ_max-λ1)))
         """
-        print("********************統合表現の生成 (一般化固有値型) ********************")
+        self.logger.info("********************統合表現の生成 (一般化固有値型) ********************")
 
         # 各種設定
         m_inter = self.config.dim_integrate
         lambda_gen = getattr(self.config, 'lambda_gen_eigen', 0)
         use_eigen_weighting = bool(getattr(self.config, "use_eigen_weighting", False))
-        print("lambda_gen", lambda_gen)
+        
         orth_ver = bool(getattr(self.config, "orth_ver", None) or False)
 
         # projector 構築とメトリクス取得
@@ -1194,33 +1175,24 @@ class DataCollaborationAnalysis:
         # 形状のプリントは従来通り（再計算せず形状のみ）
         r = self.anchors_inter[0].shape[0]
         sum_d = sum(S.shape[1] for S in self.anchors_inter)
-        print("W_s_tilde.shape", (r, sum_d), "B_s_tilde.shape", (sum_d, sum_d))
-        print("lambda_gen", lambda_gen)
         lambdas = metrics["lambdas"]
-        print(lambdas)
 
-        # 設定へ反映（従来キー名を維持）
-        self.config.jreg_gep = f"{metrics['jreg_gep']:.6g}"
-        print(f"Jreg (GEP) = {self.config.jreg_gep}")
-        self.config.g_norm_val_gep = f"{metrics['g_norm_val_gep']:.6g}"
-        print(f"norm (GEP) = {self.config.g_norm_val_gep}")
-        self.config.sum_objective_function = f"{float(np.sum(lambdas)):.4g}"
-        print(f"λ の総和 (sum_objective_function): {self.config.sum_objective_function}")
-        self.config.g_abs_sum = f"{metrics['g_abs_sum']:.4g}"
-        print(f"V_selの絶対値の総和: {self.config.g_abs_sum}")
-        self.config.g_mean_var = f"{metrics['g_mean_var']:.4g}"
-        print(f"機関ごとのベクトル分散の平均: {self.config.g_mean_var}")
-        self.config.g_condition_number = (
-            f"{metrics['g_condition_number']:.4g}" if np.isfinite(metrics['g_condition_number']) else "inf"
-        )
-        print(f"条件数: {self.config.g_condition_number}")
+        # # 設定へ反映（従来キー名を維持）
+        # self.config.g_norm_val_gep = f"{metrics['g_norm_val_gep']:.6g}"
+        # self.logger.info(f"norm (GEP) = {self.config.g_norm_val_gep}")
+        # self.config.sum_objective_function = f"{float(np.sum(lambdas)):.4g}"
+        # self.logger.info(f"λ の総和 (sum_objective_function): {self.config.sum_objective_function}")
+        # self.config.g_abs_sum = f"{metrics['g_abs_sum']:.4g}"
+        # self.logger.info(f"V_selの絶対値の総和: {self.config.g_abs_sum}")
+        # self.config.g_mean_var = f"{metrics['g_mean_var']:.4g}"
+        # self.logger.info(f"機関ごとのベクトル分散の平均: {self.config.g_mean_var}")
+        # self.config.g_condition_number = (
+        #     f"{metrics['g_condition_number']:.4g}" if np.isfinite(metrics['g_condition_number']) else "inf"
+        # )
+        # self.logger.info(f"条件数: {self.config.g_condition_number}")
 
         # projector を適用して属性にセット
         self._apply_projectors_and_set(projs)
-
-        print("統合表現の次元数:", self.X_train_integ.shape[1])
-        self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
-        self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
 
         if use_eigen_weighting:
             self.config.eigenvalues = lambdas
@@ -1230,7 +1202,7 @@ class DataCollaborationAnalysis:
         Orthogonal Procrustes Problem (OPP) に基づく統合表現を生成する。
         G_k = U_k V_k^T  where  anchor_k^T @ anchor_1 = U_k Σ_k V_k^T
         """
-        print("********************統合表現の生成 (Orthogonal Procrustes) ********************")
+        self.logger.info("********************統合表現の生成 (Orthogonal Procrustes) ********************")
 
         if not self.anchors_inter:
             self.logger.error("アンカーの中間表現が生成されていません。")
@@ -1240,14 +1212,7 @@ class DataCollaborationAnalysis:
         projs, anchor_1_Z = build_odc_projectors(self.anchors_inter)
         self._apply_projectors_and_set(projs)
 
-        # 互換のため保持
         self.Z_integ = anchor_1_Z
-    
-        print("統合表現の次元数:", self.X_train_integ.shape[1])
-        self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
-        self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
-
-    
 
     def _one_hot(self, y: np.ndarray, classes: np.ndarray) -> np.ndarray:
         # classes の順に one-hot を作る（列順が常に一定）
@@ -1276,16 +1241,8 @@ class DataCollaborationAnalysis:
             L_between=self.L_between,
         )
 
-        # 以前と同様に gamma を表示
-        print(gammas)
-
         # projector を適用して属性にセット
         self._apply_projectors_and_set(projs)
-
-        self.logger.info(f"nonlinear integrate: X_train {self.X_train_integ.shape}")
-        print("統合表現の次元数:", self.X_train_integ.shape[1])
-        self.logger.info(f"統合表現（訓練）: {self.X_train_integ.shape}")
-        self.logger.info(f"統合表現（テスト）: {self.X_test_integ.shape}")
 
         # 固有値の小さい順に m_inter 個選択し総和
         sum_lambdas = float(np.sum(eigvals[:m_inter]))
@@ -1293,8 +1250,8 @@ class DataCollaborationAnalysis:
 
         self.Z_integ = Z_integ
 
-        print(f"固有値 λ の上位 {m_inter} 個の総和: {self.config.g_abs_sum}")
-        #print(f"固有値 λ の目的関数減少 {p̂} 個の総和: {np.sum(eigvals[idx])}")
+        # self.logger.info(f"固有値 λ の上位 {m_inter} 個の総和: {self.config.g_abs_sum}")
+        # self.logger.info(f"固有値 λ の目的関数減少 {p̂} 個の総和: {np.sum(eigvals[idx])}")
         
     def save_representations_to_csv(self, save_dir: Optional[str] = None) -> None:
         """
@@ -1518,13 +1475,13 @@ class DataCollaborationAnalysis:
         # 出力
         if metrics_train.get("summary"):
             s = metrics_train["summary"]
-            print(f"[integrate_metrics/train] ペア数={s['pair_count']}, "
+            self.logger.info(f"[integrate_metrics/train] ペア数={s['pair_count']}, "
                   f"mean_of_means={s['mean_of_means']:.6g}, std_of_means={s['std_of_means']:.6g}, "
                   f"min_mean={s['min_mean']:.6g}, max_mean={s['max_mean']:.6g}")
             self.logger.info(f"[integrate_metrics/train] {s}")
         if metrics_test.get("summary"):
             s = metrics_test["summary"]
-            print(f"[integrate_metrics/test]  ペア数={s['pair_count']}, "
+            self.logger.info(f"[integrate_metrics/test]  ペア数={s['pair_count']}, "
                   f"mean_of_means={s['mean_of_means']:.6g}, std_of_means={s['std_of_means']:.6g}, "
                   f"min_mean={s['min_mean']:.6g}, max_mean={s['max_mean']:.6g}")
             self.logger.info(f"[integrate_metrics/test] {s}")
@@ -1566,7 +1523,7 @@ class DataCollaborationAnalysis:
                 W, *_ = np.linalg.lstsq(X_aug, Zn, rcond=None)
                 Z_hat = X_aug @ W
             except Exception as ex:
-                print(f"[LNI] lstsq failed: {ex} | X_aug={X_aug.shape}, Z={Zn.shape}")
+                self.logger.error(f"[LNI] lstsq failed: {ex} | X_aug={X_aug.shape}, Z={Zn.shape}")
                 traceback.print_exc()
                 return np.nan
 
@@ -1589,7 +1546,7 @@ class DataCollaborationAnalysis:
                 try:
                     v = _lni_from_pair(X, Z)
                 except Exception as ex:
-                    print(f"[LNI] pair evaluation failed: {ex}")
+                    self.logger.error(f"[LNI] pair evaluation failed: {ex}")
                     try:
                         traceback.print_exc()
                     except Exception:
@@ -1633,7 +1590,7 @@ class DataCollaborationAnalysis:
                 W, *_ = np.linalg.lstsq(X_aug, Zn, rcond=None)
                 Z_hat = X_aug @ W
             except Exception as ex:
-                print(f"[LNI] lstsq failed: {ex} | X_aug={X_aug.shape}, Z={Zn.shape}")
+                self.logger.error(f"[LNI] lstsq failed: {ex} | X_aug={X_aug.shape}, Z={Zn.shape}")
                 traceback.print_exc()
                 return None, np.nan
             return W, _compute_lni(Zn, Z_hat)
@@ -1661,7 +1618,7 @@ class DataCollaborationAnalysis:
             try:
                 Z_hat = X_aug @ W
             except Exception as ex:
-                print(f"[LNI] evaluation failed: {ex} | X_aug={X_aug.shape}, W={W.shape}")
+                self.logger.error(f"[LNI] evaluation failed: {ex} | X_aug={X_aug.shape}, W={W.shape}")
                 traceback.print_exc()
                 return np.nan
             return _compute_lni(Zn, Z_hat)
@@ -1706,10 +1663,10 @@ class DataCollaborationAnalysis:
                 return "nan" if (x is None or not np.isfinite(x)) else f"{float(x):.4f}"
             return '[' + ', '.join(_fmt(x) for x in vs) + ']'
         try:
-            print("[LNI] inter per-institution:", _fmt_list(list_inter))
-            print("[LNI] integ per-institution:", _fmt_list(list_integ))
-            print("[LNI] inter_test per-institution:", _fmt_list(list_inter_test))
-            print("[LNI] integ_test per-institution:", _fmt_list(list_integ_test))
+            self.logger.info("[LNI] inter: %s", _fmt_list(list_inter))
+            self.logger.info("[LNI] integ: %s", _fmt_list(list_integ))
+            self.logger.info("[LNI] inter_test: %s", _fmt_list(list_inter_test))
+            self.logger.info("[LNI] integ_test: %s", _fmt_list(list_integ_test))
         except Exception:
             pass
 
@@ -1741,7 +1698,7 @@ class DataCollaborationAnalysis:
         try:
             self.logger.info({k: (None if (v is None or not np.isfinite(v)) else round(v, 6)) for k, v in result.items()})
         except Exception as ex:
-            print(f"[WARN] logging LNI result failed: {ex}")
+            self.logger.warning(f"[WARN] logging LNI result failed: {ex}")
             try:
                 traceback.print_exc()
             except Exception:

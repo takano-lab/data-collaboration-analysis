@@ -61,8 +61,7 @@ def _has_preserved_df(config: Config) -> bool:
         return False
 
 def run_once(config, logger):
-    #logger.info(f"データセット: {config.dataset}")
-    print(f"データセット:{config.dataset}")
+    logger.info(f"データセット: {config.dataset}")
     
     load_preserve = bool(getattr(config, "load_df_data", False))
     preserved_available = _has_preserved_df(config) if load_preserve else False
@@ -82,13 +81,11 @@ def run_once(config, logger):
             ys_test=ys_test,
         )
         data_collaboration.load_existing_df_data()
-        print("data_collaboration.Xs_train", data_collaboration.Xs_train)
-        print("data_collaboration.Xs_test,", data_collaboration.Xs_test)
     # 機関データの生成
     else:
         # datasetの読み込み
         # 1. 前処理まで（単一 df）
-        print("データ新規読み込み中...")
+        logger.info("データ新規読み込み中...")
         df = load_data(config=config)
         # 2. 機関データへ変換 (内部で列制限/機関数補完/ train-test split / even|division)
         Xs_train, Xs_test, ys_train, ys_test, train_df, test_df = prepare_institutional_dataset(df, config)
@@ -209,12 +206,9 @@ def run_once(config, logger):
         else:
             mean_val = min_val = max_val = float("nan")
 
-        print("評価値2", mean_val)
-        #print("config.losses_mean", config.losses_mean)
-        print(f"機関ごとの {config.metrics}: {np.round(inst_losses_arr, 4).tolist()}")
-        print(f"平均: {mean_val:.4f}, 最小: {min_val:.4f}, 最大: {max_val:.4f}")
-        logger.info(f"機関ごとの {config.metrics}: {inst_losses_arr.tolist()}")
-        logger.info(f"平均: {mean_val:.6f}, 最小: {min_val:.6f}, 最大: {max_val:.6f}")
+        logger.info(f"評価値: {mean_val}")
+        logger.info(f"機関ごとの {config.metrics}: {np.round(inst_losses_arr, 4).tolist()}")
+        logger.info(f"平均: {mean_val:.4f}, 最小: {min_val:.4f}, 最大: {max_val:.4f}")
 
         return mean_val
         # --- 機関ごとの「学習データの最頻ラベルに基づく評価」リストを算出して表示 ---
@@ -288,13 +282,13 @@ def run_once(config, logger):
 
                 per_inst_major_label_scores.append(score_i)
 
-            print(f"各機関の最頻ラベルに基づくスコア: {np.round(per_inst_major_label_scores, 4).tolist()}")
+
             logger.info(f"各機関の最頻ラベルに基づくスコア: {per_inst_major_label_scores}")
         except Exception as e:
             # ここはログ/表示のみ（失敗しても主計算には影響させない）
             try:
                 import traceback
-                print(f"[WARN] 最頻ラベルスコア算出に失敗: {e}")
+
                 traceback.print_exc()
             except Exception:
                 pass """

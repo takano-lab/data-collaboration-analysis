@@ -7,7 +7,7 @@ from numpy.linalg import pinv
 from scipy.linalg import block_diag, eigh
 from sklearn.metrics.pairwise import rbf_kernel
 
-from src.utils import self_tuning_gamma
+from src.dimensionality_reduction import self_tuning_gamma
 
 # --- Basic projector factories ---
 
@@ -267,9 +267,6 @@ def build_nonlinear_projectors(
     if lw_alpha == 0:
         Q = (M + M.T) * 0.5
     else:
-        print("aaaaaaaaaa")
-        print(lw_alpha)
-        print(L_within - L_between)
         Q = (M + M.T) * 0.5 + lw_alpha *(L_within - L_between)
     eigvals, eigvecs = np.linalg.eigh(Q)
     eigvals[eigvals < 0] = 0.0
