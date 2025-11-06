@@ -25,7 +25,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"statlog",
     #"qsar",
     #"breast_cancer",
-    "adult",
+    #"adult",
     #"digits",
     #"glass", 
     #"seeds", 
@@ -36,7 +36,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"bank_marketing",
     #"fashion_mnist",
     #"mnist",
-    #"mnist_1248",
+    "mnist_1248",
     #"mnist",
     #"cifar10",
     #"cifar10_800",
@@ -50,7 +50,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
     "F_type": ["umap"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["nonlinear", "Imakura", "GEP", "ODC"], # "nonlinear", "Imakura", "GEP", "ODC"'centralize
+    "G_type": ["fl", "centralize", "individual", "nonlinear", "Imakura", "GEP", "ODC"], # , "nonlinear", "Imakura", "GEP", "ODC" "nonlinear", "Imakura", "GEP", "ODC"'centralize
     "gamma_ratio": [1e-4],#[0.0001],             # 例: [0.1,1,5]
     "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
     "gamma_ratio_krr": [1],
@@ -66,18 +66,18 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "num_institution": [3],
     "K_normalization":[False],
     "anchor_method":["smote"], #gaussian smote
-    "data_distribution":["bias"],# "division" "even"
+    "data_distribution":["division"],# "division" "even"
     "inter_integ_dim_ratio":[1],
     "inter_normalization":[False],
     "evaluate_integrate_metrics":[True],
     "load_df_data":[True],
     "load_intermediate_data":[True],
-    "seed_values":[0],
+    "seed_values":[1, ],
     })
 
 # 2) ループ回数（seed を 0..loop_num-1 で回します）
 #    PARAM_GRID のコンボで "loop_num" を指定するとその値が優先されます
-LOOP_NUM = 30
+LOOP_NUM = 2
 
 # 2-1) 実行失敗時の挙動（True でスキップ、False で例外をそのまま投げる）
 ERROR_SKIP = False

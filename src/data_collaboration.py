@@ -73,10 +73,10 @@ class DataCollaborationAnalysis:
         # 統合表現
         self.anchors_integ: list[np.ndarray] = []
         self.anchors_test_integ: list[np.ndarray] = []
-        self.X_train_integ: np.ndarray = np.array([])
-        self.X_test_integ: np.ndarray = np.array([])
-        self.y_train_integ: np.ndarray = np.array([])
-        self.y_test_integ: np.ndarray = np.array([])
+        self.Xs_train_integ: list[np.ndarray] = []
+        self.Xs_test_integ: list[np.ndarray] = []
+        self.ys_train_integ: list[np.ndarray] = []
+        self.ys_test_integ: list[np.ndarray] = []
         # Z_integ: r x m_integ で統一したターゲット（あれば設定）
         self.Z_integ: Optional[np.ndarray] = None
         self.L_within: Optional[np.ndarray] = None
@@ -192,6 +192,34 @@ class DataCollaborationAnalysis:
         bundle = self._build_df_bundle()
         if bundle:
             self._save_preserved_bundle("df", getattr(self.config, "df_name", None), bundle)
+
+    @staticmethod
+    def _stack_features(parts: Sequence[np.ndarray]) -> np.ndarray:
+        if not parts:
+            return np.array([])
+        return np.vstack(parts)
+
+    @staticmethod
+    def _stack_labels(parts: Sequence[np.ndarray]) -> np.ndarray:
+        if not parts:
+            return np.array([])
+        return np.hstack(parts)
+
+    @property
+    def X_train_integ(self) -> np.ndarray:
+        return self._stack_features(self.Xs_train_integ)
+
+    @property
+    def X_test_integ(self) -> np.ndarray:
+        return self._stack_features(self.Xs_test_integ)
+
+    @property
+    def y_train_integ(self) -> np.ndarray:
+        return self._stack_labels(self.ys_train_integ)
+
+    @property
+    def y_test_integ(self) -> np.ndarray:
+        return self._stack_labels(self.ys_test_integ)
     # ------------------------------
     # 共通ヘルパ: インテグレータ（射影関数）
     # ------------------------------
@@ -292,6 +320,10 @@ class DataCollaborationAnalysis:
     def load_existing_df_data(self) -> None:
         # 保存読み込み or train から Xs 作成     
         loaded = False
+        self.Xs_train_integ = []
+        self.Xs_test_integ = []
+        self.ys_train_integ = []
+        self.ys_test_integ = []
         preserved = self._load_preserved_bundle("df", getattr(self.config, "df_name", None))
         if preserved:
             def _restore_dataframe(saved: Sequence[object], current: pd.DataFrame) -> pd.DataFrame:
@@ -1076,11 +1108,11 @@ class DataCollaborationAnalysis:
             self.anchors_integ.append(proj(anc_tr))
             self.anchors_test_integ.append(proj(anc_te))
 
-        # スタック & y も連結
-        self.X_train_integ = np.vstack(Xs_train_integ)
-        self.X_test_integ = np.vstack(Xs_test_integ)
-        self.y_train_integ = np.hstack(self.ys_train)
-        self.y_test_integ = np.hstack(self.ys_test)
+        # 統合表現を機関ごとに保持
+        self.Xs_train_integ = Xs_train_integ
+        self.Xs_test_integ = Xs_test_integ
+        self.ys_train_integ = [np.asarray(y) for y in self.ys_train]
+        self.ys_test_integ = [np.asarray(y) for y in self.ys_test]
         return Xs_train_integ, Xs_test_integ
         
     def make_integrate_expression(self) -> None:
@@ -1301,27 +1333,41 @@ class DataCollaborationAnalysis:
 
 
         # --- 統合表現の保存 ---
-        # 統合表現を機関ごとに再分割
-        train_sizes = [len(y) for y in self.ys_train]
-        test_sizes = [len(y) for y in self.ys_test]
-        train_indices = np.cumsum([0] + train_sizes)
-        test_indices = np.cumsum([0] + test_sizes)
-
-        Xs_train_integ_split = [self.X_train_integ[train_indices[i]:train_indices[i+1]] for i in range(num_institutions)]
-        Xs_test_integ_split = [self.X_test_integ[test_indices[i]:test_indices[i+1]] for i in range(num_institutions)]
+        Xs_train_integ_split = self.Xs_train_integ
+        Xs_test_integ_split = self.Xs_test_integ
+        ys_train_integ_split = self.ys_train_integ
+        ys_test_integ_split = self.ys_test_integ
+        available = min(
+            len(Xs_train_integ_split),
+            len(ys_train_integ_split),
+            len(Xs_test_integ_split),
+            len(ys_test_integ_split),
+            num_institutions,
+        )
 
         integrated_dfs = []
-        for i in range(num_institutions):
+        for i in range(available):
+            X_train_integ_curr = Xs_train_integ_split[i]
+            y_train_integ_curr = ys_train_integ_split[i]
+            X_test_integ_curr = Xs_test_integ_split[i]
+            y_test_integ_curr = ys_test_integ_split[i]
+
             # Train
-            df_train_integ = pd.DataFrame(Xs_train_integ_split[i], columns=[f'dim_{j+1}' for j in range(Xs_train_integ_split[i].shape[1])])
-            df_train_integ['y'] = self.ys_train[i]
+            df_train_integ = pd.DataFrame(
+                X_train_integ_curr,
+                columns=[f'dim_{j+1}' for j in range(X_train_integ_curr.shape[1])],
+            )
+            df_train_integ['y'] = y_train_integ_curr
             df_train_integ['data_type'] = 'train'
             df_train_integ['institution'] = i
             integrated_dfs.append(df_train_integ)
 
             # Test
-            df_test_integ = pd.DataFrame(Xs_test_integ_split[i], columns=[f'dim_{j+1}' for j in range(Xs_test_integ_split[i].shape[1])])
-            df_test_integ['y'] = self.ys_test[i]
+            df_test_integ = pd.DataFrame(
+                X_test_integ_curr,
+                columns=[f'dim_{j+1}' for j in range(X_test_integ_curr.shape[1])],
+            )
+            df_test_integ['y'] = y_test_integ_curr
             df_test_integ['data_type'] = 'test'
             df_test_integ['institution'] = i
             integrated_dfs.append(df_test_integ)

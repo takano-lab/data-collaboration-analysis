@@ -13,7 +13,7 @@ from sklearn.datasets import fetch_olivetti_faces, fetch_openml, load_digits, ma
 from sklearn.decomposition import PCA
 from sklearn.impute import KNNImputer
 from sklearn.model_selection import train_test_split
-from tdc.single_pred import ADME, HTS, Tox
+# from tdc.single_pred import ADME, HTS, Tox
 
 from config.config import Config
 

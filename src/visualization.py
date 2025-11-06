@@ -363,20 +363,16 @@ class DataCollabVisualizer:
         self.visualize_anchors(save_dir=save_dir)
 
         save_dir = save_dir or a.config.output_path / "visualizations"
-        if not a.Xs_train or not a.Xs_train_inter or a.X_train_integ.size == 0:
+        if not a.Xs_train or not a.Xs_train_inter or not a.Xs_train_integ:
             print("可視化する表現が生成されていません。run()メソッドを実行してください。")
             return
 
         num_institutions = a.config.num_institution
 
         # 統合表現を機関ごとに再分割
-        train_sizes = [len(y) for y in a.ys_train]
-        test_sizes = [len(y) for y in a.ys_test]
-        train_indices = np.cumsum([0] + train_sizes)
-        test_indices = np.cumsum([0] + test_sizes)
 
-        Xs_train_integ_split = [a.X_train_integ[train_indices[i]:train_indices[i+1]] for i in range(num_institutions)]
-        Xs_test_integ_split = [a.X_test_integ[test_indices[i]:test_indices[i+1]] for i in range(num_institutions)]
+        Xs_train_integ_split = a.Xs_train_integ
+        Xs_test_integ_split = a.Xs_test_integ
 
         # 統合表現プロットの軸スケールを統一するための範囲計算
         # Train
@@ -420,7 +416,7 @@ class DataCollabVisualizer:
 
             # 3. 統合表現 (Train) - 機関ごと
             sns.scatterplot(
-                x=Xs_train_integ_split[i][:, 0], y=Xs_train_integ_split[i][:, 1], hue=a.ys_train[i],
+                x=Xs_train_integ_split[i][:, 0], y=Xs_train_integ_split[i][:, 1], hue=a.ys_train_integ[i],
                 palette="viridis", ax=axes_train[i, 2], legend="full"
             )
             axes_train[i, 2].set_title(f"Institution {i+1} - Integrated Expression")
@@ -433,13 +429,13 @@ class DataCollabVisualizer:
             other_institutions_indices = [j for j in range(num_institutions) if j != i]
             if other_institutions_indices:
                 X_other = np.vstack([Xs_train_integ_split[j] for j in other_institutions_indices])
-                y_other = np.hstack([a.ys_train[j] for j in other_institutions_indices])
+                y_other = np.hstack([a.ys_train_integ[j] for j in other_institutions_indices])
                 sns.scatterplot(
                     x=X_other[:, 0], y=X_other[:, 1], hue=y_other,
                     palette="viridis", ax=axes_train[i, 3], legend=False, alpha=1.0
                 )
             sns.scatterplot(
-                x=Xs_train_integ_split[i][:, 0], y=Xs_train_integ_split[i][:, 1], hue=a.ys_train[i],
+                x=Xs_train_integ_split[i][:, 0], y=Xs_train_integ_split[i][:, 1], hue=a.ys_train_integ[i],
                 palette="viridis", ax=axes_train[i, 3], legend="full", alpha=1.0
             )
             axes_train[i, 3].set_title(f"All Institutions (Institution {i+1} Highlighted)")

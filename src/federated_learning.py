@@ -75,6 +75,38 @@ def run_federated_learning(
     lr = config.get("lr", 0.01)
     seed = config.get("seed", 42)
     
+    # ===== DEBUG: NaN diagnostics (temporary; remove after investigation) =====
+    def _debug_report_nan(name: str, array: np.ndarray) -> None:
+        if array is None or array.size == 0:
+            return
+        nan_mask = np.isnan(array)
+        if not nan_mask.any():
+            return
+        total = int(nan_mask.sum())
+        msg_total = f"[nan-debug] {name}: detected {total} NaN values."
+        try:
+            logger.warning(msg_total)
+        except Exception:
+            print(msg_total)
+        per_feature = nan_mask.sum(axis=0)
+        bad_cols = np.where(per_feature > 0)[0]
+        for col in bad_cols:
+            count = int(per_feature[col])
+            sample_ids = np.where(nan_mask[:, col])[0][:5]
+            msg_col = (
+                f"[nan-debug] {name}: feature #{col} has {count} NaNs "
+                f"(sample indices: {sample_ids.tolist()})"
+            )
+            try:
+                logger.warning(msg_col)
+            except Exception:
+                print(msg_col)
+
+    for idx, client_X in enumerate(clients_X_train):
+        _debug_report_nan(f"client[{idx}]_X_train", client_X)
+    _debug_report_nan("X_test", X_test)
+    # ===== END DEBUG =====
+
     # グローバルモデルの初期化
     global_model = ScratchMLP(input_size, hidden_size, n_classes, seed)
     

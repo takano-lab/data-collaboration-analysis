@@ -22,9 +22,13 @@ logger = TypeVar("logger")
 # ----------------------------------------------------------------------
 # 集中解析
 # ----------------------------------------------------------------------
-def centralize_analysis(config: Config, logger: logger, y_name) -> None:
-    train_df = pd.read_csv(config.output_path / "train.csv")
-    test_df = pd.read_csv(config.output_path / "test.csv")
+def centralize_analysis(    
+    train_df: np.ndarray,
+    test_df: np.ndarray,
+    config: Config, 
+    logger: logger,
+    y_name: str
+) -> None:
 
     # 目的変数と特徴量を分離
     y_train = train_df.pop(y_name).values
@@ -48,9 +52,13 @@ def centralize_analysis(config: Config, logger: logger, y_name) -> None:
     #record_value_to_cfg(config, "集中解析", metrics)
     return metrics
 
-def centralize_analysis_with_dimension_reduction(config: Config, logger: logger, y_name) -> None:
-    train_df = pd.read_csv(config.output_path / "train.csv")
-    test_df = pd.read_csv(config.output_path / "test.csv")
+def centralize_analysis_with_dimension_reduction(
+    train_df: np.ndarray,
+    test_df: np.ndarray,
+    config: Config, 
+    logger: logger,
+    y_name: str
+) -> None:
 
     # 目的変数と特徴量を分離
     y_train = train_df.pop(y_name).values
@@ -227,12 +235,17 @@ def fl_analysis(
     total_n = sum(s['n'] for s in client_stats)
     global_mean = sum(s['sum'] for s in client_stats) / total_n
     global_var = (sum(s['sum_sq'] for s in client_stats) / total_n) - (global_mean**2)
+    global_var = np.maximum(global_var, 0.0)
     global_std = np.sqrt(global_var)
+    global_std = np.nan_to_num(global_std, nan=0.0, posinf=0.0, neginf=0.0)
     global_std[global_std == 0] = 1.0
 
     # 各クライアントのデータを標準化
-    clients_X_train_std = [(X - global_mean) / global_std for X in Xs_train]
-    X_test_all_std = (np.concatenate(Xs_test) - global_mean) / global_std
+    clients_X_train_std = [
+        np.nan_to_num((X - global_mean) / global_std)
+        for X in Xs_train
+    ]
+    X_test_all_std = np.nan_to_num((np.concatenate(Xs_test) - global_mean) / global_std)
 
     # 3. スクラッチ実装のFL関数を呼び出し
     fl_config = {
