@@ -268,9 +268,10 @@ def build_nonlinear_projectors(
         Q = (M + M.T) * 0.5
     else:
         Q = (M + M.T) * 0.5 + lw_alpha *(L_within - L_between)
-    eigvals, eigvecs = np.linalg.eigh(Q)
-    eigvals[eigvals < 0] = 0.0
-    order = np.argsort(eigvals)
+    eigvals_raw, eigvecs = np.linalg.eigh(Q)
+    eigvals_raw[eigvals_raw < 0] = 0.0
+    order = np.argsort(eigvals_raw)
+    eigvals_selected = eigvals_raw[order[:dim_integrate]]
     Z_integ = eigvecs[:, order[:dim_integrate]]
     for j in range(Z_integ.shape[1]):
         nz = np.linalg.norm(Z_integ[:, j])
@@ -285,4 +286,4 @@ def build_nonlinear_projectors(
         )
         projs.append(proj)
 
-    return projs, Z_integ, eigvals, gammas
+    return projs, Z_integ, eigvals_selected, gammas
