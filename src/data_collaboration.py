@@ -1,7 +1,4 @@
-from src.integrated_representation.build_integrated_representation import (
-    IntegratedExpressionBuilder,
-    IntegratedRepresentationBuilder,
-)
+from src.integrated_expression.builder import IntegratedExpressionBuilder, IntegratedRepresentationBuilder
 
 # Backwards compatibility alias
 DataCollaborationAnalysis = IntegratedExpressionBuilder

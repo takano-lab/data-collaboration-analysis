@@ -56,7 +56,8 @@ class DataCollabVisualizer:
             return
 
         # --- ラベルの準備 ---
-        a.assign_anchor_labels()
+        if hasattr(a, "assign_anchor_labels"):
+            a.assign_anchor_labels()
         anchor_labels_train = a.anchor_y if hasattr(a, 'anchor_y') else np.zeros(a.anchor.shape[0] if has_train_data else 0)
         anchor_labels_test = a.anchor_y_test if hasattr(a, 'anchor_y_test') else np.zeros(a.anchor_test.shape[0] if has_test_data else 0)
         legend_status = "full" if np.unique(anchor_labels_train).size > 1 else False
@@ -358,7 +359,8 @@ class DataCollabVisualizer:
         import seaborn as sns
 
         a = self.a
-        a.assign_anchor_labels()
+        if hasattr(a, "assign_anchor_labels"):
+            a.assign_anchor_labels()
         self.visualize_anchors(save_dir=save_dir)
 
         save_dir = save_dir or a.config.output_path / "visualizations"

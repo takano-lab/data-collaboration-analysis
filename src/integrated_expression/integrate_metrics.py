@@ -6,9 +6,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 import numpy as np
 
 if TYPE_CHECKING:
-    from src.integrated_representation.build_integrated_representation import (
-        IntegratedRepresentationBuilder,
-    )
+    from .builder import IntegratedRepresentationBuilder
 
 
 def integrate_metrics(builder: "IntegratedRepresentationBuilder") -> dict:

@@ -12,7 +12,6 @@ import pandas as pd
 from sklearn.datasets import fetch_olivetti_faces, fetch_openml, load_digits, make_moons, make_swiss_roll
 from sklearn.decomposition import PCA
 from sklearn.impute import KNNImputer
-from sklearn.model_selection import train_test_split
 # from tdc.single_pred import ADME, HTS, Tox
 
 from config.config import Config
@@ -531,7 +530,7 @@ def _load_har() -> pd.DataFrame:
     # HAR データセットのルートパス
     root = Path("input/UCI_HAR_Dataset")  # WindowsでもOKな相対パス
         
-    features = pd.read_csv(root / "features.txt", sep="\s+", header=None)[1].tolist()
+    features = pd.read_csv(root / "features.txt", sep="\\s+", header=None)[1].tolist()
 
     # 名前が重複している列を自動リネーム（例：angle(X,gravityMean) → angle(X,gravityMean).1）
     from collections import Counter

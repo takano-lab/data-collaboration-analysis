@@ -12,12 +12,9 @@ from tqdm import tqdm
 
 from config.config import Config
 from config.config_logger import record_config_to_cfg, record_value_to_cfg
-from src.institution_data_and_intermediate_representation.build_institution_data_and_intermediate_representation import (
-    InstitutionDatasetBuilder,
-)
-from src.integrated_representation.build_integrated_representation import (
-    IntegratedExpressionBuilder,
-)
+from src.institution_data_pipeline import InstitutionDatasetBuilder
+from src.intermediate_expression import IntermediateExpressionBuilder
+from src.integrated_expression import IntegratedExpressionBuilder
 from src.institutional_analysis import (
     centralize_analysis,
     centralize_analysis_with_dimension_reduction,
@@ -29,14 +26,14 @@ from src.institutional_analysis import (
 )
 from src.model import ModelRunner
 from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
-from src.visualization import DataCollabVisualizer
+from src.integrated_expression.visualization import DataCollabVisualizer
 
 
 def run_once(config, logger):
     logger.info(f"データセット: {config.dataset}")
 
     dataset_builder = InstitutionDatasetBuilder(config=config, logger=logger)
-    dataset_builder.make_institution_dataset()
+    dataset_artifacts = dataset_builder.run()
     data_collaboration = dataset_builder
 
     metrics_dict = {}
@@ -96,9 +93,11 @@ def run_once(config, logger):
         return metrics_fl
     
     else:
-        dataset_builder.make_intermediate_expression()
-        data_collaboration = IntegratedExpressionBuilder.from_institution_builder(dataset_builder)
-        data_collaboration.make_integrate_expression()
+        intermediate_builder = IntermediateExpressionBuilder(config=config, logger=logger)
+        intermediate_artifacts = intermediate_builder.run(dataset_artifacts)
+
+        data_collaboration = IntegratedExpressionBuilder(config=config, logger=logger)
+        integrated_artifacts = data_collaboration.run(intermediate_artifacts)
 
         if config.visualize:
             viz = DataCollabVisualizer(data_collaboration, logger)

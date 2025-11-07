@@ -138,6 +138,7 @@ dmypy.json
 *input/UCI_HAR_Dataset/
 input/
 output/
+temp_output/
 # csv
 *.csv
 
