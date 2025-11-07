@@ -13,8 +13,7 @@ from config.config import Config
 from config.config_logger import record_config_to_cfg, record_value_to_cfg
 from src.federated_learning import run_federated_learning  # スクラッチ実装をインポート
 from src.model import ModelRunner
-
-from src.dimensionality_reduction import reduce_dimensions
+from src.dimensionality_reduction import build_dimensionality_projector
 
 logger = TypeVar("logger")
 
@@ -52,32 +51,36 @@ def centralize_analysis(
     return metrics
 
 def centralize_analysis_with_dimension_reduction(
-    train_df: np.ndarray,
-    test_df: np.ndarray,
-    config: Config, 
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    config: Config,
     logger: logger,
-    y_name: str
-) -> None:
-
-    # 目的変数と特徴量を分離
+    y_name: str,
+) -> float:
     y_train = train_df.pop(y_name).values
     y_test = test_df.pop(y_name).values
-    
     X_train = train_df.values
     X_test = test_df.values
 
-    # SVD
-    X_tr_svd, X_te_svd, _, _ = reduce_dimensions(X_train, X_test, n_components=config.dim_integrate, seed=config.f_seed)
+    projector = build_dimensionality_projector(
+        X=X_train,
+        n_components=config.dim_integrate,
+        y=y_train,
+        F_type=getattr(config, "F_type", "svd"),
+        seed=getattr(config, "f_seed", None),
+        config=config,
+    )
+    X_tr_svd = projector(X_train)
+    X_te_svd = projector(X_test)
+
     model_runner = ModelRunner(config)
     metrics = model_runner.run(
-                    X_train=X_tr_svd,
-                    y_train=y_train,
-                    X_test=X_te_svd,
-                    y_test=y_test
-                )
-
+        X_train=X_tr_svd,
+        y_train=y_train,
+        X_test=X_te_svd,
+        y_test=y_test,
+    )
     logger.info(f"集中解析（次元削減）の評価値: {metrics:.4f}")
-
     return metrics
 
 
@@ -89,26 +92,17 @@ def centralize_analysis_with_institution_dimension_reduction(
     X_train_reduction: np.ndarray,
     config: Config,
     logger: logger,
-) -> None:
-    
-    _, X_tr, _, _= reduce_dimensions(
-        X_train_reduction,
-        X_train,
+) -> float:
+    projector = build_dimensionality_projector(
+        X=X_train_reduction,
         n_components=config.dim_intermediate,
-        F_type=config.F_type,
-        seed=config.f_seed,
+        F_type=getattr(config, "F_type", "svd"),
+        seed=getattr(config, "f_seed", None),
         config=config,
     )
-    
-    _, X_te, _, _= reduce_dimensions(
-        X_train_reduction,
-        X_test,
-        n_components=config.dim_intermediate,
-        F_type=config.F_type,
-        seed=config.f_seed,
-        config=config,
-    )
-    
+    X_tr = projector(X_train)
+    X_te = projector(X_test)
+
     model_runner = ModelRunner(config)
     metrics = model_runner.run(
         X_train=X_tr,
@@ -117,7 +111,6 @@ def centralize_analysis_with_institution_dimension_reduction(
         y_test=y_test,
     )
     logger.info(f"提案手法の評価値: {metrics:.4f}")
-
     return metrics
 
 # ----------------------------------------------------------------------
@@ -146,9 +139,6 @@ def individual_analysis(
 
     return np.mean(losses)
 
-# ----------------------------------------------------------------------
-# 個別解析
-# ----------------------------------------------------------------------
 def individual_analysis_with_dimension_reduction(
     Xs_train: list[np.ndarray],
     ys_train: list[np.ndarray],
@@ -156,48 +146,41 @@ def individual_analysis_with_dimension_reduction(
     ys_test: list[np.ndarray],
     config: Config,
     logger: logger,
-) -> None:
+) -> float:
     losses: list[float] = []
-    
     model_runner = ModelRunner(config)
 
-    even_losses = []    
-    odd_losses = []
-    
     config.f_seed = 0
     config.f_seed_2 = 0
-    mixed = False
-    if config.True_F_type == "kernel_pca_svd_mixed": #
-        mixed = True
-        
-    for i, (X_tr, X_te, y_tr, y_te) in enumerate(zip(Xs_train, Xs_test, ys_train, ys_test)):
-        
+    mixed = config.True_F_type == "kernel_pca_svd_mixed"
+
+    for X_tr, X_te, y_tr, y_te in zip(Xs_train, Xs_test, ys_train, ys_test):
         if mixed:
             if config.f_seed_2 % 2 == 0:
                 config.F_type = "kernel_pca_self_tuning"
             else:
-                config.F_type = "svd"  
+                config.F_type = "svd"
             config.f_seed_2 += 1
 
-        X_tr_svd, X_te_svd, _, _= reduce_dimensions(
-            X_tr,
-            X_te,
+        projector = build_dimensionality_projector(
+            X=X_tr,
             n_components=config.dim_intermediate,
-            F_type=config.F_type,
-            seed=config.f_seed,
+            y=y_tr,
+            F_type=getattr(config, "F_type", "svd"),
+            seed=getattr(config, "f_seed", None),
             config=config,
         )
-
         config.f_seed += 1
+
+        X_tr_svd = projector(X_tr)
+        X_te_svd = projector(X_te)
+
         metrics = model_runner.run(X_tr_svd, y_tr, X_te_svd, y_te)
         losses.append(metrics)
-        if i % 2 == 0:
-            even_losses.append(metrics)
-        else:
-            odd_losses.append(metrics)
-            
-    return config.losses_ind
 
+    mean_score = float(np.mean(losses)) if losses else np.nan
+    logger.info(f"個別解析（次元削減）: {mean_score:.4f}")
+    return mean_score
 
 # ----------------------------------------------------------------------
 # 連合学習 (スクラッチ実装版)

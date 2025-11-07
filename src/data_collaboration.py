@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence, Tuple, TypeVar
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -26,7 +26,7 @@ from src.integration import (
     build_targetvec_projectors,
 )
 from src.paths import OUTPUT_DIR
-from src.dimensionality_reduction import reduce_dimensions, self_tuning_gamma
+from src.dimensionality_reduction import build_dimensionality_projector
 
 logger = TypeVar("logger")
 import csv
@@ -441,22 +441,7 @@ class DataCollaborationAnalysis:
             self.load_intermediate_data()
 
         # 統合表現の生成
-        if self.config.G_type == "Imakura":
-            self.make_integrate_expression()
-        elif self.config.G_type  == "targetvec":
-            self.make_integrate_expression_targetvec()
-        elif self.config.G_type  == "GEP":
-            self.make_integrate_expression_gen_eig()
-        elif self.config.G_type == "ODC": # この分岐を追加
-            self.make_integrate_expression_odc()
-        elif self.config.G_type  == "nonlinear":
-            lw_alpha=getattr(self.config, "lw_alpha", 0.0)
-            if lw_alpha!=0.0:
-                self.assign_anchor_labels(k=5)
-                self.build_laplacians_from_anchor_labels()
-            self.make_integrate_nonlinear_expression()
-        else:
-            self.logger.warning(f"Unknown G_type: {self.config.G_type}")
+        self.make_integrate_expression()
         
         if self.config.evaluate_integrate_metrics:
             self.integrate_metrics()
@@ -766,21 +751,13 @@ class DataCollaborationAnalysis:
 
     def make_intermediate_expression(self) -> None:
         self.logger.info("********************中間表現の生成********************")
-        """
-        中間表現を生成する関数
-        """
-        # シードを初期化（各機関で進める）
+        """各機関のデータを次元削減 projector で共通次元へ写像する。"""
         self.config.f_seed = 0
-        
-        # True_F_type の解釈:
-        # - 文字列: その方式を使用
-        # - リスト/タプル: 機関ごとにローテーションして使用
-        # - 未設定: 現在の F_type を固定使用
+
         tf = getattr(self.config, "True_F_type", None)
         if isinstance(tf, (list, tuple)) and len(tf) > 0:
             ftype_sequence = list(tf)
         elif isinstance(tf, str) and len(tf) > 0:
-            # 従来の mixed キーワードに相当する簡易プリセットにも対応
             if tf == "kernel_pca_svd_mixed":
                 ftype_sequence = ["kernel_pca_self_tuning", "svd"]
             elif tf == "ae_dm_mixed":
@@ -796,72 +773,54 @@ class DataCollaborationAnalysis:
         else:
             ftype_sequence = [self.config.F_type]
 
-        for idx, (X_train, X_test) in enumerate(zip(tqdm(self.Xs_train), self.Xs_test)):
-            # 各機関の F_type を選択（ローテーション）
+        projectors: list[Callable[[Optional[np.ndarray]], Optional[np.ndarray]]] = []
+        for idx, (X_train, _) in enumerate(zip(tqdm(self.Xs_train), self.Xs_test)):
             self.config.F_type = ftype_sequence[idx % len(ftype_sequence)]
-
-            # --- 次元削減 ---
-            current_seed = self.config.f_seed  # シフト判定用に保持
-            X_train_svd, X_test_svd, anchor_svd, anchor_test_svd = reduce_dimensions(
-                X_train=X_train,
-                X_test=X_test,
+            current_seed = self.config.f_seed
+            y_train = None
+            if isinstance(self.ys_train, list) and idx < len(self.ys_train):
+                y_train = self.ys_train[idx]
+            projector = build_dimensionality_projector(
+                X=X_train,
                 n_components=self.config.dim_intermediate,
-                anchor=self.anchor,
-                anchor_test=self.anchor_test,
                 F_type=self.config.F_type,
                 seed=current_seed,
+                y=y_train,
                 config=self.config,
             )
+            projectors.append(projector)
             self.config.f_seed += 1
 
-            # # --- 偏移（第一/第二成分方向シフト） ---
-            # # 量: config.inter_shift があればそれを使用 (None / 0 / 未設定 は 0 とみなす)
-            # raw_shift = getattr(self.config, "inter_shift", 5.0)
-            # # 偶数 → 第1成分 (index 0), 奇数 → 第2成分 (index 1; 次元不足なら 0)
-            # axis_idx = 0 if (current_seed % 2 == 0) else 1
-            # if X_train_svd.shape[1] <= axis_idx:
-            #     axis_idx = 0  # 次元不足フォールバック
-            # # シフトベクトル作成
+        self.Xs_train_inter = []
+        self.Xs_test_inter = []
+        self.anchors_inter = []
+        self.anchors_test_inter = []
 
-            # shift_vec = np.zeros(X_train_svd.shape[1], dtype=float)
-            # shift_vec[axis_idx] = 10.0
-            # # 全データ (train/test/anchor/anchor_test) を同じだけ平行移動
-            # X_train_svd = X_train_svd + shift_vec
-            # X_test_svd = X_test_svd + shift_vec
-            # anchor_svd = anchor_svd + shift_vec
-            # anchor_test_svd = anchor_test_svd + shift_vec
+        inter_norm = getattr(self.config, "inter_normalization", False)
+        for projector, X_train, X_test in zip(projectors, self.Xs_train, self.Xs_test):
+            X_train_reduced = projector(X_train)
+            X_test_reduced = projector(X_test)
+            anchor_reduced = projector(self.anchor)
+            anchor_test_reduced = projector(self.anchor_test)
 
-            # --- 格納 ---
-            inter_norm = getattr(self.config, "inter_normalization", False)
             if not inter_norm:
-                self.Xs_train_inter.append(X_train_svd)
-                self.Xs_test_inter.append(X_test_svd)
-                self.anchors_inter.append(anchor_svd)
-                self.anchors_test_inter.append(anchor_test_svd)
-            
+                self.Xs_train_inter.append(X_train_reduced)
+                self.Xs_test_inter.append(X_test_reduced)
+                self.anchors_inter.append(anchor_reduced)
+                self.anchors_test_inter.append(anchor_test_reduced)
             else:
-                #標準化 # qsar だと欠損になる
-                
-                # SVDを適用したデータをリストに格納
                 scaler = StandardScaler()
-                
-                # アンカーデータの標準化
-                anchor_svd = scaler.fit_transform(anchor_svd)
-                self.anchors_inter.append(anchor_svd)
+                anchor_scaled = scaler.fit_transform(anchor_reduced)
+                self.anchors_inter.append(anchor_scaled)
+                self.Xs_train_inter.append(scaler.transform(X_train_reduced))
+                self.Xs_test_inter.append(scaler.transform(X_test_reduced))
+                if anchor_test_reduced is not None:
+                    self.anchors_test_inter.append(scaler.transform(anchor_test_reduced))
+                else:
+                    self.anchors_test_inter.append(None)
 
-                # 訓練データの標準化
-                X_train_svd = scaler.transform(X_train_svd)
-                self.Xs_train_inter.append(X_train_svd)
-
-                # テストデータの標準化
-                X_test_svd = scaler.transform(X_test_svd)
-                self.Xs_test_inter.append(X_test_svd)
-
-                # テスト用アンカーデータの標準化
-                anchor_test_svd = scaler.transform(anchor_test_svd)
-                self.anchors_test_inter.append(anchor_test_svd)
-
-        self.logger.info(f"中間表現（訓練データ）の数と次元数: {self.Xs_train_inter[0].shape}")
+        if self.Xs_train_inter:
+            self.logger.info(f"中間表現の形状: {self.Xs_train_inter[0].shape}")
 
     def save_artifacts(
         self,
@@ -1055,7 +1014,31 @@ class DataCollaborationAnalysis:
         return out
 
     # 新しい共通ヘルパ: 生成済みプロジェクタ群を適用して属性をセット
-    def _apply_projectors_and_set(self, projs: list):
+    def make_integrate_expression(self) -> None:
+        """Config の G_type に応じて projector を構築し統合表現へ写像する。"""
+        self.logger.info("********************統合表現の生成********************")
+        g_type = getattr(self.config, "G_type", "Imakura")
+        runner = _INTEGRATION_RUNNERS.get(g_type)
+
+        if runner is None:
+            self.logger.warning(f"Unknown G_type: {g_type}")
+            return
+
+        try:
+            projs, extras = runner(self)
+        except Exception as exc:
+            self.logger.error(f"Failed to build integration projectors for {g_type}: {exc}")
+            raise
+
+        if not projs:
+            self.logger.warning(f"No projectors were returned for G_type={g_type}")
+            return
+
+        self.Xs_train_integ = []
+        self.Xs_test_integ = []
+        self.anchors_integ = []
+        self.anchors_test_integ = []
+
         for proj, X_tr, X_te, anc_tr, anc_te in zip(
             projs, self.Xs_train_inter, self.Xs_test_inter, self.anchors_inter, self.anchors_test_inter
         ):
@@ -1066,162 +1049,16 @@ class DataCollaborationAnalysis:
 
         self.ys_train_integ = [np.asarray(y) for y in self.ys_train]
         self.ys_test_integ = [np.asarray(y) for y in self.ys_test]
-        
-        return 
-        
-    def make_integrate_expression(self) -> None:
-        self.logger.info("********************統合表現の生成********************")
-        """
-        統合表現を生成する関数
-        """
-        # integration.py で projector 群を構築
-        projs, Z_integ, g_abs_sum = build_imakura_projectors(self.anchors_inter, self.config.dim_integrate)
-        # Z_integ を設定（self.Z_integ に統一）
-        self.Z_integ = Z_integ
 
-        # projector を適用して属性にセット
-        self._apply_projectors_and_set(projs)
-
-        # メトリクス（従来と同様に出力）
-        # self.config.g_abs_sum = g_abs_sum
-        # self.logger.info(f"擬似逆行列の絶対値の総和: {self.config.g_abs_sum}")
-        # self.logger.info(f"統合表現の次元数: {self.X_train_integ.shape[1]}")
-
-    def make_integrate_expression_targetvec(self) -> None:
-        """
-        固有値問題 (16) に基づき統合関数 G^(k) を求め，
-        各機関の中間表現を共通表現へ射影する。
-        前提: self.anchors_inter          : list[np.ndarray]  r × d_I
-            self.Xs_train_inter/test_inter : list[np.ndarray] n_k × d_I
-            self.config.dim_common        : 共通表現次元 p̂
-            self.config.num_institution   : 機関数 m
-            self.config.num_anchor_data   : アンカー数 r
-        """
-        self.logger.info("********************統合表現の生成 (目標ベクトル型) ********************")
-        c = self.config.num_institution  # 機関数（c に統一）
-        r = self.config.num_anchor_data
-        I_r = np.eye(r)
-        
-        # --------------------------------------------------
-        # 2. 固有値問題  C_s_tilde z = λ z  を解く（Z_integ を得る）
-        # --------------------------------------------------
-        m_inter = self.config.dim_integrate
-
-        # --------------------------------------------------
-        # 3. 各機関ごとに  g^(k) = (anchor_inter_k)^† Z_integ   を計算
-        #    → 係数行列 G^(k)（d_I × m_integ）
-        # --------------------------------------------------
-        # integration.py のビルダーで projector を構築
-        projs, Z_integ = build_targetvec_projectors(self.anchors_inter, m_inter)
-        # projector を適用して属性にセット
-        self._apply_projectors_and_set(projs)
-
-        # 互換のため保持
-        self.Z_integ = Z_integ
-
-    # ============================================================
-    # 〈統合関数の最適化〉§3 一般化固有値問題 (8) ベース
-    #   A_s_tilde v = λ B_s_tilde v ,  vᵀ B_s_tilde v = 1
-    # ============================================================
-    def make_integrate_expression_gen_eig(self) -> None:
-        """
-        川上・高野 (2024) §3   一般化固有値問題による統合関数
-        + オプションで λ に基づくウェイト付け   (exp(-(λ_j-λ1)/(λ_max-λ1)))
-        """
-        self.logger.info("********************統合表現の生成 (一般化固有値型) ********************")
-
-        # 各種設定
-        m_inter = self.config.dim_integrate
-        lambda_gen = getattr(self.config, 'lambda_gen_eigen', 0)
-        use_eigen_weighting = bool(getattr(self.config, "use_eigen_weighting", False))
-        
-        orth_ver = bool(getattr(self.config, "orth_ver", None) or False)
-
-        # projector 構築とメトリクス取得
-        projs, metrics = build_gep_projectors(
-            self.anchors_inter, m_inter, lambda_gen=lambda_gen, orth_ver=orth_ver
-        )
-
-        # 形状のプリントは従来通り（再計算せず形状のみ）
-        r = self.anchors_inter[0].shape[0]
-        sum_d = sum(S.shape[1] for S in self.anchors_inter)
-        lambdas = metrics["lambdas"]
-
-        # # 設定へ反映（従来キー名を維持）
-        # self.config.g_norm_val_gep = f"{metrics['g_norm_val_gep']:.6g}"
-        # self.logger.info(f"norm (GEP) = {self.config.g_norm_val_gep}")
-        # self.config.sum_objective_function = f"{float(np.sum(lambdas)):.4g}"
-        # self.logger.info(f"λ の総和 (sum_objective_function): {self.config.sum_objective_function}")
-        # self.config.g_abs_sum = f"{metrics['g_abs_sum']:.4g}"
-        # self.logger.info(f"V_selの絶対値の総和: {self.config.g_abs_sum}")
-        # self.config.g_mean_var = f"{metrics['g_mean_var']:.4g}"
-        # self.logger.info(f"機関ごとのベクトル分散の平均: {self.config.g_mean_var}")
-        # self.config.g_condition_number = (
-        #     f"{metrics['g_condition_number']:.4g}" if np.isfinite(metrics['g_condition_number']) else "inf"
-        # )
-        # self.logger.info(f"条件数: {self.config.g_condition_number}")
-
-        # projector を適用して属性にセット
-        self._apply_projectors_and_set(projs)
-
-        if use_eigen_weighting:
-            self.config.eigenvalues = lambdas
-
-    def make_integrate_expression_odc(self) -> None:
-        """
-        Orthogonal Procrustes Problem (OPP) に基づく統合表現を生成する。
-        G_k = U_k V_k^T  where  anchor_k^T @ anchor_1 = U_k Σ_k V_k^T
-        """
-        self.logger.info("********************統合表現の生成 (Orthogonal Procrustes) ********************")
-
-        if not self.anchors_inter:
-            self.logger.error("アンカーの中間表現が生成されていません。")
-            return
-
-        # 2. projector 群を構築して適用
-        projs, anchor_1_Z = build_odc_projectors(self.anchors_inter)
-        self._apply_projectors_and_set(projs)
-
-        self.Z_integ = anchor_1_Z
+        extras = extras or {}
+        if "Z_integ" in extras:
+            self.Z_integ = extras["Z_integ"]
+        if extras.get("eigenvalues") is not None:
+            self.config.eigenvalues = extras["eigenvalues"]
 
     def _one_hot(self, y: np.ndarray, classes: np.ndarray) -> np.ndarray:
         # classes の順に one-hot を作る（列順が常に一定）
         return (y.reshape(-1, 1) == classes.reshape(1, -1)).astype(float)
-
-    # ------------------------------------------------------------------
-    # 〈非線形統合〉　射影行列 P^(k) で Z を最適化する ２段階アルゴリズム
-    # ------------------------------------------------------------------
-    def make_integrate_nonlinear_expression(self) -> None:
-        """
-        非線形（カーネル）版：アンカー同士の射影行列で共通ターゲット Z_integ を導き，
-        各機関データを同じ次元 m_inter へ写像する。
-        """
-        m_inter  = self.config.dim_integrate
-        # integration.py のビルダーで projector を構築
-        projs, Z_integ, eigvals, gammas = build_nonlinear_projectors(
-            self.anchors_inter,
-            self.Xs_train_inter,
-            m_inter,
-            gamma_type=getattr(self.config, "gamma_type", "auto"),
-            gamma_ratio_krr=getattr(self.config, "gamma_ratio_krr", 1.0),
-            K_normalization=bool(getattr(self.config, "K_normalization", False)),
-            nl_lambda=getattr(self.config, "nl_lambda", 1e-2),
-            lw_alpha=getattr(self.config, "lw_alpha", 0.0),
-            L_within=self.L_within,
-            L_between=self.L_between,
-        )
-
-        # projector を適用して属性にセット
-        self._apply_projectors_and_set(projs)
-
-        # 固有値の小さい順に m_inter 個選択し総和
-        #sum_lambdas = float(np.sum(eigvals[:m_inter]))
-        # self.config.g_abs_sum = f"{sum_lambdas:.4g}"
-
-        self.Z_integ = Z_integ
-
-        # self.logger.info(f"固有値 λ の上位 {m_inter} 個の総和: {self.config.g_abs_sum}")
-        # self.logger.info(f"固有値 λ の目的関数減少 {p̂} 個の総和: {np.sum(eigvals[idx])}")
 
     def integrate_metrics(self) -> dict:
         """
@@ -1592,3 +1429,77 @@ class DataCollaborationAnalysis:
             except Exception:
                 pass
         return result
+
+
+IntegrationRunner = Callable[["DataCollaborationAnalysis"], Tuple[list, Dict[str, object]]]
+
+
+def _run_imakura_integration(analysis: "DataCollaborationAnalysis") -> tuple[list, Dict[str, object]]:
+    analysis.logger.info("[integration] runner=Imakura")
+    projs, Z_integ, _ = build_imakura_projectors(analysis.anchors_inter, analysis.config.dim_integrate)
+    return projs, {"Z_integ": Z_integ}
+
+
+def _run_targetvec_integration(analysis: "DataCollaborationAnalysis") -> tuple[list, Dict[str, object]]:
+    analysis.logger.info("[integration] runner=targetvec")
+    projs, Z_integ = build_targetvec_projectors(analysis.anchors_inter, analysis.config.dim_integrate)
+    return projs, {"Z_integ": Z_integ}
+
+
+def _run_gep_integration(analysis: "DataCollaborationAnalysis") -> tuple[list, Dict[str, object]]:
+    analysis.logger.info("[integration] runner=GEP")
+    lambda_gen = getattr(analysis.config, "lambda_gen_eigen", 0)
+    orth_ver = bool(getattr(analysis.config, "orth_ver", None) or False)
+    use_eigen_weighting = bool(getattr(analysis.config, "use_eigen_weighting", False))
+
+    projs, metrics = build_gep_projectors(
+        analysis.anchors_inter,
+        analysis.config.dim_integrate,
+        lambda_gen=lambda_gen,
+        orth_ver=orth_ver,
+    )
+
+    extras: Dict[str, object] = {"metrics": metrics}
+    if use_eigen_weighting and metrics.get("lambdas") is not None:
+        extras["eigenvalues"] = metrics["lambdas"]
+    return projs, extras
+
+
+def _run_odc_integration(analysis: "DataCollaborationAnalysis") -> tuple[list, Dict[str, object]]:
+    analysis.logger.info("[integration] runner=ODC")
+    if not analysis.anchors_inter:
+        analysis.logger.error("アンカーの中間表現が生成されていません")
+        return [], {}
+    projs, anchor_1_Z = build_odc_projectors(analysis.anchors_inter)
+    return projs, {"Z_integ": anchor_1_Z}
+
+
+def _run_nonlinear_integration(analysis: "DataCollaborationAnalysis") -> tuple[list, Dict[str, object]]:
+    analysis.logger.info("[integration] runner=nonlinear")
+    lw_alpha = getattr(analysis.config, "lw_alpha", 0.0)
+    if lw_alpha != 0.0:
+        analysis.assign_anchor_labels(k=5)
+        analysis.build_laplacians_from_anchor_labels()
+
+    projs, Z_integ, eigvals, gammas = build_nonlinear_projectors(
+        analysis.anchors_inter,
+        analysis.Xs_train_inter,
+        analysis.config.dim_integrate,
+        gamma_type=getattr(analysis.config, "gamma_type", "auto"),
+        gamma_ratio_krr=getattr(analysis.config, "gamma_ratio_krr", 1.0),
+        K_normalization=bool(getattr(analysis.config, "K_normalization", False)),
+        nl_lambda=getattr(analysis.config, "nl_lambda", 1e-2),
+        lw_alpha=lw_alpha,
+        L_within=analysis.L_within,
+        L_between=analysis.L_between,
+    )
+    return projs, {"Z_integ": Z_integ, "eigvals": eigvals, "gammas": gammas}
+
+
+_INTEGRATION_RUNNERS: Dict[str, IntegrationRunner] = {
+    "Imakura": _run_imakura_integration,
+    "targetvec": _run_targetvec_integration,
+    "GEP": _run_gep_integration,
+    "ODC": _run_odc_integration,
+    "nonlinear": _run_nonlinear_integration,
+}
