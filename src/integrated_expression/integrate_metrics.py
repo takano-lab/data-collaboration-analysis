@@ -9,6 +9,17 @@ if TYPE_CHECKING:
     from .builder import IntegratedRepresentationBuilder
 
 
+def _builder_log(builder: "IntegratedRepresentationBuilder", message: str, level: str = "info") -> None:
+    logger = getattr(builder, "logger", None)
+    if not logger:
+        return
+    log_fn = getattr(logger, level, None)
+    if callable(log_fn):
+        log_fn(message)
+    else:
+        logger.info(message)
+
+
 def integrate_metrics(builder: "IntegratedRepresentationBuilder") -> dict:
     """Compute pairwise anchor distances in the integrated space."""
 
@@ -36,7 +47,7 @@ def integrate_metrics(builder: "IntegratedRepresentationBuilder") -> dict:
 
     def _compute_metrics(anchors_std_list: list[np.ndarray]) -> dict:
         if not anchors_std_list or len(anchors_std_list) < 2:
-            builder._log("integrate_metrics: insufficient institutions.", level="warning")
+            _builder_log(builder, "integrate_metrics: insufficient institutions.", level="warning")
             return {"pairs": [], "summary": {}}
 
         results = []
@@ -44,12 +55,12 @@ def integrate_metrics(builder: "IntegratedRepresentationBuilder") -> dict:
             Ai = anchors_std_list[i]
             Aj = anchors_std_list[j]
             if Ai is None or Aj is None or Ai.size == 0 or Aj.size == 0:
-                builder._log(f"integrate_metrics: skip invalid pair (i={i}, j={j})", level="warning")
+                _builder_log(builder, f"integrate_metrics: skip invalid pair (i={i}, j={j})", level="warning")
                 continue
 
             n = min(Ai.shape[0], Aj.shape[0])
             if Ai.shape != Aj.shape:
-                builder._log(
+                _builder_log(builder, 
                     f"integrate_metrics: shape mismatch i={i}{Ai.shape}, j={j}{Aj.shape} -> using first {n} rows",
                     level="warning",
                 )
@@ -83,7 +94,7 @@ def integrate_metrics(builder: "IntegratedRepresentationBuilder") -> dict:
     # train metrics
     train_list = builder.anchors_integ
     if not train_list or len(train_list) < 2:
-        builder._log("integrate_metrics: missing train anchors.", level="warning")
+        _builder_log(builder, "integrate_metrics: missing train anchors.", level="warning")
         metrics_train = {"pairs": [], "summary": {}}
         builder.config.integ_metrics_train = 100000
     else:
@@ -104,7 +115,7 @@ def integrate_metrics(builder: "IntegratedRepresentationBuilder") -> dict:
     # test metrics (standardize using train params if available)
     test_list = builder.anchors_test_integ
     if not test_list or len(test_list) < 2:
-        builder._log("integrate_metrics: missing test anchors.", level="warning")
+        _builder_log(builder, "integrate_metrics: missing test anchors.", level="warning")
         metrics_test = {"pairs": [], "summary": {}}
         builder.config.integ_metrics_test = 100000
     else:
@@ -124,7 +135,7 @@ def integrate_metrics(builder: "IntegratedRepresentationBuilder") -> dict:
 
     if metrics_train.get("summary"):
         s = metrics_train["summary"]
-        builder._log(
+        _builder_log(builder, 
             f"[integrate_metrics/train] pairs={s['pair_count']}, "
             f"mean_of_means={s['mean_of_means']:.6g}, std_of_means={s['std_of_means']:.6g}, "
             f"min_mean={s['min_mean']:.6g}, max_mean={s['max_mean']:.6g}",
@@ -132,7 +143,7 @@ def integrate_metrics(builder: "IntegratedRepresentationBuilder") -> dict:
         )
     if metrics_test.get("summary"):
         s = metrics_test["summary"]
-        builder._log(
+        _builder_log(builder, 
             f"[integrate_metrics/test] pairs={s['pair_count']}, "
             f"mean_of_means={s['mean_of_means']:.6g}, std_of_means={s['std_of_means']:.6g}, "
             f"min_mean={s['min_mean']:.6g}, max_mean={s['max_mean']:.6g}",
@@ -159,7 +170,7 @@ def evaluate_nonlinearity_indices(builder: "IntegratedRepresentationBuilder") ->
             W, *_ = np.linalg.lstsq(X_aug, Zn, rcond=None)
             Z_hat = X_aug @ W
         except Exception as ex:
-            builder._log(f"[LNI] lstsq failed: {ex} | X_aug={X_aug.shape}, Z={Zn.shape}", level="error")
+            _builder_log(builder, f"[LNI] lstsq failed: {ex} | X_aug={X_aug.shape}, Z={Zn.shape}", level="error")
             traceback.print_exc()
             return np.nan
         diff = Zn - Z_hat
@@ -202,7 +213,7 @@ def evaluate_nonlinearity_indices(builder: "IntegratedRepresentationBuilder") ->
             W, *_ = np.linalg.lstsq(X_aug, Zn, rcond=None)
             Z_hat = X_aug @ W
         except Exception as ex:
-            builder._log(f"[LNI] lstsq failed: {ex} | X_aug={X_aug.shape}, Z={Zn.shape}", level="error")
+            _builder_log(builder, f"[LNI] lstsq failed: {ex} | X_aug={X_aug.shape}, Z={Zn.shape}", level="error")
             traceback.print_exc()
             return None, np.nan
         return W, _compute_lni(Zn, Z_hat)
@@ -226,7 +237,7 @@ def evaluate_nonlinearity_indices(builder: "IntegratedRepresentationBuilder") ->
         try:
             Z_hat = X_aug @ W
         except Exception as ex:
-            builder._log(f"[LNI] evaluation failed: {ex} | X_aug={X_aug.shape}, W={W.shape}", level="error")
+            _builder_log(builder, f"[LNI] evaluation failed: {ex} | X_aug={X_aug.shape}, W={W.shape}", level="error")
             traceback.print_exc()
             return np.nan
         return _compute_lni(Zn, Z_hat)
@@ -268,10 +279,10 @@ def evaluate_nonlinearity_indices(builder: "IntegratedRepresentationBuilder") ->
         return "[" + ", ".join(_fmt(x) for x in vs) + "]"
 
     try:
-        builder._log(f"[LNI] inter: {_fmt_list(list_inter)}")
-        builder._log(f"[LNI] integ: {_fmt_list(list_integ)}")
-        builder._log(f"[LNI] inter_test: {_fmt_list(list_inter_test)}")
-        builder._log(f"[LNI] integ_test: {_fmt_list(list_integ_test)}")
+        _builder_log(builder, f"[LNI] inter: {_fmt_list(list_inter)}")
+        _builder_log(builder, f"[LNI] integ: {_fmt_list(list_integ)}")
+        _builder_log(builder, f"[LNI] inter_test: {_fmt_list(list_inter_test)}")
+        _builder_log(builder, f"[LNI] integ_test: {_fmt_list(list_integ_test)}")
     except Exception:
         pass
 
@@ -299,11 +310,11 @@ def evaluate_nonlinearity_indices(builder: "IntegratedRepresentationBuilder") ->
         "integ_test": lni_integ_test,
     }
     try:
-        builder._log(
+        _builder_log(builder, 
             {k: (None if (v is None or not np.isfinite(v)) else round(v, 6)) for k, v in result.items()}
         )
     except Exception as ex:
-        builder._log(f"[WARN] logging LNI result failed: {ex}", level="warning")
+        _builder_log(builder, f"[WARN] logging LNI result failed: {ex}", level="warning")
         traceback.print_exc()
     return result
 

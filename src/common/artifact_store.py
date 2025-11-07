@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pickle
+import hashlib
 from pathlib import Path
 from typing import Optional
 
@@ -49,6 +50,13 @@ class ArtifactStore:
     def _safe_name(raw: Optional[str]) -> str:
         if not raw:
             return "default"
-        cleaned = ["_" if not (c.isalnum() or c in "-_") else c for c in str(raw)]
+        text = str(raw)
+        cleaned = ["_" if not (c.isalnum() or c in "-_") else c for c in text]
         slug = "".join(cleaned).strip("_")
-        return slug or "default"
+        if not slug:
+            slug = "default"
+        max_len = 120
+        if len(slug) > max_len:
+            digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
+            slug = f"{slug[:max_len-11]}_{digest}"
+        return slug

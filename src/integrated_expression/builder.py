@@ -74,7 +74,8 @@ class IntegratedExpressionBuilder:
         try:
             evaluate_nonlinearity_indices(self)
         except Exception as exc:  # pragma: no cover - diagnostics only
-            self._log(f"[WARN] evaluate_nonlinearity_indices failed: {exc}")
+            if self.logger:
+                self.logger.warning("evaluate_nonlinearity_indices failed: %s", exc)
 
         if metrics is not None:
             artifacts = replace(artifacts, metrics=metrics)
@@ -84,7 +85,8 @@ class IntegratedExpressionBuilder:
 
     # ------------------------------------------------------------------ #
     def _build_integrated_artifacts(self) -> IntegratedArtifacts:
-        self._log("******************** Building G (integrated) ********************")
+        if self.logger:
+            self.logger.info("******************** Building G (integrated) ********************")
         projs, extras = self._build_projectors()
         if not projs:
             raise RuntimeError("No integration projectors were built.")
@@ -156,16 +158,6 @@ class IntegratedExpressionBuilder:
         self.ys_test_integ = list(artifacts.ys_test_integ)
         self.Z_integ = artifacts.Z_integ
 
-    def _log(self, message: str, level: str = "info") -> None:
-        if not self.logger:
-            return
-        log_fn = getattr(self.logger, level, None)
-        if callable(log_fn):
-            log_fn(message)
-        else:
-            self.logger.info(message)
-
-
 # ---------------------------------------------------------------------- #
 # Integration runners
 # ---------------------------------------------------------------------- #
@@ -191,10 +183,15 @@ def _run_targetvec_integration(analysis: "IntegratedExpressionBuilder") -> tuple
 
 
 def _run_gep_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    lambda_raw = getattr(analysis.config, "lambda_gen_eigen", 0.0)
+    try:
+        lambda_gen = float(lambda_raw)
+    except (TypeError, ValueError):
+        lambda_gen = 0.0
     projs, metrics = build_gep_projectors(
         anchors_inter=analysis.anchors_inter,
         dim_integrate=_dim_integrate(analysis.config),
-        lambda_gen=getattr(analysis.config, "lambda_gen_eigen", 0.0),
+        lambda_gen=lambda_gen,
         orth_ver=bool(getattr(analysis.config, "orth_ver", False)),
     )
     for key, value in metrics.items():

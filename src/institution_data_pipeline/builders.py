@@ -43,7 +43,8 @@ class InstitutionDatasetBuilder:
         if getattr(self.config, "load_df_data", False):
             loaded = self._load_from_store()
             if loaded:
-                self._log("Loaded dataset artifacts from cache.")
+                if self.logger:
+                    self.logger.info("Loaded dataset artifacts from cache.")
                 return loaded
 
         artifacts = self._build_dataset()
@@ -55,7 +56,8 @@ class InstitutionDatasetBuilder:
 
     # ------------------------------------------------------------------ #
     def _build_dataset(self) -> DatasetArtifacts:
-        self._log("Building dataset artifacts (load_data -> prepare_institutional_dataset).")
+        if self.logger:
+            self.logger.info("Building dataset artifacts (load_data -> prepare_institutional_dataset).")
         raw_df = load_data(config=self.config)
         (
             Xs_train,
@@ -89,10 +91,5 @@ class InstitutionDatasetBuilder:
         self.Xs_test = list(artifacts.Xs_test)
         self.ys_train = list(artifacts.ys_train)
         self.ys_test = list(artifacts.ys_test)
-
-    def _log(self, message: str) -> None:
-        if self.logger:
-            self.logger.info(message)
-
 
 __all__ = ["InstitutionDatasetBuilder"]

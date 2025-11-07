@@ -100,7 +100,7 @@ def run_once(config, logger):
         integrated_artifacts = data_collaboration.run(intermediate_artifacts)
 
         if config.visualize:
-            viz = DataCollabVisualizer(data_collaboration, logger)
+            viz = DataCollabVisualizer(config=config, artifacts=integrated_artifacts, logger=logger)
             viz.visualize_representations()
 
         config.f_seed = 0

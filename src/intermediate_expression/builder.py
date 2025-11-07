@@ -45,7 +45,8 @@ class IntermediateExpressionBuilder:
         if getattr(self.config, "load_intermediate_data", False):
             loaded = self._load_from_store()
             if loaded:
-                self._log("Loaded intermediate artifacts from cache.")
+                if self.logger:
+                    self.logger.info("Loaded intermediate artifacts from cache.")
                 return loaded
 
         artifacts = self._build_intermediate(dataset_artifacts)
@@ -57,7 +58,8 @@ class IntermediateExpressionBuilder:
 
     # ------------------------------------------------------------------ #
     def _build_intermediate(self, dataset: DatasetArtifacts) -> IntermediateArtifacts:
-        self._log("Building intermediate artifacts (anchors + projectors).")
+        if self.logger:
+            self.logger.info("Building intermediate artifacts (anchors + projectors).")
         if not dataset.Xs_train:
             raise RuntimeError("Dataset artifacts do not contain institutional splits.")
 
@@ -188,11 +190,6 @@ class IntermediateExpressionBuilder:
         self.anchors_test_inter = list(artifacts.anchors_test_inter)
         self.L_within = artifacts.L_within
         self.L_between = artifacts.L_between
-
-    def _log(self, message: str) -> None:
-        if self.logger:
-            self.logger.info(message)
-
 
 _FTYPE_MIXTURES = {
     "kernel_pca_svd_mixed": ["kernel_pca_self_tuning", "svd"],

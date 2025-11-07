@@ -36,12 +36,12 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"bank_marketing",
     #"fashion_mnist",
     #"mnist",
-    "mnist_1248",
+    #"mnist_1248",
     #"mnist",
     #"cifar10",
     #"cifar10_800",
     #'3D_gaussian_clusters',
-    #"concentric_three_circles",
+    "concentric_three_circles",
     #"iris",
     #"ecoli",
     #"vowel"
@@ -50,7 +50,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
     "F_type": ["kernel_pca_gamma_fixed"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["fl", "centralize", "individual", "nonlinear", "Imakura", "GEP", "ODC"], # , "nonlinear", "Imakura", "GEP", "ODC" "nonlinear", "Imakura", "GEP", "ODC"'centralize
+    "G_type": ["nonlinear", "imakura", "gep", "odc", "fl", "centralize", "individual", ], # , "nonlinear", "Imakura", "GEP", "ODC" "nonlinear", "Imakura", "GEP", "ODC"'centralize
     "gamma_ratio": [1e-4],#[0.0001],             # 例: [0.1,1,5]
     "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
     "gamma_ratio_krr": [1],
@@ -58,14 +58,14 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "nl_lambda": [0.3],        # LOCKで止められる, 0.00001
     "lw_alpha": [0],
     "metrics": ["accuracy"],
-    "visualize": [False],
+    "visualize": [True],
     #"feature_num": [2],
     "dim_intermediate": [14],#[20, 10, 5, 2],
     "dim_integrate": [14],#[20, 10, 5, 2],
     "num_institution_user": [100],
     "num_institution": [3],
     "K_normalization":[False],
-    "anchor_method":["gaussian"], #gaussian smote
+    "anchor_method":["gaussian"], #gaussian smote 
     "data_distribution":["division"],# "division" "even"
     "inter_integ_dim_ratio":[1],
     "inter_normalization":[False],
