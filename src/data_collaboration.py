@@ -439,8 +439,7 @@ class DataCollaborationAnalysis:
             or not self.anchors_test_inter
         ):
             self.load_intermediate_data()
-        # 中間表現の生成
-        self.config.now = "g"
+
         # 統合表現の生成
         if self.config.G_type == "Imakura":
             self.make_integrate_expression()
@@ -1054,50 +1053,21 @@ class DataCollaborationAnalysis:
                 pass
             self.logger.warning(f"save_artifacts failed: {ex}")
         return out
-    
-    # 統合関数の共通適用ヘルパ
-    def _apply_integrator_per_institution(self, integrator_builder):
-        """integrator_builder を用いて各機関の (X_train, X_test, anchor, anchor_test) に適用する統一ループ。
-        integrator_builder は callable で、引数は機関別の必要行列（例: Z_integ と anchor_inter_k）を受け取り、
-        projector（X -> ...）と係数行列（ログ用）を返す想定。
-        戻り値: (Xs_train_integrate, Xs_test_integrate)
-        副作用: self.anchors_integ, self.anchors_test_integ を追加更新
-        """
-        Xs_train_integrate, Xs_test_integrate = [], []
-        for X_train_inter, X_test_inter, anchor_inter, anchor_test_inter in zip(
-            tqdm(self.Xs_train_inter), self.Xs_test_inter, self.anchors_inter, self.anchors_test_inter
-        ):
-            projector, _ = integrator_builder(anchor_inter)
-            X_train_integrate = projector(X_train_inter)
-            X_test_integrate = projector(X_test_inter)
-            anchor_integ = projector(anchor_inter)
-            anchor_test_integ = projector(anchor_test_inter)
-
-            Xs_train_integrate.append(X_train_integrate)
-            Xs_test_integrate.append(X_test_integrate)
-            self.anchors_integ.append(anchor_integ)
-            self.anchors_test_integ.append(anchor_test_integ)
-
-        return Xs_train_integrate, Xs_test_integrate
 
     # 新しい共通ヘルパ: 生成済みプロジェクタ群を適用して属性をセット
     def _apply_projectors_and_set(self, projs: list):
-        Xs_train_integ: list[np.ndarray] = []
-        Xs_test_integ: list[np.ndarray] = []
         for proj, X_tr, X_te, anc_tr, anc_te in zip(
             projs, self.Xs_train_inter, self.Xs_test_inter, self.anchors_inter, self.anchors_test_inter
         ):
-            Xs_train_integ.append(proj(X_tr))
-            Xs_test_integ.append(proj(X_te))
+            self.Xs_train_integ.append(proj(X_tr))
+            self.Xs_test_integ.append(proj(X_te))
             self.anchors_integ.append(proj(anc_tr))
             self.anchors_test_integ.append(proj(anc_te))
 
-        # 統合表現を機関ごとに保持
-        self.Xs_train_integ = Xs_train_integ
-        self.Xs_test_integ = Xs_test_integ
         self.ys_train_integ = [np.asarray(y) for y in self.ys_train]
         self.ys_test_integ = [np.asarray(y) for y in self.ys_test]
-        return Xs_train_integ, Xs_test_integ
+        
+        return 
         
     def make_integrate_expression(self) -> None:
         self.logger.info("********************統合表現の生成********************")
@@ -1245,95 +1215,13 @@ class DataCollaborationAnalysis:
         self._apply_projectors_and_set(projs)
 
         # 固有値の小さい順に m_inter 個選択し総和
-        sum_lambdas = float(np.sum(eigvals[:m_inter]))
-        self.config.g_abs_sum = f"{sum_lambdas:.4g}"
+        #sum_lambdas = float(np.sum(eigvals[:m_inter]))
+        # self.config.g_abs_sum = f"{sum_lambdas:.4g}"
 
         self.Z_integ = Z_integ
 
         # self.logger.info(f"固有値 λ の上位 {m_inter} 個の総和: {self.config.g_abs_sum}")
         # self.logger.info(f"固有値 λ の目的関数減少 {p̂} 個の総和: {np.sum(eigvals[idx])}")
-        
-    def save_representations_to_csv(self, save_dir: Optional[str] = None) -> None:
-        """
-        中間表現と統合表現をCSVファイルに保存する関数。
-        """
-        save_dir = Path(save_dir or self.config.output_path)
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        if not self.Xs_train_inter or self.X_train_integ.size == 0:
-            self.logger.warning("保存する表現が生成されていません。run()メソッドを実行してください。")
-            return
-
-        num_institutions = self.config.num_institution
-
-        # --- 中間表現の保存 ---
-        intermediate_dfs = []
-        for i in range(num_institutions):
-            # Train
-            df_train_inter = pd.DataFrame(self.Xs_train_inter[i], columns=[f'dim_{j+1}' for j in range(self.Xs_train_inter[i].shape[1])])
-            df_train_inter['y'] = self.ys_train[i]
-            df_train_inter['data_type'] = 'train'
-            df_train_inter['institution'] = i
-            intermediate_dfs.append(df_train_inter)
-
-            # Test
-            df_test_inter = pd.DataFrame(self.Xs_test_inter[i], columns=[f'dim_{j+1}' for j in range(self.Xs_test_inter[i].shape[1])])
-            df_test_inter['y'] = self.ys_test[i]
-            df_test_inter['data_type'] = 'test'
-            df_test_inter['institution'] = i
-            intermediate_dfs.append(df_test_inter)
-
-        df_intermediate_all = pd.concat(intermediate_dfs, ignore_index=True)
-        intermediate_save_path = save_dir / "intermediate_representations.csv"
-        df_intermediate_all.to_csv(intermediate_save_path, index=False)
-        self.logger.info(f"✅ 中間表現をCSVに保存しました: {intermediate_save_path}")
-
-
-        # --- 統合表現の保存 ---
-        Xs_train_integ_split = self.Xs_train_integ
-        Xs_test_integ_split = self.Xs_test_integ
-        ys_train_integ_split = self.ys_train_integ
-        ys_test_integ_split = self.ys_test_integ
-        available = min(
-            len(Xs_train_integ_split),
-            len(ys_train_integ_split),
-            len(Xs_test_integ_split),
-            len(ys_test_integ_split),
-            num_institutions,
-        )
-
-        integrated_dfs = []
-        for i in range(available):
-            X_train_integ_curr = Xs_train_integ_split[i]
-            y_train_integ_curr = ys_train_integ_split[i]
-            X_test_integ_curr = Xs_test_integ_split[i]
-            y_test_integ_curr = ys_test_integ_split[i]
-
-            # Train
-            df_train_integ = pd.DataFrame(
-                X_train_integ_curr,
-                columns=[f'dim_{j+1}' for j in range(X_train_integ_curr.shape[1])],
-            )
-            df_train_integ['y'] = y_train_integ_curr
-            df_train_integ['data_type'] = 'train'
-            df_train_integ['institution'] = i
-            integrated_dfs.append(df_train_integ)
-
-            # Test
-            df_test_integ = pd.DataFrame(
-                X_test_integ_curr,
-                columns=[f'dim_{j+1}' for j in range(X_test_integ_curr.shape[1])],
-            )
-            df_test_integ['y'] = y_test_integ_curr
-            df_test_integ['data_type'] = 'test'
-            df_test_integ['institution'] = i
-            integrated_dfs.append(df_test_integ)
-
-        df_integrated_all = pd.concat(integrated_dfs, ignore_index=True)
-        integrated_save_path = save_dir / "integrated_representations.csv"
-        df_integrated_all.to_csv(integrated_save_path, index=False)
-        self.logger.info(f"✅ 統合表現をCSVに保存しました: {integrated_save_path}")
-
 
     def integrate_metrics(self) -> dict:
         """
