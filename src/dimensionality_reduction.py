@@ -417,16 +417,8 @@ def _run_kpca_family(X, n_components, *, mode: str, config=None, seed=None, **kw
         gamma = self_tuning_gamma(Xts, standardize=False, k=7, summary='median')
         ratio = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 1.0
         gamma *= ratio
-        if config is not None:
-            if not hasattr(config, "nl_gammas") or config.nl_gammas is None:
-                config.nl_gammas = []
-            config.nl_gammas.append(gamma)
     elif mode == "kernel_pca_gamma_fixed":
         gamma = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 1e-4
-        if config is not None:
-            if not hasattr(config, "nl_gammas") or config.nl_gammas is None:
-                config.nl_gammas = []
-            config.nl_gammas.append(gamma)
     else:
         raise ValueError(f"unknown kpca mode: {mode}")
 
@@ -452,13 +444,20 @@ def _run_umap(
     scaler = StandardScaler()
     Xts = scaler.fit_transform(X)
 
-    seed = int(getattr(config, "f_seed", _cfg_int(config, "seed", 0)))
-    metric_choices = ("correlation", "cosine", "euclidean")
-    metric = metric_choices[seed % 3]
+    raw_seed = getattr(config, "f_seed", None)
+    if raw_seed is None:
+        raw_seed = _cfg_int(config, "seed", 0)
+    seed = int(raw_seed)
+    metric_type = _cfg_str(config, "umap_metric", "correlation").lower()
+    if metric_type == "random":
+        metric_choices = ("correlation", "cosine", "euclidean")
+        metric = metric_choices[seed % 3]
+    else:
+        metric = metric_type
     rng = np.random.default_rng(seed + 1337)
-    nn_sample = int(rng.integers(low=2, high=8))
+    nn_sample = _cfg_int(config, "umap_neighbors", 5) # int(rng.integers(low=100, high=100))
     n_neighbors = max(2, min(nn_sample, max(2, Xts.shape[0] - 1)))
-    min_dist = float(rng.uniform(0.0, 0.8))
+    min_dist = float(rng.uniform(0, 1))
 
     extra_params = {}
     tm = _cfg_str(config, "umap_transform_mode", None)
@@ -474,8 +473,12 @@ def _run_umap(
     if mix is not None:
         extra_params["set_op_mix_ratio"] = float(mix)
 
+    max_components = int(min(n_components, max(2, Xts.shape[0] - 2)))
+    if max_components < 2:
+        max_components = 2
+
     model = UMAP(
-        n_components=n_components,
+        n_components=max_components,
         n_neighbors=int(n_neighbors),
         min_dist=float(min_dist),
         metric=metric,

@@ -89,8 +89,9 @@ def run_once(config, logger):
             Xs_test=dataset_builder.Xs_test,
             ys_test=dataset_builder.ys_test,
         )
-        metrics_dict['fl'] = metrics_fl
-        return metrics_fl
+        metrics_dict['fl'] = metrics_fl["mean"]
+        metrics_dict['institutions'] = metrics_fl["per_institution"]
+        return metrics_fl["mean"]
     
     else:
         intermediate_builder = IntermediateExpressionBuilder(config=config, logger=logger)
@@ -103,15 +104,20 @@ def run_once(config, logger):
             viz = DataCollabVisualizer(config=config, artifacts=integrated_artifacts, logger=logger)
             viz.visualize_representations()
 
-        config.f_seed = 0
-
-        n_inst = config.num_institution
+        actual_inst = len(getattr(data_collaboration, "Xs_test_integ", []) or [])
+        if actual_inst == 0:
+            logger.warning("No integrated test splits were produced; skipping DCA evaluation.")
+            return float("nan")
+        if actual_inst != config.num_institution:
+            logger.warning(
+                "Configured num_institution=%s but integrated outputs have %s institutions. Using actual count.",
+                config.num_institution,
+                actual_inst,
+            )
 
         inst_losses = []
 
-        config.f_seed = 0
-
-        for i in range(n_inst):
+        for i in range(actual_inst):
             try:
                 metric_i = dca_analysis(
                     X_train_integ=np.vstack(data_collaboration.Xs_train_integ),

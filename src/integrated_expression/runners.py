@@ -100,19 +100,51 @@ def build_targetvec_projectors(
     return projs, Z_integ
 
 
-def build_gep_projectors(
+def _solve_gep_standard(A: np.ndarray, B: np.ndarray, orth_ver: bool) -> Tuple[np.ndarray, np.ndarray]:
+    if orth_ver:
+        return eigh(A)
+    return eigh(A, B)
+
+
+def _solve_gep_regularized(
+    A: np.ndarray,
+    B: np.ndarray,
+    orth_ver: bool,
+    *,
+    base_eps: float = 1e-6,
+    attempts: int = 6,
+) -> Tuple[np.ndarray, np.ndarray]:
+    eps = base_eps
+    last_error: Exception | None = None
+    for _ in range(max(attempts, 1)):
+        try:
+            if orth_ver:
+                return eigh(A + eps * np.eye(A.shape[0]))
+            return eigh(A, B + eps * np.eye(B.shape[0]))
+        except np.linalg.LinAlgError as exc:
+            last_error = exc
+            eps *= 10.0
+    if last_error is not None:
+        raise last_error
+    raise np.linalg.LinAlgError("Failed to solve generalized eigen problem.")
+
+
+def _nearest_spd(matrix: np.ndarray, min_eig: float = 1e-6) -> np.ndarray:
+    sym = (matrix + matrix.T) / 2.0
+    eigvals, eigvecs = np.linalg.eigh(sym)
+    eigvals = np.maximum(eigvals, min_eig)
+    return eigvecs @ np.diag(eigvals) @ eigvecs.T
+
+
+def _compute_gep_projectors(
     anchors_inter: List[np.ndarray],
     dim_integrate: int,
     *,
-    lambda_gen: float = 0.0,
-    orth_ver: bool = False,
+    lambda_gen: float,
+    orth_ver: bool,
+    solver: Callable[[np.ndarray, np.ndarray, bool], Tuple[np.ndarray, np.ndarray]],
+    regularize_B: bool = False,
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], Dict[str, Any]]:
-    """
-    Generalized eigen problem based projector builders.
-    Returns (projs_per_institution, metrics_dict) where metrics contains:
-      - V_sel, lambdas, g_abs_sum, sum_objective_function, g_norm_val_gep,
-        g_mean_var, g_condition_number
-    """
     c = len(anchors_inter)
     r = anchors_inter[0].shape[0]
     # Build W and B
@@ -126,10 +158,8 @@ def build_gep_projectors(
 
     A_s_tilde = 2 * c * B_s_tilde - 2 * (W_s_tilde.T @ W_s_tilde) + lambda_gen * np.eye(W_s_tilde.shape[1])
 
-    if orth_ver:
-        eigvals, eigvecs = eigh(A_s_tilde)
-    else:
-        eigvals, eigvecs = eigh(A_s_tilde, B_s_tilde)
+    B_for_solver = _nearest_spd(B_s_tilde) if regularize_B else B_s_tilde
+    eigvals, eigvecs = solver(A_s_tilde, B_for_solver, orth_ver)
     order = np.argsort(eigvals)
     lambdas = eigvals[order][:dim_integrate]
     V_sel = eigvecs[:, order[:dim_integrate]]
@@ -187,6 +217,46 @@ def build_gep_projectors(
         "g_condition_number": cond_number,
     }
     return projs, metrics
+
+
+def build_gep_projectors(
+    anchors_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    lambda_gen: float = 0.0,
+    orth_ver: bool = False,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], Dict[str, Any]]:
+    """
+    Legacy (test-aligned) GEP projector builder.
+    """
+    return _compute_gep_projectors(
+        anchors_inter,
+        dim_integrate,
+        lambda_gen=lambda_gen,
+        orth_ver=orth_ver,
+        solver=_solve_gep_standard,
+        regularize_B=False,
+    )
+
+
+def build_gep2_projectors(
+    anchors_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    lambda_gen: float = 0.0,
+    orth_ver: bool = False,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], Dict[str, Any]]:
+    """
+    Enhanced (regularized) GEP projector builder with fallback eigen solver.
+    """
+    return _compute_gep_projectors(
+        anchors_inter,
+        dim_integrate,
+        lambda_gen=lambda_gen,
+        orth_ver=orth_ver,
+        solver=_solve_gep_regularized,
+        regularize_B=True,
+    )
 
 
 def build_odc_projectors(

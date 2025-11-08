@@ -35,21 +35,22 @@ def _is_undefined(v) -> bool:
 def ensure_institution_params(df: pd.DataFrame, config: Config) -> None:
     """未設定パラメータを df に基づき安全に補完 (元 load_data の挙動を踏襲)"""
     if _is_undefined(config.feature_num):
-        config.feature_num = len(df.columns) - 1
+        feature_num = len(df.columns) - 1
     if _is_undefined(config.dim_intermediate):
-        config.dim_intermediate = config.feature_num - 1
+        config.dim_intermediate = feature_num - 1
     if _is_undefined(config.dim_integrate):
         config.dim_integrate = config.dim_intermediate
     if _is_undefined(config.num_institution_user):
         config.num_institution_user = 50
+    y = df["target"].to_numpy()
+    classes, counts = np.unique(y, return_counts=True)
+    n_classes = len(classes)
+
     if _is_undefined(config.num_institution):
-        y = df["target"].to_numpy()
-        classes, counts = np.unique(y, return_counts=True)
-        n_classes = len(classes)
         if _is_undefined(config.num_institution_user) or config.num_institution_user < n_classes:
             config.num_institution_user = max(int(config.num_institution_user or 0), n_classes)
         max_by_total = len(df) // (2 * config.num_institution_user)
-        max_by_class = int(np.min(counts) // 2)
+        max_by_class = int(np.min(counts) // 2) if counts.size else 1
         config.num_institution = max(1, min(max_by_total, max_by_class))
     
     # --- inter_integ_dim_ratio 適用（未設定/None/空/False は 1 とみなす・一度だけ）---
@@ -71,13 +72,41 @@ def ensure_institution_params(df: pd.DataFrame, config: Config) -> None:
     if _is_undefined(getattr(config, "bias_ratio", None)):
         config.bias_ratio = 0.9
 
-def limit_feature_columns(df: pd.DataFrame, config: Config) -> pd.DataFrame:
-    y_name = config.y_name
-    feature_cols = [c for c in df.columns if c != y_name]
-    limited = feature_cols[: config.feature_num]
-    final_cols = limited + [y_name]
-    return df[final_cols].copy()
+    # Ensure total rows are sufficient for even split; adjust downward if needed
+    total_rows = len(df)
+    num_inst = int(getattr(config, "num_institution", 1) or 1)
+    num_inst = max(1, num_inst)
+    num_inst_user = int(getattr(config, "num_institution_user", n_classes) or n_classes)
+    num_inst_user = max(n_classes, num_inst_user)
 
+    max_per_user = total_rows // (2 * num_inst) if num_inst > 0 else 0
+    if max_per_user < n_classes:
+        # Reduce institutions to increase per-user capacity
+        feasible_inst = total_rows // (2 * n_classes)
+        if feasible_inst >= 1:
+            num_inst = feasible_inst
+            max_per_user = total_rows // (2 * num_inst)
+        else:
+            max_per_user = n_classes
+    if max_per_user > 0:
+        if num_inst_user > max_per_user:
+            num_inst_user = max_per_user
+        if num_inst_user < n_classes and max_per_user >= n_classes:
+            num_inst_user = n_classes
+    else:
+        num_inst = 1
+        num_inst_user = n_classes
+
+    needed_total = 2 * num_inst * num_inst_user
+    if needed_total > total_rows and num_inst > 1:
+        max_inst = max(1, total_rows // (2 * num_inst_user))
+        num_inst = min(num_inst, max_inst)
+    needed_total = 2 * num_inst * num_inst_user
+    if needed_total > total_rows and num_inst_user > n_classes:
+        num_inst_user = max(n_classes, total_rows // (2 * num_inst))
+
+    config.num_institution = max(1, num_inst)
+    config.num_institution_user = max(n_classes, num_inst_user)
 
 def _parse_ratio(raw_value, default: float) -> float:
     try:
@@ -457,7 +486,7 @@ def prepare_institutional_dataset(
 ) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], List[np.ndarray], pd.DataFrame, pd.DataFrame]:
     """前処理済み df から機関配列を構築 (even / division)"""
     ensure_institution_params(df, config)
-    df_lim = limit_feature_columns(df, config)
+    df_lim = df
     dist = getattr(config, "data_distribution", None)
     if dist == "division":
         train_df, test_df = division_split(df_lim, config)
@@ -487,7 +516,6 @@ def prepare_institutional_dataset(
 
 __all__ = [
     "ensure_institution_params",
-    "limit_feature_columns",
     "even_joint_split",
     "division_split",
     "to_institution_arrays",

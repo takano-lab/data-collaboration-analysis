@@ -26,7 +26,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"qsar",
     #"breast_cancer",
     #"adult",
-    #"digits",
+    "digits",
     #"glass", 
     #"seeds", 
     #"letter_recognition",
@@ -34,14 +34,13 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"har",
     #"diabetes130",
     #"bank_marketing",
-    #"fashion_mnist",
     #"mnist",
     #"mnist_1248",
-    #"mnist",
+    #"fashion_mnist",
     #"cifar10",
     #"cifar10_800",
     #'3D_gaussian_clusters',
-    "concentric_three_circles",
+    #"concentric_three_circles",
     #"iris",
     #"ecoli",
     #"vowel"
@@ -49,35 +48,31 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
 ],# + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "F_type": ["kernel_pca_gamma_fixed"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["nonlinear", "imakura", "gep", "odc", "fl", "centralize", "individual", ], # , "nonlinear", "Imakura", "GEP", "ODC" "nonlinear", "Imakura", "GEP", "ODC"'centralize
-    "gamma_ratio": [1e-4],#[0.0001],             # 例: [0.1,1,5]
-    "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
+    "F_type": ["ae"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
+    "G_type": ["nonlinear", "Imakura", "gep", "odc"], # , "fl", "centralize", "individual"# , "nonlinear", "Imakura", "gep", "odc" "nonlinear", "Imakura", "gep", "odc"'centralize
+    "gamma_ratio": [1],#[0.0001],             # 例: [0.1,1,5]
+    "gamma_type": ["X_tuning"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
     "gamma_ratio_krr": [1],
     "num_anchor_data": [1000],
     "nl_lambda": [0.3],        # LOCKで止められる, 0.00001
     "lw_alpha": [0],
     "metrics": ["accuracy"],
-    "visualize": [True],
+    "visualize": [False],
     #"feature_num": [2],
-    "dim_intermediate": [14],#[20, 10, 5, 2],
-    "dim_integrate": [14],#[20, 10, 5, 2],
+    "dim_intermediate": ["*0.8"],#[20, 10, 5, 2],
+    "dim_integrate": ["*0.8"],#[20, 10, 5, 2],
     "num_institution_user": [100],
-    "num_institution": [3],
+    "num_institution": [10],
     "K_normalization":[False],
-    "anchor_method":["gaussian"], #gaussian smote 
-    "data_distribution":["division"],# "division" "even"
-    "inter_integ_dim_ratio":[1],
-    "inter_normalization":[False],
+    "anchor_method":["smote"], #gaussian smote 
+    "data_distribution":["even"],# "division" "even"
+    "inter_normalization":[True],
     "evaluate_integrate_metrics":[True],
     "load_df_data":[True],
     "load_intermediate_data":[True],
     "seed_values":[1],
+    "umap_neighbors":[10],
     })
-
-# 2) ループ回数（seed を 0..loop_num-1 で回します）
-#    PARAM_GRID のコンボで "loop_num" を指定するとその値が優先されます
-LOOP_NUM = 2
 
 # 2-1) 実行失敗時の挙動（True でスキップ、False で例外をそのまま投げる）
 ERROR_SKIP = True
@@ -94,7 +89,7 @@ DF_COLUMNS: List[str] = [
 
 # 3-3) 中間表現のDataFrameに保持する名前
 INTERMEDIATE_COLUMNS: List[str] = [
-    "dataset", "F_type", "gamma_ratio", "data_distribution", "dim_intermediate", "num_institution_user", "num_institution", "seed_values"
+    "dataset", "F_type", "gamma_ratio", "data_distribution", "dim_intermediate", "num_institution_user", "num_institution", "seed_values", "umap_neighbors"
 ]
 
 # 4) 条件ルール
@@ -114,9 +109,9 @@ DEFAULTS = {
     "lambda_gen_eigen": 0,
     "orth_ver": False,
     "K_normalization":True,
-    "inter_integ_dim_ratio":1,
     "inter_normalization":True,
     "lw_alpha":False,
+    "umap_metric":"random", # euclidean correlation cosine
 }
 
 # --- 追加: dataset ごとのデフォルト適用（定数のみ。動的は未設定）---
@@ -128,9 +123,9 @@ _DATASET_DEFAULTS = {
     "breast_cancer":        {"feature_num": 15},#, "num_institution_user": 60},
     #"digits":               {"dim_intermediate": 15, "dim_integrate": 15, "num_institution_user": 100, "num_institution": 10},
     # "mnist":                {"dim_intermediate": 10, "dim_integrate": 10, "num_institution_user": 50, "num_institution": 10},
-    "mnist":                {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "data_distribution": "division", "gamma_ratio":1, "gamma_ratio_krr":1},
-    "mnist_1248":           {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "data_distribution": "division", "gamma_ratio":1, "gamma_ratio_krr":1},
-    "fashion_mnist":        {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10},
+    "mnist":                {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "data_distribution": "division", "gamma_ratio":1, "gamma_ratio_krr":1, "umap_metric":"correlation"},
+    "mnist_1248":           {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "data_distribution": "division", "gamma_ratio":1, "gamma_ratio_krr":1, "umap_metric":"correlation"},
+    "fashion_mnist":        {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "umap_metric":"correlation"},
     "concentric_circles":   {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
     "concentric_three_circles": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
     "two_gaussian_distributions": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 50, "num_institution": 5},
@@ -151,11 +146,10 @@ _DATASET_DEFAULTS = {
 }
 RULES: List[Dict[str, Any]] = [
     {"type": "LOCK", "when": {"G_type": ["centralize", "individual"]}, "lock": {"gamma_ratio": DEFAULTS["gamma_ratio"]}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"nl_lambda": DEFAULTS["nl_lambda"]}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"gamma_ratio_krr": DEFAULTS["gamma_ratio_krr"]}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"inter_integ_dim_ratio":  DEFAULTS["inter_integ_dim_ratio"]}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"inter_normalization":  DEFAULTS["inter_normalization"]}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "Imakura", "GEP",  "ODC",]}, "lock": {"lw_alpha":  DEFAULTS["lw_alpha"]}},
+    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "imakura", "gep", "gep2",  "odc",]}, "lock": {"nl_lambda": DEFAULTS["nl_lambda"]}},
+    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "imakura", "gep", "gep2",  "odc",]}, "lock": {"gamma_ratio_krr": DEFAULTS["gamma_ratio_krr"]}},
+    {"type": "LOCK", "when": {"G_type": ["nonlinear"]}, "lock": {"inter_normalization": False}},
+    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "imakura", "gep", "gep2",  "odc",]}, "lock": {"lw_alpha":  DEFAULTS["lw_alpha"]}},
     #{"type": "SKIP", "when": {"F_type": ["kernel_pca"], "G_type": ["GEP_weighted"]}},
 ]
 # ============================================
@@ -393,6 +387,8 @@ def run_grid(
                 vals.append(float(val))
                 record_config_to_cfg(cfg)
                 record_value_to_cfg(cfg, "評価値", val)
+                for key, value in cfg.__dict__.items():
+                    print(f"{key} = {value}")
 
                 # ループごとのメトリクスを収集（存在すれば）
                 try:
@@ -463,7 +459,7 @@ from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 if __name__ == "__main__":
     # 引数処理はここだけ（デフォルトは 0912）
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run-name", type=str, default="1106")
+    parser.add_argument("--run-name", type=str, default="1108")
     args = parser.parse_args()
 
     # 出力先を決定

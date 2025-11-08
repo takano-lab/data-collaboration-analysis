@@ -5,12 +5,14 @@ from typing import Callable, Dict, List, Tuple, TypeVar
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from config.config import Config
 from src.common import IntegratedArtifacts, IntermediateArtifacts
 from .integrate_metrics import evaluate_nonlinearity_indices, integrate_metrics
 from .runners import (
     build_gep_projectors,
+    build_gep2_projectors,
     build_imakura_projectors,
     build_nonlinear_projectors,
     build_odc_projectors,
@@ -71,11 +73,13 @@ class IntegratedExpressionBuilder:
         metrics = None
         if getattr(self.config, "evaluate_integrate_metrics", False):
             metrics = integrate_metrics(self)
-        try:
-            evaluate_nonlinearity_indices(self)
-        except Exception as exc:  # pragma: no cover - diagnostics only
-            if self.logger:
-                self.logger.warning("evaluate_nonlinearity_indices failed: %s", exc)
+        should_eval_lni = str(getattr(self.config, "G_type", "")).lower() == "nonlinear"
+        if should_eval_lni:
+            try:
+                evaluate_nonlinearity_indices(self)
+            except Exception as exc:  # pragma: no cover - diagnostics only
+                if self.logger:
+                    self.logger.warning("evaluate_nonlinearity_indices failed: %s", exc)
 
         if metrics is not None:
             artifacts = replace(artifacts, metrics=metrics)
@@ -96,9 +100,16 @@ class IntegratedExpressionBuilder:
         self.anchors_integ = []
         self.anchors_test_integ = []
 
-        for proj, X_tr, X_te, anc_tr, anc_te in zip(
-            projs, self.Xs_train_inter, self.Xs_test_inter, self.anchors_inter, self.anchors_test_inter
-        ):
+        count = min(len(projs), len(self.Xs_train_inter), len(self.Xs_test_inter), len(self.anchors_inter), len(self.anchors_test_inter))
+        index_iter = tqdm(range(count), desc="Integrating institutions", unit="inst") if count > 1 else range(count)
+
+        for idx in index_iter:
+            proj = projs[idx]
+            X_tr = self.Xs_train_inter[idx]
+            X_te = self.Xs_test_inter[idx]
+            anc_tr = self.anchors_inter[idx]
+            anc_te = self.anchors_test_inter[idx]
+
             self.Xs_train_integ.append(proj(X_tr))
             self.Xs_test_integ.append(proj(X_te))
             self.anchors_integ.append(proj(anc_tr))
@@ -202,6 +213,26 @@ def _run_gep_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list,
     return projs, extras
 
 
+def _run_gep2_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    lambda_raw = getattr(analysis.config, "lambda_gen_eigen", 0.0)
+    try:
+        lambda_gen = float(lambda_raw)
+    except (TypeError, ValueError):
+        lambda_gen = 0.0
+    projs, metrics = build_gep2_projectors(
+        anchors_inter=analysis.anchors_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+        lambda_gen=lambda_gen,
+        orth_ver=bool(getattr(analysis.config, "orth_ver", False)),
+    )
+    for key, value in metrics.items():
+        setattr(analysis.config, key, value)
+    extras = dict(metrics)
+    extras.setdefault("Z_integ", None)
+    analysis.Z_integ = extras.get("Z_integ")
+    return projs, extras
+
+
 def _run_odc_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
     projs, Z_integ = build_odc_projectors(anchors_inter=analysis.anchors_inter)
     extras = {"Z_integ": Z_integ}
@@ -241,6 +272,8 @@ _INTEGRATION_RUNNERS: Dict[str, IntegrationRunner] = {
     "imakura": _run_imakura_integration,
     "targetvec": _run_targetvec_integration,
     "gep": _run_gep_integration,
+    "gep_2": _run_gep2_integration,
+    "gep2": _run_gep2_integration,
     "odc": _run_odc_integration,
     "nonlinear": _run_nonlinear_integration,
 }

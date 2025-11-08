@@ -11,7 +11,7 @@ from sklearn.preprocessing import LabelEncoder
 
 from config.config import Config
 from config.config_logger import record_config_to_cfg, record_value_to_cfg
-from src.federated_learning import run_federated_learning  # スクラッチ実装をインポート
+from src.federated_learning import run_federated_learning  # スクラチE��実裁E��インポ�EチE
 from src.model import ModelRunner
 from src.dimensionality_reduction import build_dimensionality_projector
 
@@ -27,7 +27,7 @@ def _features_and_labels(df: pd.DataFrame, y_name: str) -> tuple[np.ndarray, np.
 
 
 # ----------------------------------------------------------------------
-# 集中解析
+# 雁E��解极E
 # ----------------------------------------------------------------------
 def centralize_analysis(
     train_df: pd.DataFrame,
@@ -50,7 +50,7 @@ def centralize_analysis(
         y_test=y_test,
     )
 
-    logger.info(f"集中解析の評価値: {metrics:.4f}")
+    logger.info(f"雁E��解析�E評価値: {metrics:.4f}")
 
     return metrics
 
@@ -82,7 +82,7 @@ def centralize_analysis_with_dimension_reduction(
         X_test=X_te_svd,
         y_test=y_test,
     )
-    logger.info(f"集中解析（次元削減）の評価値: {metrics:.4f}")
+    logger.info(f"雁E��解析（次允E��減）�E評価値: {metrics:.4f}")
     return metrics
 
 
@@ -112,11 +112,11 @@ def centralize_analysis_with_institution_dimension_reduction(
         X_test=X_te,
         y_test=y_test,
     )
-    logger.info(f"提案手法の評価値: {metrics:.4f}")
+    logger.info(f"提案手法�E評価値: {metrics:.4f}")
     return metrics
 
 # ----------------------------------------------------------------------
-# 個別解析
+# 個別解极E
 # ----------------------------------------------------------------------
 def individual_analysis(
     Xs_train: list[np.ndarray],
@@ -136,7 +136,7 @@ def individual_analysis(
         losses.append(metrics)
 
     mean_score = float(np.mean(losses)) if losses else np.nan
-    logger.info(f"個別解析: {mean_score:.4f}")
+    logger.info(f"個別解极E {mean_score:.4f}")
 
     return mean_score
 
@@ -151,27 +151,27 @@ def individual_analysis_with_dimension_reduction(
     losses: list[float] = []
     model_runner = ModelRunner(config)
 
-    base_projector_seed = 0
-    base_institution_index = 0
-    default_F_type = getattr(config, "F_type", "svd")
-    mixed = getattr(config, "True_F_type", None) == "kernel_pca_svd_mixed"
+    config.f_seed = 0
+    config.f_seed_2 = 0
+    mixed = config.True_F_type == "kernel_pca_svd_mixed"
 
-    for inst_offset, (X_tr, X_te, y_tr, y_te) in enumerate(zip(Xs_train, Xs_test, ys_train, ys_test)):
-        institution_index = base_institution_index + inst_offset
-
+    for X_tr, X_te, y_tr, y_te in zip(Xs_train, Xs_test, ys_train, ys_test):
         if mixed:
-            projector_F_type = "kernel_pca_self_tuning" if institution_index % 2 == 0 else "svd"
-        else:
-            projector_F_type = default_F_type
+            if config.f_seed_2 % 2 == 0:
+                config.F_type = "kernel_pca_self_tuning"
+            else:
+                config.F_type = "svd"
+            config.f_seed_2 += 1
 
         projector = build_dimensionality_projector(
             X=X_tr,
             n_components=config.dim_intermediate,
             y=y_tr,
-            F_type=projector_F_type,
-            seed=base_projector_seed + inst_offset,
+            F_type=getattr(config, "F_type", "svd"),
+            seed=getattr(config, "f_seed", None),
             config=config,
         )
+        config.f_seed += 1
 
         X_tr_svd = projector(X_tr)
         X_te_svd = projector(X_te)
@@ -180,11 +180,11 @@ def individual_analysis_with_dimension_reduction(
         losses.append(metrics)
 
     mean_score = float(np.mean(losses)) if losses else np.nan
-    logger.info(f"個別解析（次元削減）: {mean_score:.4f}")
+    logger.info(f"個別解析（次允E��減！E {mean_score:.4f}")
     return mean_score
 
 # ----------------------------------------------------------------------
-# 連合学習 (スクラッチ実装版)
+# 連合学翁E(スクラチE��実裁E��)
 # ----------------------------------------------------------------------
 def fl_analysis(
     Xs_train: list[np.ndarray],
@@ -318,7 +318,7 @@ def dca_analysis(
         X_test=X_test_integ,
         y_test=y_test_integ,
     )
-    logger.info(f"提案手法の評価値: {metrics:.4f}")
+    logger.info(f"提案手法�E評価値: {metrics:.4f}")
     
     return metrics
 

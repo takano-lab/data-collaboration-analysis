@@ -98,12 +98,6 @@ class DataCollabVisualizer:
         fig, axes = plt.subplots(num_institutions * 2, 4, figsize=(24, 6 * num_institutions * 2), squeeze=False)
         fig.suptitle("Anchor Data Transformation Flow (Top: Train, Bottom: Test)", fontsize=16, y=0.995)
 
-        def to_3d(ax):
-            fig_ = ax.figure
-            spec = ax.get_subplotspec()
-            ax.remove()
-            return fig_.add_subplot(spec, projection="3d")
-
         def project_3d(data_list: Sequence[np.ndarray]):
             valid = [d for d in data_list if d is not None and d.ndim == 2 and d.shape[1] > 3]
             if not valid:
@@ -130,10 +124,17 @@ class DataCollabVisualizer:
                 limits = ((0, 1), (0, 1), (0, 1))
             return projected, limits
 
-        col3_train_3d, train3d_limits = project_3d(integ.anchors_integ if has_train_data else [])
-        col3_test_3d, test3d_limits = project_3d(integ.anchors_test_integ if has_test_data else [])
-        Z_train_3d, Z_limits = project_3d([Z_train_plot] if Z_train_plot is not None else [])
-        train_offset = len(integ.anchors_integ) if has_train_data else 0
+        enable_3d = bool(getattr(self.config, "visualize_anchors_3d", False))
+        if enable_3d:
+            col3_train_3d, train3d_limits = project_3d(integ.anchors_integ if has_train_data else [])
+            col3_test_3d, test3d_limits = project_3d(integ.anchors_test_integ if has_test_data else [])
+            Z_train_3d, Z_limits = project_3d([Z_train_plot] if Z_train_plot is not None else [])
+
+            def to_3d(ax):
+                fig_ = ax.figure
+                spec = ax.get_subplotspec()
+                ax.remove()
+                return fig_.add_subplot(spec, projection="3d")
 
         for i in range(num_institutions):
             train_row = i
@@ -155,29 +156,27 @@ class DataCollabVisualizer:
                 axes[train_row, 1].set_title("2. Intermediate (Train)" if i == 0 else "")
                 axes[train_row, 1].set_xlim(xlim2); axes[train_row, 1].set_ylim(ylim2)
 
-                if col3_train_3d and col3_train_3d[i] is not None:
+                if enable_3d and col3_train_3d and col3_train_3d[i] is not None:
                     ax3d = to_3d(axes[train_row, 2])
                     d3 = col3_train_3d[i]
                     ax3d.scatter(d3[:, 0], d3[:, 1], d3[:, 2], c=anchor_labels_train, cmap="coolwarm", s=14, depthshade=True)
                     if train3d_limits:
                         ax3d.set_xlim(train3d_limits[0]); ax3d.set_ylim(train3d_limits[1]); ax3d.set_zlim(train3d_limits[2])
-                    ax3d.set_title("3. Projection S_hat (Train)" if i == 0 else "")
                 else:
                     sns.scatterplot(
                         x=col3_2d[i][:, 0], y=col3_2d[i][:, 1],
                         hue=anchor_labels_train, palette="coolwarm",
                         ax=axes[train_row, 2], legend=False,
                     )
-                    axes[train_row, 2].set_title("3. Projection S_hat (Train)" if i == 0 else "")
                     axes[train_row, 2].set_xlim(xlim3); axes[train_row, 2].set_ylim(ylim3)
+                axes[train_row, 2].set_title("3. Projection S_hat (Train)" if i == 0 else "")
 
-                if Z_train_3d and Z_train_3d[0] is not None:
+                if enable_3d and Z_train_3d and Z_train_3d[0] is not None:
                     ax3dz = to_3d(axes[train_row, 3])
                     d3z = Z_train_3d[0]
                     ax3dz.scatter(d3z[:, 0], d3z[:, 1], d3z[:, 2], c=anchor_labels_train, cmap="coolwarm", s=14, depthshade=True)
                     if Z_limits:
                         ax3dz.set_xlim(Z_limits[0]); ax3dz.set_ylim(Z_limits[1]); ax3dz.set_zlim(Z_limits[2])
-                    ax3dz.set_title("4. Integrated Z (Train)" if i == 0 else "")
                 elif col4_2d:
                     sns.scatterplot(
                         x=col4_2d[0][:, 0], y=col4_2d[0][:, 1],
@@ -185,9 +184,9 @@ class DataCollabVisualizer:
                         ax=axes[train_row, 3], legend=False,
                     )
                     axes[train_row, 3].set_xlim(xlim4); axes[train_row, 3].set_ylim(ylim4)
-                    axes[train_row, 3].set_title("4. Integrated Z (Train)" if i == 0 else "")
                 else:
                     axes[train_row, 3].set_visible(False)
+                axes[train_row, 3].set_title("4. Integrated Z (Train)" if i == 0 else "")
 
             if has_test_data:
                 test_row = i + num_institutions
@@ -209,32 +208,30 @@ class DataCollabVisualizer:
                 axes[test_row, 1].set_title("2. Intermediate (Test)" if i == 0 else "")
                 axes[test_row, 1].set_xlim(xlim2); axes[test_row, 1].set_ylim(ylim2)
 
-                if col3_test_3d and col3_test_3d[i] is not None:
+                if enable_3d and col3_test_3d and col3_test_3d[i] is not None:
                     ax3dt = to_3d(axes[test_row, 2])
                     d3t = col3_test_3d[i]
                     ax3dt.scatter(d3t[:, 0], d3t[:, 1], d3t[:, 2], c=anchor_labels_test, cmap="viridis", s=14, depthshade=True)
                     if test3d_limits:
                         ax3dt.set_xlim(test3d_limits[0]); ax3dt.set_ylim(test3d_limits[1]); ax3dt.set_zlim(test3d_limits[2])
-                    ax3dt.set_title("3. Projection S_hat (Test)" if i == 0 else "")
                 else:
                     sns.scatterplot(
                         x=col3_2d[test_idx][:, 0], y=col3_2d[test_idx][:, 1],
                         hue=anchor_labels_test, palette="viridis",
                         ax=axes[test_row, 2], legend=False,
                     )
-                    axes[test_row, 2].set_title("3. Projection S_hat (Test)" if i == 0 else "")
                     axes[test_row, 2].set_xlim(xlim3); axes[test_row, 2].set_ylim(ylim3)
+                axes[test_row, 2].set_title("3. Projection S_hat (Test)" if i == 0 else "")
 
-                if integ.anchors_test_integ and len(integ.anchors_test_integ) > i:
-                    sns.scatterplot(
-                        x=col3_2d[test_idx][:, 0], y=col3_2d[test_idx][:, 1],
-                        hue=anchor_labels_test, palette="viridis",
-                        ax=axes[test_row, 3], legend=False,
-                    )
-                    axes[test_row, 3].set_xlim(xlim3); axes[test_row, 3].set_ylim(ylim3)
-                    axes[test_row, 3].set_title("4. Integrated Z (Test)" if i == 0 else "")
+                if enable_3d and Z_train_3d and Z_train_3d[0] is not None:
+                    ax3dzt = to_3d(axes[test_row, 3])
+                    d3zt = Z_train_3d[0]
+                    ax3dzt.scatter(d3zt[:, 0], d3zt[:, 1], d3zt[:, 2], c=anchor_labels_test, cmap="viridis", s=14, depthshade=True)
+                    if Z_limits:
+                        ax3dzt.set_xlim(Z_limits[0]); ax3dzt.set_ylim(Z_limits[1]); ax3dzt.set_zlim(Z_limits[2])
                 else:
                     axes[test_row, 3].set_visible(False)
+                axes[test_row, 3].set_title("4. Integrated Z (Test)" if i == 0 else "")
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.98])
         save_dir.mkdir(parents=True, exist_ok=True)
