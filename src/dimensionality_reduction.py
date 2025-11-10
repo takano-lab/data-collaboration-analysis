@@ -434,7 +434,7 @@ def _run_kpca_family(X, n_components, *, mode: str, config=None, seed=None, **kw
     return projector
 
 def _run_umap(
-    X, n_components, *, config=None, **kwargs
+    X, n_components, *, config=None, seed=None, **kwargs
 ) -> Projector:
     try:
         from umap import UMAP
@@ -444,21 +444,25 @@ def _run_umap(
     scaler = StandardScaler()
     Xts = scaler.fit_transform(X)
 
-    raw_seed = getattr(config, "f_seed", None)
-    if raw_seed is None:
-        raw_seed = _cfg_int(config, "seed", 0)
-    seed = int(raw_seed)
-    metric_type = _cfg_str(config, "umap_metric", "correlation").lower()
-    if metric_type == "random":
-        metric_choices = ("correlation", "cosine", "euclidean")
-        metric = metric_choices[seed % 3]
-    else:
-        metric = metric_type
+    # metric は seed%3 で切替、n_neighbors と min_dist は seed に応じてランダム化。
+    # 明示的に渡された seed -> f_seed -> seed の優先順位で決定
+    seed_val = seed
+    if seed_val is None and config is not None:
+        seed_val = getattr(config, "f_seed", None)
+    if seed_val is None:
+        seed_val = _cfg_int(config, "seed", 0)
+    seed = int(seed_val)
+    print(f"UMAP seed: {seed}")
+    metric_choices = ("correlation", "cosine", "euclidean")
+    metric = metric_choices[seed % 3]
     rng = np.random.default_rng(seed + 1337)
-    nn_sample = _cfg_int(config, "umap_neighbors", 5) # int(rng.integers(low=100, high=100))
+    # n_neighbors: 5〜11 の一様整数から選び、データ数に合わせて安全にクリップ
+    nn_sample = int(rng.integers(low=2, high=8))  # high は排他的
     n_neighbors = max(2, min(nn_sample, max(2, Xts.shape[0] - 1)))
-    min_dist = float(rng.uniform(0, 1))
+    # min_dist: 0.05〜0.8 の一様連続
+    min_dist = float(rng.uniform(0.0, 0.8))
 
+    # 追加オプション（必要に応じて）
     extra_params = {}
     tm = _cfg_str(config, "umap_transform_mode", None)
     if tm:
@@ -473,12 +477,8 @@ def _run_umap(
     if mix is not None:
         extra_params["set_op_mix_ratio"] = float(mix)
 
-    max_components = int(min(n_components, max(2, Xts.shape[0] - 2)))
-    if max_components < 2:
-        max_components = 2
-
     model = UMAP(
-        n_components=max_components,
+        n_components=n_components,
         n_neighbors=int(n_neighbors),
         min_dist=float(min_dist),
         metric=metric,

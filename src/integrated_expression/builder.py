@@ -256,6 +256,8 @@ def _run_nonlinear_integration(analysis: "IntegratedExpressionBuilder") -> tuple
     )
     gamma_mean = float(np.mean(gammas)) if gammas else None
     analysis.config.gamma_krr_means = gamma_mean
+    print(gammas)
+    print("gammas")
     extras = {"Z_integ": Z_integ, "eigvals": eigvals, "gammas": gammas}
     analysis.Z_integ = Z_integ
     return projs, extras

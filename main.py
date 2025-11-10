@@ -21,27 +21,27 @@ from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 # 1) 全探索したいパラメータ（config.◯◯に代入）
 PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "dataset": [
-    "mnist",
+    #"mnist",
     #"mnist_1248",
     "fashion_mnist",
-    "mice",
+    #"mice",
     #"statlog",
     "qsar",
     "digits",
-    #"breast_cancer",
-    #"adult",
-    #"glass", 
+    "breast_cancer",
+    "adult",
+    "glass", 
     "seeds", 
     #"letter_recognition",
     #"wine_quality",
-    #"har",
-    "cifar10",
+    "har",
+    #"cifar10",
     #"diabetes130",
     #"bank_marketing",
     #"cifar10_800",
     #'3D_gaussian_clusters',
     #"concentric_three_circles",
-    "iris",
+    #"iris",
     #"ecoli",
     #"vowel"
     #"coil20"
@@ -49,31 +49,31 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
     "F_type": ["umap"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["nonlinear"], #, "nonlinear", "imakura", "gep2", "odc" , "fl", "centralize", "individual"
+    "G_type": ["nonlinear"],#, "imakura", "gep", "gep2", "odc", "fl", "centralize", "individual"], #, "nonlinear", "imakura", "gep2", "odc" , "fl", "centralize", "individual"
     "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
-    "gamma_ratio_krr": [0.0001], #, 0.1, 0.3, 3, 10 1e-4
+    "gamma_ratio_krr": [1], #, 0.1, 0.3, 3, 10
     "num_anchor_data": [1000],
-    "nl_lambda": [0.3],        # LOCKで止められる, 0.00001
+    "nl_lambda": [0.3], # LOCKで止められる, 0.00001
     "lw_alpha": [0],
     "metrics": ["accuracy"],
     "visualize": [False],
     #"feature_num": [2],
-    "dim_intermediate": ["*0.8"],#[20, 10, 5, 2],
-    "dim_integrate": ["*0.8"],#[20, 10, 5, 2],
+    "dim_intermediate": [30],#[20, 10, 5, 2], 6
+    #"dim_integrate": [2, 6, 30, 100],#[20, 10, 5, 2], 6
     "num_institution_user": [100],
     "num_institution": [10],
     "K_normalization":[False],
     "anchor_method":["smote"], #gaussian smote 
-    "smote_ratio":[1],#, 0.1, 0.25, 0.5, 1],
+    "smote_ratio":[1],#, 0, 0.1, 0.25, 0.5, 1],
     "data_distribution":["bias"],# "division" "even"
     "inter_normalization":[True],
     "evaluate_integrate_metrics":[True],
     "load_df_data":[True],
     "load_intermediate_data":[True],
     "umap_neighbors":[10],
-    "bias_ratio":[1], # 0.1, 0.4, 0.6, 0.95, 0.8 
+    "bias_ratio":[0.8], # 0.1, 0.4, 0.6, 0.95, 0.8 
     "max_dim":[500],
-    "seed_values":[1], # 
+    "seed_values":[1],
     })
 
 # "gamma_ratio"
