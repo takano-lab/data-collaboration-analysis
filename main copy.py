@@ -27,15 +27,15 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "mice",
     #"statlog",
     "qsar",
-    "digits",
     #"breast_cancer",
     #"adult",
     #"glass", 
     "seeds", 
     #"letter_recognition",
-    #"wine_quality",
-    #"har",
+    "wine_quality",
+    "har",
     "cifar10",
+    "digits",
     #"diabetes130",
     #"bank_marketing",
     #"cifar10_800",
@@ -45,13 +45,14 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"ecoli",
     #"vowel"
     #"coil20"
-], # + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
+] + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "F_type": ["umap"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["nonlinear"], #, "nonlinear", "imakura", "gep2", "odc" , "fl", "centralize", "individual"
-    "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
-    "gamma_ratio_krr": [0.0001], #, 0.1, 0.3, 3, 10 1e-4
+    "F_type": ["ae", "umap", "svd"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
+    "G_type": ["nonlinear", "imakura", "gep2", "odc" , "fl", "centralize", "individual"], #, "Imakura", "gep", "odc" , "fl", "centralize", "individual"# , "nonlinear", "Imakura", "gep", "odc" "nonlinear", "Imakura", "gep", "odc"'centralize
+    "gamma_ratio": [1],#[0.0001],             # 例: [0.1,1,5]
+    "gamma_type": ["median"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
+    "gamma_ratio_krr": [1, 0.1, 0.3, 3, 10],
     "num_anchor_data": [1000],
     "nl_lambda": [0.3],        # LOCKで止められる, 0.00001
     "lw_alpha": [0],
@@ -64,16 +65,15 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "num_institution": [10],
     "K_normalization":[False],
     "anchor_method":["smote"], #gaussian smote 
-    "smote_ratio":[1],#, 0.1, 0.25, 0.5, 1],
+    "smote_ratio":[0, 0.1, 0.25, 0.5, 1],
     "data_distribution":["bias"],# "division" "even"
     "inter_normalization":[True],
     "evaluate_integrate_metrics":[True],
     "load_df_data":[True],
     "load_intermediate_data":[True],
     "umap_neighbors":[10],
-    "bias_ratio":[1], # 0.1, 0.4, 0.6, 0.95, 0.8 
-    "max_dim":[500],
-    "seed_values":[1], # 
+    "bias_ratio":[0.1, 0.4, 0.6, 0.95, 0.8],
+    "seed_values":[[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]],
     })
 
 # "gamma_ratio"
@@ -95,7 +95,7 @@ DF_COLUMNS: List[str] = [
 
 # 3-3) 中間表現のDataFrameに保持する名前
 INTERMEDIATE_COLUMNS: List[str] = [
-    "dataset", "F_type", "gamma_ratio", "data_distribution", "dim_intermediate", "num_institution_user", "num_institution", "seed_values", "umap_neighbors", "bias_ratio", "anchor_method", "smote_ratio", "num_anchor_data","max_dim"
+    "dataset", "F_type", "gamma_ratio", "data_distribution", "dim_intermediate", "num_institution_user", "num_institution", "seed_values", "umap_neighbors", "bias_ratio", "anchor_method", "smote_ratio", "num_anchor_data",
 ]
 
 # 4) 条件ルール
@@ -471,7 +471,7 @@ from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 if __name__ == "__main__":
     # 引数処理はここだけ（デフォルトは 0912）
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run-name", type=str, default="11095_gep_umap")
+    parser.add_argument("--run-name", type=str, default="11094_gamma_smote_bias_umap_ae")
     args = parser.parse_args()
 
     # 出力先を決定

@@ -67,10 +67,10 @@ def ensure_institution_params(df: pd.DataFrame, config: Config) -> None:
         new_dim = int(round(orig * ratio))
         config.dim_integrate = new_dim
 
-    if _is_undefined(getattr(config, "labeling_ratio", None)):
-        config.labeling_ratio = 0.5
-    if _is_undefined(getattr(config, "bias_ratio", None)):
-        config.bias_ratio = 0.9
+    # if _is_undefined(getattr(config, "labeling_ratio", None)):
+    #     config.labeling_ratio = 0.5
+    # if _is_undefined(getattr(config, "bias_ratio", None)):
+    #     config.bias_ratio = 0.9
 
     # Ensure total rows are sufficient for even split; adjust downward if needed
     total_rows = len(df)

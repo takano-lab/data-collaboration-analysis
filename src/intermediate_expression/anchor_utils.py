@@ -55,73 +55,106 @@ def produce_anchor(
 
     if method == "smote":
         rng = np.random.default_rng(seed)
-        if not Xs_train or not ys_train:
+
+        smote_ratio = getattr(config, "smote_ratio", 1.0)
+        try:
+            smote_ratio = float(smote_ratio)
+        except (TypeError, ValueError):
+            smote_ratio = 1.0
+        smote_ratio = min(max(smote_ratio, 0.0), 1.0)
+
+        n_smote = int(round(num_row * smote_ratio))
+        n_gauss = max(0, num_row - n_smote)
+
+        if n_smote > 0 and (not Xs_train or not ys_train):
             raise RuntimeError("SMOTE anchor requires non-empty institutional data.")
 
-        X_test_all = np.vstack(Xs_test) if len(Xs_test) > 1 else Xs_test[0]
-        y_test_all = np.hstack(ys_test) if len(ys_test) > 1 else ys_test[0]
-        X0 = np.vstack([X_test_all])
-        y0 = np.hstack([y_test_all])
+        def _generate_smote_samples(target_rows: int, target_cols: int) -> np.ndarray:
+            X_test_all = np.vstack(Xs_test) if len(Xs_test) > 1 else Xs_test[0]
+            y_test_all = np.hstack(ys_test) if len(ys_test) > 1 else ys_test[0]
+            X0 = np.vstack([X_test_all])
+            y0 = np.hstack([y_test_all])
 
-        if X0.shape[1] < num_col:
-            num_col = X0.shape[1]
-        X0 = X0[:, :num_col]
+            columns = target_cols
+            if X0.shape[1] < columns:
+                columns = X0.shape[1]
+            X0_clip = X0[:, :columns]
 
-        classes, counts = np.unique(y0, return_counts=True)
-        N_total = int(len(y0))
-        if N_total == 0:
-            return np.random.default_rng(seed).normal(size=(num_row, num_col))
+            classes, counts = np.unique(y0, return_counts=True)
+            N_total = int(len(y0))
+            if N_total == 0:
+                return rng.normal(size=(target_rows, columns))
 
-        target_counts = []
-        allocated = 0
-        for i, _ in enumerate(classes):
-            if i < len(classes) - 1:
-                n_c = int(round(num_row * (counts[i] / N_total)))
-                target_counts.append(n_c)
-                allocated += n_c
+            target_counts = []
+            allocated = 0
+            for i, _ in enumerate(classes):
+                if i < len(classes) - 1:
+                    n_c = int(round(target_rows * (counts[i] / N_total)))
+                    target_counts.append(n_c)
+                    allocated += n_c
+                else:
+                    target_counts.append(target_rows - allocated)
+
+            synthetic_list = []
+            for c, n_gen in zip(classes, target_counts):
+                if n_gen <= 0:
+                    continue
+                mask = (y0 == c)
+                Xc = X0_clip[mask]
+                Nc = Xc.shape[0]
+                if Nc == 0:
+                    continue
+
+                k = min(6, Nc)
+                if Nc == 1:
+                    repeated = np.repeat(Xc, repeats=max(n_gen, 1), axis=0)
+                    noise = rng.normal(scale=0.01, size=repeated.shape)
+                    synthetic_list.append((repeated + noise)[:n_gen])
+                    continue
+
+                nbrs = KNeighborsClassifier(n_neighbors=k)
+                y_dummy = np.arange(Nc)
+                nbrs.fit(Xc, y_dummy)
+                neighbors = nbrs.kneighbors(Xc, return_distance=False)
+
+                interpolated = []
+                while len(interpolated) < n_gen:
+                    idx = rng.integers(0, Nc)
+                    nn_idx = rng.choice(neighbors[idx])
+                    lam = rng.random()
+                    interpolated.append(Xc[idx] + lam * (Xc[nn_idx] - Xc[idx]))
+                synthetic_list.append(np.vstack(interpolated[:n_gen]))
+
+            if synthetic_list:
+                Xpub_syn = np.vstack(synthetic_list)
             else:
-                target_counts.append(num_row - allocated)
+                Xpub_syn = rng.normal(size=(target_rows, columns))
 
-        synthetic_list = []
-        for c, n_gen in zip(classes, target_counts):
-            if n_gen <= 0:
-                continue
-            mask = (y0 == c)
-            Xc = X0[mask]
-            Nc = Xc.shape[0]
-            if Nc == 0:
-                continue
+            if Xpub_syn.shape[0] < target_rows:
+                deficit = target_rows - Xpub_syn.shape[0]
+                extra = rng.normal(size=(deficit, Xpub_syn.shape[1]))
+                Xpub_syn = np.vstack([Xpub_syn, extra])
+            return Xpub_syn[:target_rows, :columns]
 
-            k = min(6, Nc)
-            if Nc == 1:
-                repeated = np.repeat(Xc, repeats=max(n_gen, 1), axis=0)
-                noise = rng.normal(scale=0.01, size=repeated.shape)
-                synthetic_list.append((repeated + noise)[:n_gen])
-                continue
+        samples = []
+        effective_cols = num_col
 
-            nbrs = KNeighborsClassifier(n_neighbors=k)
-            y_dummy = np.arange(Nc)
-            nbrs.fit(Xc, y_dummy)
-            neighbors = nbrs.kneighbors(Xc, return_distance=False)
+        if n_smote > 0:
+            smote_samples = _generate_smote_samples(n_smote, num_col)
+            effective_cols = smote_samples.shape[1]
+            samples.append(smote_samples)
 
-            samples = []
-            while len(samples) < n_gen:
-                idx = rng.integers(0, Nc)
-                nn_idx = rng.choice(neighbors[idx])
-                lam = rng.random()
-                samples.append(Xc[idx] + lam * (Xc[nn_idx] - Xc[idx]))
-            synthetic_list.append(np.vstack(samples[:n_gen]))
+        if n_gauss > 0:
+            gaussian_cols = effective_cols if n_smote > 0 else num_col
+            samples.append(rng.normal(size=(n_gauss, gaussian_cols)))
 
-        if synthetic_list:
-            Xpub_syn = np.vstack(synthetic_list)
-        else:
-            Xpub_syn = np.random.default_rng(seed).normal(size=(num_row, num_col))
+        if not samples:
+            return rng.normal(size=(num_row, num_col))
 
-        if Xpub_syn.shape[0] < num_row:
-            deficit = num_row - Xpub_syn.shape[0]
-            extra = rng.normal(size=(deficit, Xpub_syn.shape[1]))
-            Xpub_syn = np.vstack([Xpub_syn, extra])
-        return Xpub_syn[:num_row, :num_col]
+        anchor = np.vstack(samples)
+        if len(samples) > 1:
+            rng.shuffle(anchor)
+        return anchor[:num_row, :anchor.shape[1]]
 
     raise ValueError(f"Unknown anchor_method: {method}")
 

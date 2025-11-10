@@ -127,13 +127,25 @@ class InstitutionDatasetBuilder:
                     return value
             return value
 
+        max_dim_raw = getattr(self.config, "max_dim", 1000)
+        if isinstance(max_dim_raw, (int, float)) and max_dim_raw is not None:
+            max_dim = max(1, int(round(max_dim_raw)))
+        else:
+            max_dim = 1000
+
         resolved_dim_inter = _resolve_dim(getattr(self.config, "dim_intermediate", None))
         if resolved_dim_inter is not None:
-            self.config.dim_intermediate = resolved_dim_inter
+            if isinstance(resolved_dim_inter, (int, float)):
+                self.config.dim_intermediate = max(1, min(int(round(resolved_dim_inter)), max_dim))
+            else:
+                self.config.dim_intermediate = resolved_dim_inter
 
         resolved_dim_integ = _resolve_dim(getattr(self.config, "dim_integrate", None))
         if resolved_dim_integ is not None:
-            self.config.dim_integrate = resolved_dim_integ
+            if isinstance(resolved_dim_integ, (int, float)):
+                self.config.dim_integrate = max(1, min(int(round(resolved_dim_integ)), max_dim))
+            else:
+                self.config.dim_integrate = resolved_dim_integ
 
         return artifacts
 

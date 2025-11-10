@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 from numpy.linalg import pinv
 from scipy.linalg import block_diag, eigh
-from sklearn.metrics.pairwise import rbf_kernel
+from sklearn.metrics.pairwise import pairwise_distances, rbf_kernel
 
 from src.dimensionality_reduction import self_tuning_gamma
 
@@ -33,6 +33,28 @@ def make_kernel_integrator(
             K_x = K_x / mu_max
         return K_x @ B_k
     return projector
+
+
+def _median_heuristic_gamma(X: np.ndarray, *, max_samples: int = 2000) -> float:
+    """Compute gamma via median heuristic with optional subsampling for efficiency."""
+    n_samples = X.shape[0]
+    if n_samples == 0:
+        return 1.0
+    if n_samples > max_samples:
+        rng = np.random.default_rng(0)
+        idx = rng.choice(n_samples, max_samples, replace=False)
+        X_ref = X[idx]
+    else:
+        X_ref = X
+    D = pairwise_distances(X_ref, metric="euclidean")
+    triu = D[np.triu_indices_from(D, k=1)]
+    positive = triu[triu > 0]
+    if positive.size == 0:
+        return 1.0 / max(X.shape[1], 1)
+    med = np.median(positive)
+    if not np.isfinite(med) or med <= 0:
+        return 1.0 / max(X.shape[1], 1)
+    return 1.0 / (2.0 * (med ** 2))
 
 
 # --- Per-method integrator builders (return projector and the raw matrix when applicable) ---
@@ -150,7 +172,7 @@ def _compute_gep_projectors(
     # Build W and B
     W_s_tilde = np.hstack(anchors_inter)
     blocks = [anchor_inter_k.T @ anchor_inter_k for anchor_inter_k in anchors_inter]
-    epsilon = 1e-6
+    epsilon = 0 #1e-6
     B_s_tilde = blocks[0]
     for b in blocks[1:]:
         B_s_tilde = block_diag(B_s_tilde, b)
@@ -306,6 +328,11 @@ def build_nonlinear_projectors(
     elif gamma_type == "X_tuning":
         for X_tr in Xs_train_inter:
             gamma = self_tuning_gamma(X_tr, standardize=False, k=3, summary='median')
+            gamma *= gamma_ratio_krr
+            gammas.append(float(gamma))
+    elif gamma_type == "median":
+        for X_tr in Xs_train_inter:
+            gamma = _median_heuristic_gamma(X_tr)
             gamma *= gamma_ratio_krr
             gammas.append(float(gamma))
     elif gamma_type == "fixed":
