@@ -21,17 +21,17 @@ from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 # 1) 全探索したいパラメータ（config.◯◯に代入）
 PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "dataset": [
-    #"mnist",
-    #"mnist_1248",
     "fashion_mnist",
-    #"mice",
+    "mnist",
+    #"mnist_1248",
+    "mice",
     #"statlog",
     "qsar",
     "digits",
-    "breast_cancer",
-    "adult",
-    "glass", 
-    "seeds", 
+    #"breast_cancer",
+    #"adult",
+    #"glass", 
+    #"seeds", 
     #"letter_recognition",
     #"wine_quality",
     "har",
@@ -41,7 +41,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"cifar10_800",
     #'3D_gaussian_clusters',
     #"concentric_three_circles",
-    #"iris",
+    "iris",
     #"ecoli",
     #"vowel"
     #"coil20"
@@ -49,19 +49,23 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
     "F_type": ["umap"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["nonlinear"],#, "imakura", "gep", "gep2", "odc", "fl", "centralize", "individual"], #, "nonlinear", "imakura", "gep2", "odc" , "fl", "centralize", "individual"
+    "G_type": ["nonlinear"],#,, "graph_nonlinear",  "kernel_graph_gep", "kernel_gep", "gep", "imakura", "odc", "individual", "centralize",  "fl"
     "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
-    "gamma_ratio_krr": [1], #, 0.1, 0.3, 3, 10
-    "num_anchor_data": [1000],
+    "gamma_ratio_krr": [1], #, 0.1, 0.3, 3, 10 
+    "graph_knn_k": [10],
+    "graph_mu_align": [1],
+    "graph_lambda_rkhs": [0.3],
+    "graph_stability_eps": [0.1],
+    "num_anchor_data": [500],
     "nl_lambda": [0.3], # LOCKで止められる, 0.00001
-    "lw_alpha": [0],
+    "lw_alpha": [0.3],
     "metrics": ["accuracy"],
     "visualize": [False],
     #"feature_num": [2],
-    "dim_intermediate": [30],#[20, 10, 5, 2], 6
-    #"dim_integrate": [2, 6, 30, 100],#[20, 10, 5, 2], 6
+    "dim_intermediate": [6],#[20, 10, 5, 2], 6
+    "dim_integrate": [6],#[20, 10, 5, 2], 6
     "num_institution_user": [100],
-    "num_institution": [10],
+    #"num_institution": [3],
     "K_normalization":[False],
     "anchor_method":["smote"], #gaussian smote 
     "smote_ratio":[1],#, 0, 0.1, 0.25, 0.5, 1],
@@ -71,9 +75,9 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "load_df_data":[True],
     "load_intermediate_data":[True],
     "umap_neighbors":[10],
-    "bias_ratio":[0.8], # 0.1, 0.4, 0.6, 0.95, 0.8 
+    "bias_ratio":[0.1, 0.4, 0.6, 0.95, 0.8 ], # 0.1, 0.4, 0.6, 0.95, 0.8 
     "max_dim":[500],
-    "seed_values":[1],
+    "seed_values":[[1,2,3]],
     })
 
 # "gamma_ratio"
@@ -119,6 +123,10 @@ DEFAULTS = {
     "lw_alpha":False,
     "smote_ratio":1.0,
     "umap_metric":"random", # euclidean correlation cosine
+    "graph_knn_k": None,
+    "graph_mu_align": 1.0,
+    "graph_lambda_rkhs": 1e-2,
+    "graph_stability_eps": 1e-6,
 }
 
 DEFAULT_SMOTE = 1.0
@@ -139,7 +147,7 @@ _DATASET_DEFAULTS = {
     #"mnist_1248":           {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "data_distribution": "division", "gamma_ratio":1, "gamma_ratio_krr":1, "umap_metric":"correlation"},
     #"fashion_mnist":        {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "umap_metric":"correlation"},
     #"concentric_circles":   {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
-    #"concentric_three_circles": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
+    "concentric_three_circles": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
     #"two_gaussian_distributions": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 50, "num_institution": 5},
     #"3D_gaussian_clusters": {"feature_num": 3, "dim_intermediate": 2, "dim_integrate": 2, "num_institution": 2},
     #"3D_8_gaussian_clusters": {"feature_num": 3, "dim_intermediate": 2, "dim_integrate": 2, "num_institution": 2},
@@ -161,7 +169,7 @@ RULES: List[Dict[str, Any]] = [
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "imakura", "gep", "gep2",  "odc",]}, "lock": {"nl_lambda": DEFAULTS["nl_lambda"]}},
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "gep", "gep2",  "odc",]}, "lock": {"gamma_ratio_krr": DEFAULTS["gamma_ratio_krr"]}},
     {"type": "LOCK", "when": {"G_type": ["nonlinear"]}, "lock": {"inter_normalization": False}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "imakura", "gep", "gep2",  "odc",]}, "lock": {"lw_alpha":  DEFAULTS["lw_alpha"]}},
+    {"type": "LOCK", "when": {"G_type": ["graph_nonlinear",  "kernel_graph_gep", "kernel_gep", "gep", "imakura", "odc", "individual", "centralize",  "fl"]}, "lock": {"lw_alpha":  DEFAULTS["lw_alpha"]}},
     #{"type": "SKIP", "when": {"F_type": ["kernel_pca"], "G_type": ["GEP_weighted"]}},
     {"type": "SKIP", "when": {"gamma_ratio_krr": NON_DEFAULT_GAMMA_KRR, "smote_ratio": NON_DEFAULT_SMOTE}},
     {"type": "SKIP", "when": {"gamma_ratio_krr": NON_DEFAULT_GAMMA_KRR, "bias_ratio": NON_DEFAULT_BIAS}},
@@ -376,7 +384,7 @@ def run_grid(
             cfg.seed = seed_value
             cfg.dataset = dataset
             cfg.metrics = metrics_name
-            cfg.plot_name = f"{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}.png"
+            cfg.plot_name = f"{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}_{combo.get('gamma_ratio_krr','-')}_{combo.get('graph_knn_k','-')}_{combo.get('graph_mu_align','-')}_{combo.get('graph_lambda_rkhs','-')}_{combo.get('graph_stability_eps','-')}.png"
             _set_config_from_combo(cfg, combo)
             _apply_defaults(cfg, dataset, combo)
             cfg.seed_values = seed_value

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import rbf_kernel
-from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neighbors import KNeighborsClassifier, NearestNeighbors
 
 logger = Optional[object]
 
@@ -159,7 +159,136 @@ def produce_anchor(
     raise ValueError(f"Unknown anchor_method: {method}")
 
 
+def _valid_label_mask(y_array: np.ndarray) -> np.ndarray:
+    y_array = np.asarray(y_array).ravel()
+    if y_array.dtype.kind in {"f", "c"}:
+        return ~np.isnan(y_array)
+    mask = np.array(
+        [not (val is None or (isinstance(val, float) and np.isnan(val))) for val in y_array],
+        dtype=bool,
+    )
+    return mask
+
+
 def assign_anchor_labels(
+    *,
+    anchors_inter: Sequence[np.ndarray],
+    anchors_test_inter: Sequence[np.ndarray],
+    Xs_train_inter: Sequence[np.ndarray],
+    ys_train: Sequence[np.ndarray],
+    k: int = 10,
+) -> tuple[np.ndarray, np.ndarray]:
+    if not anchors_inter:
+        raise ValueError("assign_anchor_labels requires at least one institution.")
+    num_institutions = len(anchors_inter)
+    if not (len(anchors_test_inter) == len(Xs_train_inter) == len(ys_train) == num_institutions):
+        raise ValueError("anchors_inter, anchors_test_inter, Xs_train_inter, and ys_train must have the same length.")
+
+    labels_flat: list[np.ndarray] = []
+    for y in ys_train:
+        y_arr = np.asarray(y).ravel()
+        mask = _valid_label_mask(y_arr)
+        if np.any(mask):
+            labels_flat.append(y_arr[mask])
+    if not labels_flat:
+        raise ValueError("assign_anchor_labels requires at least one valid training label.")
+    unique_labels = np.unique(np.concatenate(labels_flat))
+    label_to_idx = {label: idx for idx, label in enumerate(unique_labels)}
+
+    num_anchor = anchors_inter[0].shape[0] if anchors_inter else 0
+    num_anchor_test = anchors_test_inter[0].shape[0] if anchors_test_inter else 0
+    counts_anchor = np.zeros((num_anchor, len(unique_labels)), dtype=float)
+    counts_anchor_test = np.zeros((num_anchor_test, len(unique_labels)), dtype=float)
+
+    for X_proj, anchor_proj, anchor_test_proj, y_raw in zip(Xs_train_inter, anchors_inter, anchors_test_inter, ys_train):
+        if X_proj is None or len(X_proj) == 0:
+            continue
+        X_arr = np.asarray(X_proj)
+        y_arr = np.asarray(y_raw).ravel()
+        mask = _valid_label_mask(y_arr)
+        if not np.any(mask):
+            continue
+        X_arr = X_arr[mask]
+        y_arr = y_arr[mask]
+        if X_arr.shape[0] == 0:
+            continue
+        k_eff = max(1, min(int(k), X_arr.shape[0]))
+        knn = KNeighborsClassifier(n_neighbors=k_eff)
+        knn.fit(X_arr, y_arr)
+
+        anchor_proj = np.asarray(anchor_proj)
+        if anchor_proj.size > 0:
+            neighbor_idx = knn.kneighbors(anchor_proj, return_distance=False)
+            _accumulate_label_counts(counts_anchor, neighbor_idx, y_arr, label_to_idx)
+
+        if anchor_test_proj is not None:
+            anchor_test_arr = np.asarray(anchor_test_proj)
+            if anchor_test_arr.size > 0:
+                neighbor_idx_test = knn.kneighbors(anchor_test_arr, return_distance=False)
+                _accumulate_label_counts(counts_anchor_test, neighbor_idx_test, y_arr, label_to_idx)
+
+    fallback_label = unique_labels[np.argmax(counts_anchor.sum(axis=0))]
+    anchor_labels = _counts_to_labels(counts_anchor, unique_labels, fallback_label)
+    anchor_test_labels = _counts_to_labels(counts_anchor_test, unique_labels, fallback_label)
+    return anchor_labels, anchor_test_labels
+
+
+def _accumulate_label_counts(
+    counts_matrix: np.ndarray,
+    neighbor_indices: np.ndarray,
+    labels: np.ndarray,
+    label_to_idx: dict,
+) -> None:
+    if counts_matrix.size == 0 or neighbor_indices.size == 0:
+        return
+    max_rows = counts_matrix.shape[0]
+    for row_idx, neighbors in enumerate(neighbor_indices):
+        if row_idx >= max_rows:
+            break
+        for neigh in neighbors:
+            label = labels[neigh]
+            counts_matrix[row_idx, label_to_idx[label]] += 1.0
+
+
+def _counts_to_labels(
+    counts: np.ndarray,
+    unique_labels: np.ndarray,
+    fallback_label: Any,
+) -> np.ndarray:
+    if counts.size == 0:
+        return np.array([], dtype=unique_labels.dtype)
+    winners = np.argmax(counts, axis=1)
+    labels = unique_labels[winners]
+    sums = counts.sum(axis=1)
+    zero_mask = sums == 0
+    if np.any(zero_mask):
+        labels[zero_mask] = fallback_label
+    return labels
+
+
+def _symmetric_knn_graph(
+    points: np.ndarray,
+    k_neighbors: int,
+    metric: str = "euclidean",
+) -> np.ndarray:
+    n_samples = points.shape[0]
+    if n_samples == 0:
+        return np.zeros((0, 0))
+    if n_samples == 1:
+        return np.zeros((1, 1))
+    k_eff = max(1, min(int(k_neighbors), n_samples - 1))
+    nbrs = NearestNeighbors(n_neighbors=k_eff, metric=metric)
+    nbrs.fit(points)
+    indices = nbrs.kneighbors(points, return_distance=False)
+    adjacency = np.zeros((n_samples, n_samples), dtype=float)
+    for i in range(n_samples):
+        adjacency[i, indices[i]] = 1.0
+    adjacency = np.maximum(adjacency, adjacency.T)
+    np.fill_diagonal(adjacency, 0.0)
+    return adjacency
+
+
+def assign_anchor_labels_cheating(
     *,
     anchor: np.ndarray,
     anchor_test: np.ndarray,
@@ -169,14 +298,6 @@ def assign_anchor_labels(
 ) -> tuple[np.ndarray, np.ndarray]:
     X_train_all = np.vstack(Xs_train)
     y_train_all = np.hstack(ys_train)
-
-    def _valid_label_mask(y_array: np.ndarray) -> np.ndarray:
-        if y_array.dtype.kind in {"f", "c"}:
-            return ~np.isnan(y_array)
-        return np.array(
-            [not (val is None or (isinstance(val, float) and np.isnan(val))) for val in y_array],
-            dtype=bool,
-        )
 
     mask_valid = _valid_label_mask(y_train_all)
     if not np.all(mask_valid):
@@ -200,6 +321,8 @@ def build_laplacians_from_anchor_labels(
     anchor: np.ndarray,
     anchor_y: np.ndarray,
     gamma: Optional[float] = None,
+    k_neighbors: Optional[int] = None,
+    metric: str = "euclidean",
     logger: logger = None,
 ) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     if anchor.size == 0 or anchor_y.size == 0:
@@ -210,21 +333,17 @@ def build_laplacians_from_anchor_labels(
                 pass
         return None, None
 
-    n_features = anchor.shape[1]
-    if gamma is None:
-        gamma = 1.0 / n_features
-
-    W = rbf_kernel(anchor, gamma=gamma)
-    np.fill_diagonal(W, 0)
+    k_val = int(k_neighbors) if k_neighbors is not None else 5
+    adjacency = _symmetric_knn_graph(anchor, k_val, metric=metric)
 
     same_label_mask = anchor_y.reshape(-1, 1) == anchor_y.reshape(1, -1)
     diff_label_mask = ~same_label_mask
 
-    W_within = W * same_label_mask
+    W_within = adjacency * same_label_mask
     D_within = np.diag(W_within.sum(axis=1))
     L_within = D_within - W_within
 
-    W_between = W * diff_label_mask
+    W_between = adjacency * diff_label_mask
     D_between = np.diag(W_between.sum(axis=1))
     L_between = D_between - W_between
 
@@ -243,3 +362,110 @@ def build_laplacians_from_anchor_labels(
         except Exception:
             pass
     return L_within, L_between
+
+
+def build_shared_anchor_knn_adjacency(
+    *,
+    Xs_inter: Sequence[np.ndarray],
+    anchors_inter: Sequence[np.ndarray],
+    k_neighbors: int = 5,
+    metric: str = "euclidean",
+    logger: logger = None,
+) -> np.ndarray:
+    """
+    Build a binary adjacency matrix where two samples are adjacent when they share
+    at least one common k-NN anchor (anchored in intermediate space).
+    """
+    if not Xs_inter or not anchors_inter:
+        if logger:
+            try:
+                logger.warning("Adjacency skipped: missing intermediate data or anchors.")
+            except Exception:
+                pass
+        return np.zeros((0, 0))
+
+    if len(Xs_inter) != len(anchors_inter):
+        raise ValueError("Xs_inter and anchors_inter must have the same length.")
+
+    num_anchor = anchors_inter[0].shape[0]
+    if num_anchor == 0:
+        return np.zeros((0, 0))
+    for anchor in anchors_inter:
+        if anchor.shape[0] != num_anchor:
+            raise ValueError("All anchor projections must share the same number of rows.")
+
+    total_samples = sum(X.shape[0] for X in Xs_inter)
+    if total_samples == 0:
+        return np.zeros((0, 0))
+
+    indicator = np.zeros((total_samples, num_anchor), dtype=bool)
+    row_offset = 0
+    k_neighbors = max(1, int(k_neighbors))
+
+    for inst_idx, (X_inst, anchor_inst) in enumerate(zip(Xs_inter, anchors_inter)):
+        n_samples = X_inst.shape[0]
+        if n_samples == 0:
+            continue
+        k_eff = min(k_neighbors, anchor_inst.shape[0])
+        nbrs = NearestNeighbors(n_neighbors=k_eff, metric=metric)
+        nbrs.fit(anchor_inst)
+        neighbor_idx = nbrs.kneighbors(X_inst, return_distance=False)
+        rows = np.arange(row_offset, row_offset + n_samples)[:, None]
+        indicator[rows, neighbor_idx] = True
+        row_offset += n_samples
+
+    adjacency_counts = indicator @ indicator.T
+    adjacency = (adjacency_counts > 0).astype(float)
+    np.fill_diagonal(adjacency, 0.0)
+    return adjacency
+
+
+def build_laplacians_from_intermediate_data(
+    *,
+    Xs_inter: Sequence[np.ndarray],
+    anchors_inter: Sequence[np.ndarray],
+    ys: Sequence[np.ndarray],
+    k_neighbors: int = 5,
+    metric: str = "euclidean",
+    normalize: bool = True,
+    logger: logger = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Build k-NN adjacency and label-aware Laplacians for actual intermediate data
+    (not anchors). Two samples are adjacent when they share at least one anchor
+    among their k nearest anchor neighbors.
+    """
+    adjacency = build_shared_anchor_knn_adjacency(
+        Xs_inter=Xs_inter,
+        anchors_inter=anchors_inter,
+        k_neighbors=k_neighbors,
+        metric=metric,
+        logger=logger,
+    )
+    if adjacency.size == 0:
+        return adjacency, np.zeros((0, 0)), np.zeros((0, 0))
+
+    labels = np.hstack(ys) if ys else np.array([])
+    if labels.size != adjacency.shape[0]:
+        raise ValueError("Label count must match the total number of samples in Xs_inter.")
+
+    same_mask = labels.reshape(-1, 1) == labels.reshape(1, -1)
+    diff_mask = ~same_mask
+
+    W_within = adjacency * same_mask
+    D_within = np.diag(W_within.sum(axis=1))
+    L_within = D_within - W_within
+
+    W_between = adjacency * diff_mask
+    D_between = np.diag(W_between.sum(axis=1))
+    L_between = D_between - W_between
+
+    if normalize:
+        trace_w = np.trace(L_within)
+        if trace_w > 1e-9:
+            L_within = L_within / trace_w
+        trace_b = np.trace(L_between)
+        if trace_b > 1e-9:
+            L_between = L_between / trace_b
+
+    return adjacency, L_within, L_between

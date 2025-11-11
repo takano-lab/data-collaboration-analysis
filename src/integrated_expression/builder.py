@@ -14,6 +14,9 @@ from .runners import (
     build_gep_projectors,
     build_gep2_projectors,
     build_imakura_projectors,
+    build_kernel_gep_projectors,
+    build_kernel_graph_gep_projectors,
+    build_graph_nonlinear_projectors,
     build_nonlinear_projectors,
     build_odc_projectors,
     build_targetvec_projectors,
@@ -51,6 +54,9 @@ class IntegratedExpressionBuilder:
         self.anchors_test_inter: list[np.ndarray] = []
         self.L_within: np.ndarray | None = None
         self.L_between: np.ndarray | None = None
+        self.graph_adjacency: np.ndarray | None = None
+        self.graph_L_within: np.ndarray | None = None
+        self.graph_L_between: np.ndarray | None = None
 
         # Integrated attributes.
         self.Xs_train_integ: list[np.ndarray] = []
@@ -159,6 +165,9 @@ class IntegratedExpressionBuilder:
         self.anchors_test_inter = list(artifacts.anchors_test_inter)
         self.L_within = artifacts.L_within
         self.L_between = artifacts.L_between
+        self.graph_adjacency = artifacts.graph_adjacency
+        self.graph_L_within = artifacts.graph_L_within
+        self.graph_L_between = artifacts.graph_L_between
 
     def _sync_from_integrated(self, artifacts: IntegratedArtifacts) -> None:
         self.Xs_train_integ = list(artifacts.Xs_train_integ)
@@ -263,6 +272,68 @@ def _run_nonlinear_integration(analysis: "IntegratedExpressionBuilder") -> tuple
     return projs, extras
 
 
+def _run_graph_nonlinear_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    if analysis.L_within is None or analysis.L_between is None:
+        raise ValueError("graph_nonlinear requires anchor Laplacians. Enable anchor_laplacian_k or lw_alpha > 0.")
+    projs, Z_integ, eigvals, gammas = build_graph_nonlinear_projectors(
+        anchors_inter=analysis.anchors_inter,
+        Xs_train_inter=analysis.Xs_train_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+        gamma_type=getattr(analysis.config, "gamma_type", "auto"),
+        gamma_ratio_krr=getattr(analysis.config, "gamma_ratio_krr", 1.0),
+        nl_lambda=getattr(analysis.config, "nl_lambda", 1e-2),
+        graph_mu_align=float(getattr(analysis.config, "graph_mu_align", 1.0) or 1.0),
+        constraint_eps=float(getattr(analysis.config, "graph_stability_eps", 1e-6) or 1e-6),
+        L_within=analysis.L_within,
+        L_between=analysis.L_between,
+    )
+    gammas_mean = float(np.mean(gammas)) if gammas else None
+    analysis.config.gamma_krr_means = gammas_mean
+    extras = {"Z_integ": Z_integ, "eigvals": eigvals, "gammas": gammas}
+    analysis.Z_integ = Z_integ
+    return projs, extras
+
+
+def _run_kernel_gep_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    projs, metrics = build_kernel_gep_projectors(
+        anchors_inter=analysis.anchors_inter,
+        Xs_train_inter=analysis.Xs_train_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+        gamma_type=getattr(analysis.config, "gamma_type", "auto"),
+        gamma_ratio_krr=getattr(analysis.config, "gamma_ratio_krr", 1.0),
+        nl_lambda=getattr(analysis.config, "nl_lambda", 1e-2),
+    )
+    gammas = metrics.get("gammas", [])
+    analysis.config.gamma_krr_means = float(np.mean(gammas)) if gammas else None
+    extras = dict(metrics)
+    extras.setdefault("Z_integ", None)
+    analysis.Z_integ = extras.get("Z_integ")
+    return projs, extras
+
+
+def _run_kernel_graph_gep_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    if analysis.graph_L_within is None or analysis.graph_L_between is None:
+        raise ValueError("kernel_graph_gep requires graph Laplacians. Ensure graph_knn_k is configured.")
+    projs, metrics = build_kernel_graph_gep_projectors(
+        anchors_inter=analysis.anchors_inter,
+        Xs_train_inter=analysis.Xs_train_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+        L_within_data=analysis.graph_L_within,
+        L_between_data=analysis.graph_L_between,
+        gamma_type=getattr(analysis.config, "gamma_type", "auto"),
+        gamma_ratio_krr=getattr(analysis.config, "gamma_ratio_krr", 1.0),
+        mu_align=float(getattr(analysis.config, "graph_mu_align", 1.0) or 1.0),
+        lambda_rkhs=float(getattr(analysis.config, "graph_lambda_rkhs", 1e-2) or 1e-2),
+        stability_eps=float(getattr(analysis.config, "graph_stability_eps", 1e-6) or 1e-6),
+    )
+    gammas = metrics.get("gammas", [])
+    analysis.config.gamma_krr_means = float(np.mean(gammas)) if gammas else None
+    extras = dict(metrics)
+    extras.setdefault("Z_integ", None)
+    analysis.Z_integ = extras.get("Z_integ")
+    return projs, extras
+
+
 def _dim_integrate(config: Config) -> int:
     dim = getattr(config, "dim_integrate", None)
     if dim is None:
@@ -280,6 +351,9 @@ _INTEGRATION_RUNNERS: Dict[str, IntegrationRunner] = {
     "gep2": _run_gep2_integration,
     "odc": _run_odc_integration,
     "nonlinear": _run_nonlinear_integration,
+    "graph_nonlinear": _run_graph_nonlinear_integration,
+    "kernel_gep": _run_kernel_gep_integration,
+    "kernel_graph_gep": _run_kernel_graph_gep_integration,
 }
 
 

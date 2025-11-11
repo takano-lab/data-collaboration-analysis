@@ -42,6 +42,9 @@ class IntermediateArtifacts:
     anchors_test_inter: List[np.ndarray]
     L_within: Optional[np.ndarray] = None
     L_between: Optional[np.ndarray] = None
+    graph_adjacency: Optional[np.ndarray] = None
+    graph_L_within: Optional[np.ndarray] = None
+    graph_L_between: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "anchor", np.asarray(self.anchor))
@@ -52,6 +55,16 @@ class IntermediateArtifacts:
         object.__setattr__(self, "Xs_test_inter", _ensure_array_list(self.Xs_test_inter))
         object.__setattr__(self, "anchors_inter", _ensure_array_list(self.anchors_inter))
         object.__setattr__(self, "anchors_test_inter", _ensure_array_list(self.anchors_test_inter))
+        if self.L_within is not None:
+            object.__setattr__(self, "L_within", np.asarray(self.L_within))
+        if self.L_between is not None:
+            object.__setattr__(self, "L_between", np.asarray(self.L_between))
+        if self.graph_adjacency is not None:
+            object.__setattr__(self, "graph_adjacency", np.asarray(self.graph_adjacency))
+        if self.graph_L_within is not None:
+            object.__setattr__(self, "graph_L_within", np.asarray(self.graph_L_within))
+        if self.graph_L_between is not None:
+            object.__setattr__(self, "graph_L_between", np.asarray(self.graph_L_between))
 
 
 @dataclass(frozen=True)

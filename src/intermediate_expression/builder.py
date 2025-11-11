@@ -13,6 +13,7 @@ from src.dimensionality_reduction import build_dimensionality_projector
 from .anchor_utils import (
     assign_anchor_labels,
     build_laplacians_from_anchor_labels,
+    build_laplacians_from_intermediate_data,
     produce_anchor,
 )
 
@@ -40,6 +41,9 @@ class IntermediateExpressionBuilder:
         self.anchors_test_inter: List[np.ndarray] = []
         self.L_within: np.ndarray | None = None
         self.L_between: np.ndarray | None = None
+        self.graph_adjacency: np.ndarray | None = None
+        self.graph_L_within: np.ndarray | None = None
+        self.graph_L_between: np.ndarray | None = None
 
     # ------------------------------------------------------------------ #
     def run(self, dataset_artifacts: DatasetArtifacts) -> IntermediateArtifacts:
@@ -48,6 +52,8 @@ class IntermediateExpressionBuilder:
             loaded = self._load_from_store()
             if loaded is not None:
                 artifacts = self._maybe_normalize_artifacts(loaded)
+                artifacts = self._maybe_attach_anchor_laplacians(artifacts)
+                artifacts = self._maybe_attach_graph_laplacians(artifacts)
                 self._sync_from_artifacts(artifacts)
                 self.artifacts = artifacts
                 if self.logger:
@@ -60,6 +66,8 @@ class IntermediateExpressionBuilder:
             self.store.save("intermediate", getattr(self.config, "intermediate_name", None), raw_artifacts)
 
         artifacts = self._maybe_normalize_artifacts(raw_artifacts)
+        artifacts = self._maybe_attach_anchor_laplacians(artifacts)
+        artifacts = self._maybe_attach_graph_laplacians(artifacts)
         self._sync_from_artifacts(artifacts)
         self.artifacts = artifacts
         return artifacts
@@ -111,27 +119,51 @@ class IntermediateExpressionBuilder:
             self.anchors_inter.append(anchor_reduced)
             self.anchors_test_inter.append(anchor_test_reduced)
 
-        assign_k = int(getattr(self.config, "anchor_assign_k", 5) or 5)
+        assign_k = int(getattr(self.config, "anchor_assign_k", 10) or 10)
         self.anchor_y, self.anchor_y_test = assign_anchor_labels(
-            anchor=self.anchor,
-            anchor_test=self.anchor_test,
-            Xs_train=dataset.Xs_train,
+            anchors_inter=self.anchors_inter,
+            anchors_test_inter=self.anchors_test_inter,
+            Xs_train_inter=self.Xs_train_inter,
             ys_train=dataset.ys_train,
             k=assign_k,
         )
 
         lw_alpha = float(getattr(self.config, "lw_alpha", 0.0) or 0.0)
-        if lw_alpha > 0.0:
+        need_anchor_laplacian = (lw_alpha > 0.0) or self._needs_anchor_laplacian()
+        if need_anchor_laplacian:
             gamma = getattr(self.config, "laplacian_gamma", None)
+            anchor_lap_k = int(getattr(self.config, "anchor_laplacian_k", assign_k) or assign_k)
             self.L_within, self.L_between = build_laplacians_from_anchor_labels(
                 anchor=self.anchor,
                 anchor_y=self.anchor_y,
                 gamma=gamma,
+                k_neighbors=anchor_lap_k,
                 logger=self.logger,
             )
         else:
             self.L_within = None
             self.L_between = None
+
+        graph_k = getattr(self.config, "graph_knn_k", None)
+        graph_k = int(graph_k) if graph_k is not None else None
+        if self._needs_graph_laplacian() and graph_k is not None and graph_k > 0:
+            metric = getattr(self.config, "graph_knn_metric", "euclidean") or "euclidean"
+            adjacency, graph_Lw, graph_Lb = build_laplacians_from_intermediate_data(
+                Xs_inter=self.Xs_train_inter,
+                anchors_inter=self.anchors_inter,
+                ys=dataset.ys_train,
+                k_neighbors=graph_k,
+                metric=metric,
+                normalize=bool(getattr(self.config, "graph_laplacian_normalize", True)),
+                logger=self.logger,
+            )
+            self.graph_adjacency = adjacency
+            self.graph_L_within = graph_Lw
+            self.graph_L_between = graph_Lb
+        else:
+            self.graph_adjacency = None
+            self.graph_L_within = None
+            self.graph_L_between = None
 
         return IntermediateArtifacts(
             dataset=dataset,
@@ -145,6 +177,9 @@ class IntermediateExpressionBuilder:
             anchors_test_inter=list(self.anchors_test_inter),
             L_within=self.L_within,
             L_between=self.L_between,
+            graph_adjacency=self.graph_adjacency,
+            graph_L_within=self.graph_L_within,
+            graph_L_between=self.graph_L_between,
         )
 
     def _build_projectors(self, dataset: DatasetArtifacts):
@@ -181,6 +216,73 @@ class IntermediateExpressionBuilder:
             return cached
         return None
 
+    def _needs_anchor_laplacian(self) -> bool:
+        if float(getattr(self.config, "lw_alpha", 0.0) or 0.0) > 0.0:
+            return True
+        g_type_raw = getattr(self.config, "G_type", "")
+        if isinstance(g_type_raw, str):
+            return g_type_raw.lower() in {"graph_nonlinear"}
+        try:
+            return any(str(val).lower() in {"graph_nonlinear"} for val in g_type_raw)
+        except TypeError:
+            return False
+
+    def _needs_graph_laplacian(self) -> bool:
+        g_type_raw = getattr(self.config, "G_type", "")
+        if isinstance(g_type_raw, str):
+            return g_type_raw.lower() == "kernel_graph_gep"
+        try:
+            return any(str(val).lower() == "kernel_graph_gep" for val in g_type_raw)
+        except TypeError:
+            return False
+
+    def _maybe_attach_anchor_laplacians(self, artifacts: IntermediateArtifacts) -> IntermediateArtifacts:
+        if not self._needs_anchor_laplacian():
+            return artifacts
+        if (artifacts.L_within is not None) and (artifacts.L_between is not None):
+            return artifacts
+        if artifacts.anchor.size == 0 or artifacts.anchor_y.size == 0:
+            return artifacts
+        assign_k = int(getattr(self.config, "anchor_assign_k", 10) or 10)
+        anchor_lap_k = int(getattr(self.config, "anchor_laplacian_k", assign_k) or assign_k)
+        gamma = getattr(self.config, "laplacian_gamma", None)
+        L_within, L_between = build_laplacians_from_anchor_labels(
+            anchor=artifacts.anchor,
+            anchor_y=artifacts.anchor_y,
+            gamma=gamma,
+            k_neighbors=anchor_lap_k,
+            logger=self.logger,
+        )
+        return replace(artifacts, L_within=L_within, L_between=L_between)
+
+    def _maybe_attach_graph_laplacians(self, artifacts: IntermediateArtifacts) -> IntermediateArtifacts:
+        if not self._needs_graph_laplacian():
+            return artifacts
+        if artifacts.graph_L_within is not None and artifacts.graph_L_between is not None:
+            return artifacts
+        graph_k = getattr(self.config, "graph_knn_k", None)
+        if graph_k is None:
+            return artifacts
+        graph_k = int(graph_k)
+        if graph_k <= 0:
+            return artifacts
+        metric = getattr(self.config, "graph_knn_metric", "euclidean") or "euclidean"
+        adjacency, graph_Lw, graph_Lb = build_laplacians_from_intermediate_data(
+            Xs_inter=artifacts.Xs_train_inter,
+            anchors_inter=artifacts.anchors_inter,
+            ys=artifacts.dataset.ys_train,
+            k_neighbors=graph_k,
+            metric=metric,
+            normalize=bool(getattr(self.config, "graph_laplacian_normalize", True)),
+            logger=self.logger,
+        )
+        return replace(
+            artifacts,
+            graph_adjacency=adjacency,
+            graph_L_within=graph_Lw,
+            graph_L_between=graph_Lb,
+        )
+
     def _sync_from_artifacts(self, artifacts: IntermediateArtifacts) -> None:
         self.artifacts = artifacts
         self.anchor = artifacts.anchor
@@ -193,6 +295,9 @@ class IntermediateExpressionBuilder:
         self.anchors_test_inter = list(artifacts.anchors_test_inter)
         self.L_within = artifacts.L_within
         self.L_between = artifacts.L_between
+        self.graph_adjacency = artifacts.graph_adjacency
+        self.graph_L_within = artifacts.graph_L_within
+        self.graph_L_between = artifacts.graph_L_between
 
     def _maybe_normalize_artifacts(self, artifacts: IntermediateArtifacts) -> IntermediateArtifacts:
         if not getattr(self.config, "inter_normalization", False):

@@ -57,6 +57,82 @@ def _median_heuristic_gamma(X: np.ndarray, *, max_samples: int = 2000) -> float:
     return 1.0 / (2.0 * (med ** 2))
 
 
+def _determine_kernel_gammas(
+    anchors_inter: List[np.ndarray],
+    Xs_train_inter: List[np.ndarray],
+    gamma_type: str,
+    gamma_ratio_krr: float,
+) -> List[float]:
+    if not anchors_inter:
+        return []
+    n_inst = len(anchors_inter)
+    gammas: List[float] = []
+    gamma_type_key = (gamma_type or "").lower()
+
+    if gamma_type_key == "auto":
+        gammas = [1.0 / max(anchor.shape[1], 1) for anchor in anchors_inter]
+    elif gamma_type_key == "x_tuning" and len(Xs_train_inter) == n_inst:
+        for X_tr in Xs_train_inter:
+            gamma = self_tuning_gamma(X_tr, standardize=False, k=3, summary="median")
+            gammas.append(float(gamma) * gamma_ratio_krr)
+    elif gamma_type_key == "median" and len(Xs_train_inter) == n_inst:
+        for X_tr in Xs_train_inter:
+            gamma = _median_heuristic_gamma(X_tr)
+            gammas.append(float(gamma) * gamma_ratio_krr)
+    elif gamma_type_key == "fixed":
+        gammas = [float(gamma_ratio_krr)] * n_inst
+    else:
+        gammas = [1.0 / max(anchor.shape[1], 1) for anchor in anchors_inter]
+
+    if len(gammas) != n_inst:
+        gammas = [1.0 / max(anchor.shape[1], 1) for anchor in anchors_inter]
+    return gammas
+
+
+def _validate_anchor_rows(anchors_inter: List[np.ndarray]) -> int:
+    if not anchors_inter:
+        return 0
+    row_count = anchors_inter[0].shape[0]
+    for anchor in anchors_inter:
+        if anchor.shape[0] != row_count:
+            raise ValueError("All anchor projections must share the same number of rows for kernel GEP.")
+    return row_count
+
+
+def _build_anchor_alignment_terms(Ks: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if not Ks:
+        return np.zeros((0, 0)), np.zeros((0, 0)), np.zeros((0, 0))
+    C_blocks = [K @ K for K in Ks]
+    C = block_diag(*C_blocks)
+    C_H = block_diag(*Ks)
+    T_rows = []
+    for k, Kk in enumerate(Ks):
+        row_blocks = [Kk @ Ks[kp] for kp in range(len(Ks))]
+        T_rows.append(np.hstack(row_blocks))
+    T = np.vstack(T_rows)
+    return C, C_H, T
+
+
+def _build_phi_matrix(
+    Xs_inter: List[np.ndarray],
+    anchors_inter: List[np.ndarray],
+    gammas: List[float],
+) -> np.ndarray:
+    if not Xs_inter or not anchors_inter:
+        return np.zeros((0, 0))
+    if len(Xs_inter) != len(anchors_inter):
+        raise ValueError("Xs_inter and anchors_inter must have the same length.")
+    blocks = []
+    for X_inst, anchor_inst, gamma in zip(Xs_inter, anchors_inter, gammas):
+        if X_inst.size == 0:
+            blocks.append(np.zeros((0, anchor_inst.shape[0])))
+            continue
+        blocks.append(rbf_kernel(X_inst, anchor_inst, gamma=gamma))
+    if not blocks:
+        return np.zeros((0, 0))
+    return block_diag(*blocks)
+
+
 # --- Per-method integrator builders (return projector and the raw matrix when applicable) ---
 
 def compute_linear_integrator_from_Z_anchor(
@@ -80,13 +156,13 @@ def build_imakura_projectors(
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, float]:
     """
     SVD(Imakura) based projector builders.
-    Returns (projs_per_institution, Z_integ (r×m_inter), g_abs_sum).
+    Returns (projs_per_institution, Z_integ (r�~m_inter), g_abs_sum).
     """
-    centralized_anchor = np.hstack(anchors_inter)  # r × sum d_k
+    centralized_anchor = np.hstack(anchors_inter)  # r �~ sum d_k
     U, _, _ = np.linalg.svd(centralized_anchor)
     U = U[:, :dim_integrate]
 
-    Z_integ = U  # r × m_inter (retain for Z_integ)
+    Z_integ = U  # r �~ m_inter (retain for Z_integ)
     projs: List[Callable[[np.ndarray], np.ndarray]] = []
     g_abs_sum = 0.0
     for anchor_inter_k in anchors_inter:
@@ -102,7 +178,7 @@ def build_targetvec_projectors(
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray]:
     """
     TargetVec-based projector builders.
-    Returns (projs_per_institution, Z_integ (r×m_inter)).
+    Returns (projs_per_institution, Z_integ (r�~m_inter)).
     """
     c = len(anchors_inter)
     r = anchors_inter[0].shape[0]
@@ -281,6 +357,133 @@ def build_gep2_projectors(
     )
 
 
+def build_kernel_gep_projectors(
+    anchors_inter: List[np.ndarray],
+    Xs_train_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    gamma_type: str = "auto",
+    gamma_ratio_krr: float = 1.0,
+    nl_lambda: float = 1e-2,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], Dict[str, Any]]:
+    """
+    Kernelized GEP projector builders based on the RKHS formulation.
+    """
+    if not anchors_inter:
+        return [], {"gammas": [], "eigvals": np.array([]), "alphas": np.array([])}
+    r = _validate_anchor_rows(anchors_inter)
+    c = len(anchors_inter)
+    gammas = _determine_kernel_gammas(anchors_inter, Xs_train_inter, gamma_type, gamma_ratio_krr)
+
+    Ks = [rbf_kernel(anchor_inter_k, anchor_inter_k, gamma=gammas[idx]) for idx, anchor_inter_k in enumerate(anchors_inter)]
+    C, C_H, T = _build_anchor_alignment_terms(Ks)
+
+    A = 2 * c * C - 2 * T + nl_lambda * C_H
+    ridge = 1e-6
+    B = C + ridge * np.eye(C.shape[0])
+    eigvals, eigvecs = _solve_gep_regularized(A, B, orth_ver=False)
+    take = min(dim_integrate, eigvecs.shape[1])
+    order = np.argsort(eigvals)
+    select = order[:take]
+    eigvals_selected = eigvals[select]
+    Alpha_stack = eigvecs[:, select]
+
+    for j in range(Alpha_stack.shape[1]):
+        vec = Alpha_stack[:, j]
+        denom = float(vec.T @ (C @ vec))
+        if denom > 0:
+            Alpha_stack[:, j] = vec / np.sqrt(denom)
+
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    for k in range(c):
+        start = k * r
+        end = start + r
+        Alpha_k = Alpha_stack[start:end, :]
+        proj = make_kernel_integrator(anchors_inter[k], Alpha_k, gamma=gammas[k])
+        projs.append(proj)
+
+    metrics: Dict[str, Any] = {
+        "alphas": Alpha_stack,
+        "eigvals": eigvals_selected,
+        "gammas": gammas,
+    }
+    return projs, metrics
+
+
+def build_kernel_graph_gep_projectors(
+    anchors_inter: List[np.ndarray],
+    Xs_train_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    L_within_data: Optional[np.ndarray],
+    L_between_data: Optional[np.ndarray],
+    gamma_type: str = "auto",
+    gamma_ratio_krr: float = 1.0,
+    mu_align: float = 1.0,
+    lambda_rkhs: float = 1e-2,
+    stability_eps: float = 1e-6,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], Dict[str, Any]]:
+    """
+    Kernel GEP with graph Laplacian terms derived from intermediate representations.
+    """
+    if not anchors_inter:
+        return [], {"gammas": [], "eigvals": np.array([]), "alphas": np.array([])}
+    if L_within_data is None or L_between_data is None:
+        raise ValueError("kernel_graph_gep requires both L_within_data and L_between_data.")
+
+    r = _validate_anchor_rows(anchors_inter)
+    c = len(anchors_inter)
+    gammas = _determine_kernel_gammas(anchors_inter, Xs_train_inter, gamma_type, gamma_ratio_krr)
+
+    Ks = [rbf_kernel(anchor_inter_k, anchor_inter_k, gamma=gammas[idx]) for idx, anchor_inter_k in enumerate(anchors_inter)]
+    C, C_H, T = _build_anchor_alignment_terms(Ks)
+    Phi = _build_phi_matrix(Xs_train_inter, anchors_inter, gammas)
+    if Phi.size == 0:
+        raise ValueError("kernel_graph_gep requires non-empty intermediate representations.")
+    n_samples = Phi.shape[0]
+    if L_within_data.shape != (n_samples, n_samples) or L_between_data.shape != (n_samples, n_samples):
+        raise ValueError("Graph Laplacian shapes must match total sample size in Xs_train_inter.")
+
+    Lw = np.asarray(L_within_data)
+    Lb = np.asarray(L_between_data)
+    A_b = Phi.T @ Lb @ Phi
+    A_w = Phi.T @ Lw @ Phi
+    A_b = (A_b + A_b.T) * 0.5
+    A_w = (A_w + A_w.T) * 0.5
+
+    A_align = 2 * c * C - 2 * T
+    B = A_w + mu_align * A_align + lambda_rkhs * C_H
+    B = (B + B.T) * 0.5 + (stability_eps + mu_align * 1e-9) * np.eye(B.shape[0])
+
+    eigvals, eigvecs = _solve_gep_regularized(A_b, B, orth_ver=False)
+    take = min(dim_integrate, eigvecs.shape[1])
+    order = np.argsort(eigvals)[::-1]
+    select = order[:take]
+    eigvals_selected = eigvals[select]
+    Alpha_stack = eigvecs[:, select]
+
+    for j in range(Alpha_stack.shape[1]):
+        vec = Alpha_stack[:, j]
+        denom = float(vec.T @ (B @ vec))
+        if denom > 0:
+            Alpha_stack[:, j] = vec / np.sqrt(denom)
+
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    for k in range(c):
+        start = k * r
+        end = start + r
+        Alpha_k = Alpha_stack[start:end, :]
+        proj = make_kernel_integrator(anchors_inter[k], Alpha_k, gamma=gammas[k])
+        projs.append(proj)
+
+    metrics: Dict[str, Any] = {
+        "alphas": Alpha_stack,
+        "eigvals": eigvals_selected,
+        "gammas": gammas,
+    }
+    return projs, metrics
+
+
 def build_odc_projectors(
     anchors_inter: List[np.ndarray],
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray]:
@@ -315,34 +518,13 @@ def build_nonlinear_projectors(
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
     """
     Kernel (nonlinear) based projector builders.
-    Returns (projs_per_institution, Z_integ (r×m_inter), eigvals (ascending)).
+    Returns (projs_per_institution, Z_integ (r�~m_inter), eigvals (ascending)).
     """
     c = len(anchors_inter)
     r = anchors_inter[0].shape[0]
     I_r = np.eye(r)
 
-    gammas: List[float] = []
-    if gamma_type == "auto":
-        for anchor_inter_k in anchors_inter:
-            gammas.append(1.0 / anchor_inter_k.shape[1])
-    elif gamma_type == "X_tuning":
-        for X_tr in Xs_train_inter:
-            gamma = self_tuning_gamma(X_tr, standardize=False, k=3, summary='median')
-            gamma *= gamma_ratio_krr
-            gammas.append(float(gamma))
-    elif gamma_type == "median":
-        for X_tr in Xs_train_inter:
-            gamma = _median_heuristic_gamma(X_tr)
-            gamma *= gamma_ratio_krr
-            gammas.append(float(gamma))
-    elif gamma_type == "fixed":
-        for X_tr in Xs_train_inter:
-            gamma =  gamma_ratio_krr
-            gammas.append(float(gamma))
-    else:
-        # fallback
-        for anchor_inter_k in anchors_inter:
-            gammas.append(1.0 / anchor_inter_k.shape[1])
+    gammas = _determine_kernel_gammas(anchors_inter, Xs_train_inter, gamma_type, gamma_ratio_krr)
 
     Ks, Ps, mu_max_list = [], [], []
     for i, anchor_inter_k in enumerate(anchors_inter):
@@ -364,6 +546,8 @@ def build_nonlinear_projectors(
     if lw_alpha == 0:
         Q = (M + M.T) * 0.5
     else:
+        if L_within is None or L_between is None:
+            raise ValueError("Non-zero lw_alpha requires both L_within and L_between Laplacians.")
         Q = (M + M.T) * 0.5 + lw_alpha *(L_within - L_between)
     eigvals_raw, eigvecs = np.linalg.eigh(Q)
     eigvals_raw[eigvals_raw < 0] = 0.0
@@ -384,3 +568,62 @@ def build_nonlinear_projectors(
         projs.append(proj)
 
     return projs, Z_integ, eigvals_selected, gammas
+
+
+def build_graph_nonlinear_projectors(
+    anchors_inter: List[np.ndarray],
+    Xs_train_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    gamma_type: str = "auto",
+    gamma_ratio_krr: float = 1.0,
+    nl_lambda: float = 1e-2,
+    graph_mu_align: float = 1.0,
+    constraint_eps: float = 1e-6,
+    L_within: Optional[np.ndarray],
+    L_between: Optional[np.ndarray],
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
+    if L_within is None or L_between is None:
+        raise ValueError("graph_nonlinear requires both L_within and L_between.")
+
+    c = len(anchors_inter)
+    r = anchors_inter[0].shape[0]
+    I_r = np.eye(r)
+
+    gammas = _determine_kernel_gammas(anchors_inter, Xs_train_inter, gamma_type, gamma_ratio_krr)
+
+    Ks, Ps, mu_max_list = [], [], []
+    for i, anchor_inter_k in enumerate(anchors_inter):
+        K = rbf_kernel(anchor_inter_k, anchor_inter_k, gamma=gammas[i])
+        mu_max = None
+        Ks.append(K)
+        Ps.append(K @ np.linalg.inv(K + nl_lambda * I_r))
+        mu_max_list.append(mu_max)
+
+    M = sum((P - I_r).T @ (P - I_r) for P in Ps)
+    M = (M + M.T) * 0.5
+
+    A = M + graph_mu_align * L_within
+    B = L_between + constraint_eps * np.eye(L_between.shape[0])
+    B = (B + B.T) * 0.5
+
+    eigvals_raw, eigvecs = eigh(A, B)
+    order = np.argsort(eigvals_raw)[::-1]
+    take = min(dim_integrate, eigvecs.shape[1])
+    select = order[:take]
+    eigvals_selected = eigvals_raw[select]
+    Z_integ = eigvecs[:, select]
+
+    for j in range(Z_integ.shape[1]):
+        denom = float(Z_integ[:, j].T @ (B @ Z_integ[:, j]))
+        if denom > 0:
+            Z_integ[:, j] /= np.sqrt(denom)
+
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    for i, K in enumerate(Ks):
+        B_k = np.linalg.inv(K + nl_lambda * I_r) @ Z_integ
+        proj = make_kernel_integrator(anchors_inter[i], B_k, gamma=gammas[i])
+        projs.append(proj)
+
+    return projs, Z_integ, eigvals_selected, gammas
+
