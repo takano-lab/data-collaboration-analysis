@@ -6,7 +6,7 @@ from collections import OrderedDict
 
 # runners/runner_grid.py
 from itertools import product
-from logging import Formatter, INFO, FileHandler, StreamHandler, getLogger
+from logging import INFO, FileHandler, Formatter, StreamHandler, getLogger
 from typing import Any, Dict, List, Sequence
 
 import pandas as pd
@@ -19,38 +19,39 @@ from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 # ====== ユーザーが編集するのはここだけ ======
 
 # 1) 全探索したいパラメータ（config.◯◯に代入）
+
 PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
+    "F_type": ["ae"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
     "dataset": [
     "fashion_mnist",
     "mnist",
     #"mnist_1248",
-    "mice",
+    #"mice",
     #"statlog",
-    "qsar",
-    "digits",
+    #"qsar",
+    #"digits",
     #"breast_cancer",
     #"adult",
     #"glass", 
     #"seeds", 
     #"letter_recognition",
     #"wine_quality",
-    "har",
+    #"har",
     #"cifar10",
     #"diabetes130",
     #"bank_marketing",
     #"cifar10_800",
     #'3D_gaussian_clusters',
     #"concentric_three_circles",
-    "iris",
+    #"iris",
     #"ecoli",
     #"vowel"
     #"coil20"
-], # + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
+],# + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "F_type": ["umap"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["nonlinear"],#,, "graph_nonlinear",  "kernel_graph_gep", "kernel_gep", "gep", "imakura", "odc", "individual", "centralize",  "fl"
-    "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
+    "G_type": ["graph_nonlinear_x_maximize"],#, "kernel_graph_gep_maximize", "nonlinear", "graph_nonlinear", "graph_nonlinear_maximize",  "kernel_graph_gep",  "kernel_graph_gep_maximize", "kernel_gep", "gep", "imakura", "odc", "individual", "centralize",  "fl"
+    #"gamma_type": ["median"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
     "gamma_ratio_krr": [1], #, 0.1, 0.3, 3, 10 
     "graph_knn_k": [10],
     "graph_mu_align": [1],
@@ -58,12 +59,12 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "graph_stability_eps": [0.1],
     "num_anchor_data": [500],
     "nl_lambda": [0.3], # LOCKで止められる, 0.00001
-    "lw_alpha": [0.3],
+    "lw_alpha": [0],
     "metrics": ["accuracy"],
     "visualize": [False],
     #"feature_num": [2],
-    "dim_intermediate": [6],#[20, 10, 5, 2], 6
-    "dim_integrate": [6],#[20, 10, 5, 2], 6
+    #"dim_intermediate": ["*0.8"],#[20, 10, 5, 2], 6
+    #"dim_integrate": ["*0.8"],#[20, 10, 5, 2], 6
     "num_institution_user": [100],
     #"num_institution": [3],
     "K_normalization":[False],
@@ -75,7 +76,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "load_df_data":[True],
     "load_intermediate_data":[True],
     "umap_neighbors":[10],
-    "bias_ratio":[0.1, 0.4, 0.6, 0.95, 0.8 ], # 0.1, 0.4, 0.6, 0.95, 0.8 
+    "bias_ratio":[0.8], # 0.1, 0.4, 0.6, 0.95, 0.8 
     "max_dim":[500],
     "seed_values":[[1,2,3]],
     })
@@ -147,7 +148,7 @@ _DATASET_DEFAULTS = {
     #"mnist_1248":           {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "data_distribution": "division", "gamma_ratio":1, "gamma_ratio_krr":1, "umap_metric":"correlation"},
     #"fashion_mnist":        {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "umap_metric":"correlation"},
     #"concentric_circles":   {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
-    "concentric_three_circles": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
+    #"concentric_three_circles": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
     #"two_gaussian_distributions": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 50, "num_institution": 5},
     #"3D_gaussian_clusters": {"feature_num": 3, "dim_intermediate": 2, "dim_integrate": 2, "num_institution": 2},
     #"3D_8_gaussian_clusters": {"feature_num": 3, "dim_intermediate": 2, "dim_integrate": 2, "num_institution": 2},
@@ -170,6 +171,10 @@ RULES: List[Dict[str, Any]] = [
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "gep", "gep2",  "odc",]}, "lock": {"gamma_ratio_krr": DEFAULTS["gamma_ratio_krr"]}},
     {"type": "LOCK", "when": {"G_type": ["nonlinear"]}, "lock": {"inter_normalization": False}},
     {"type": "LOCK", "when": {"G_type": ["graph_nonlinear",  "kernel_graph_gep", "kernel_gep", "gep", "imakura", "odc", "individual", "centralize",  "fl"]}, "lock": {"lw_alpha":  DEFAULTS["lw_alpha"]}},
+    # F_type による固定: ae のとき比率指定と gamma_type=median
+    {"type": "LOCK", "when": {"F_type": ["ae"]}, "lock": {"dim_intermediate": "*0.8", "dim_integrate": "*0.8", "gamma_type": "median"}},
+    # F_type による固定: umap のとき固定次元と gamma_type=fixed
+    {"type": "LOCK", "when": {"F_type": ["umap"]}, "lock": {"dim_intermediate": 6, "dim_integrate": 6, "gamma_type": "fixed"}},
     #{"type": "SKIP", "when": {"F_type": ["kernel_pca"], "G_type": ["GEP_weighted"]}},
     {"type": "SKIP", "when": {"gamma_ratio_krr": NON_DEFAULT_GAMMA_KRR, "smote_ratio": NON_DEFAULT_SMOTE}},
     {"type": "SKIP", "when": {"gamma_ratio_krr": NON_DEFAULT_GAMMA_KRR, "bias_ratio": NON_DEFAULT_BIAS}},

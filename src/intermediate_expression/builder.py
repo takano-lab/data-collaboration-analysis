@@ -10,6 +10,7 @@ from tqdm import tqdm
 from config.config import Config
 from src.common import ArtifactStore, DatasetArtifacts, IntermediateArtifacts
 from src.dimensionality_reduction import build_dimensionality_projector
+
 from .anchor_utils import (
     assign_anchor_labels,
     build_laplacians_from_anchor_labels,
@@ -221,18 +222,35 @@ class IntermediateExpressionBuilder:
             return True
         g_type_raw = getattr(self.config, "G_type", "")
         if isinstance(g_type_raw, str):
-            return g_type_raw.lower() in {"graph_nonlinear"}
+            return g_type_raw.lower() in {"graph_nonlinear", "graph_nonlinear_minimize", "graph_nonlinear_maximize"}
         try:
-            return any(str(val).lower() in {"graph_nonlinear"} for val in g_type_raw)
+            return any(str(val).lower() in {"graph_nonlinear", "graph_nonlinear_minimize", "graph_nonlinear_maximize"} for val in g_type_raw)
         except TypeError:
             return False
 
     def _needs_graph_laplacian(self) -> bool:
         g_type_raw = getattr(self.config, "G_type", "")
         if isinstance(g_type_raw, str):
-            return g_type_raw.lower() == "kernel_graph_gep"
+            return g_type_raw.lower() in {
+                "kernel_graph_gep",
+                "kernel_graph_gep_minimize",
+                "kernel_graph_gep_maximize",
+                "graph_nonlinear_x",
+                "graph_nonlinear_x_minimize",
+                "graph_nonlinear_x_maximize",
+            }
         try:
-            return any(str(val).lower() == "kernel_graph_gep" for val in g_type_raw)
+            return any(
+                str(val).lower() in {
+                    "kernel_graph_gep",
+                    "kernel_graph_gep_minimize",
+                    "kernel_graph_gep_maximize",
+                    "graph_nonlinear_x",
+                    "graph_nonlinear_x_minimize",
+                    "graph_nonlinear_x_maximize",
+                }
+                for val in g_type_raw
+            )
         except TypeError:
             return False
 

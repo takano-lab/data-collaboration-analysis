@@ -9,15 +9,20 @@ from tqdm import tqdm
 
 from config.config import Config
 from src.common import IntegratedArtifacts, IntermediateArtifacts
+
 from .integrate_metrics import evaluate_nonlinearity_indices, integrate_metrics
 from .runners import (
-    build_gep_projectors,
     build_gep2_projectors,
+    build_gep_projectors,
+    build_graph_nonlinear_projectors,
+    build_graph_nonlinear_X_projectors,
+    build_graph_nonlinear_X_projectors_maximize,
+    build_graph_nonlinear_X_projectors_minimize,
     build_imakura_projectors,
     build_kernel_gep_projectors,
     build_kernel_graph_gep_projectors,
-    build_graph_nonlinear_projectors,
     build_nonlinear_projectors,
+    build_nonlinear_projectors_maximize,
     build_odc_projectors,
     build_targetvec_projectors,
 )
@@ -79,7 +84,22 @@ class IntegratedExpressionBuilder:
         metrics = None
         if getattr(self.config, "evaluate_integrate_metrics", False):
             metrics = integrate_metrics(self)
-        should_eval_lni = str(getattr(self.config, "G_type", "")).lower() == "nonlinear"
+        gtype_key = str(getattr(self.config, "G_type", "")).lower()
+        lni_enabled_types = {
+            "nonlinear",
+            "nonlinear_maximize",
+            "graph_nonlinear",
+            "graph_nonlinear_minimize",
+            "graph_nonlinear_maximize",
+            "graph_nonlinear_x",
+            "graph_nonlinear_x_minimize",
+            "graph_nonlinear_x_maximize",
+            "kernel_gep",
+            "kernel_graph_gep",
+            "kernel_graph_gep_minimize",
+            "kernel_graph_gep_maximize",
+        }
+        should_eval_lni = gtype_key in lni_enabled_types
         if should_eval_lni:
             try:
                 evaluate_nonlinearity_indices(self)
@@ -286,6 +306,7 @@ def _run_graph_nonlinear_integration(analysis: "IntegratedExpressionBuilder") ->
         constraint_eps=float(getattr(analysis.config, "graph_stability_eps", 1e-6) or 1e-6),
         L_within=analysis.L_within,
         L_between=analysis.L_between,
+        g_type=getattr(analysis.config, "G_type", None),
     )
     gammas_mean = float(np.mean(gammas)) if gammas else None
     analysis.config.gamma_krr_means = gammas_mean
@@ -312,25 +333,80 @@ def _run_kernel_gep_integration(analysis: "IntegratedExpressionBuilder") -> tupl
 
 
 def _run_kernel_graph_gep_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    # Require graph Laplacians (from intermediate data) for kernel_graph_gep
     if analysis.graph_L_within is None or analysis.graph_L_between is None:
-        raise ValueError("kernel_graph_gep requires graph Laplacians. Ensure graph_knn_k is configured.")
+        raise ValueError(
+            "kernel_graph_gep requires graph Laplacians built from intermediate data. "
+            "Set config.graph_knn_k > 0 to enable build_laplacians_from_intermediate_data and retry."
+        )
+    L_within_use = analysis.graph_L_within
+    L_between_use = analysis.graph_L_between
     projs, metrics = build_kernel_graph_gep_projectors(
         anchors_inter=analysis.anchors_inter,
         Xs_train_inter=analysis.Xs_train_inter,
         dim_integrate=_dim_integrate(analysis.config),
-        L_within_data=analysis.graph_L_within,
-        L_between_data=analysis.graph_L_between,
+        L_within_data=L_within_use,
+        L_between_data=L_between_use,
         gamma_type=getattr(analysis.config, "gamma_type", "auto"),
         gamma_ratio_krr=getattr(analysis.config, "gamma_ratio_krr", 1.0),
         mu_align=float(getattr(analysis.config, "graph_mu_align", 1.0) or 1.0),
         lambda_rkhs=float(getattr(analysis.config, "graph_lambda_rkhs", 1e-2) or 1e-2),
         stability_eps=float(getattr(analysis.config, "graph_stability_eps", 1e-6) or 1e-6),
+        g_type=getattr(analysis.config, "G_type", None),
     )
     gammas = metrics.get("gammas", [])
     analysis.config.gamma_krr_means = float(np.mean(gammas)) if gammas else None
     extras = dict(metrics)
     extras.setdefault("Z_integ", None)
     analysis.Z_integ = extras.get("Z_integ")
+    return projs, extras
+
+
+def _run_nonlinear_max_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    lw_alpha = float(getattr(analysis.config, "lw_alpha", 0.0) or 0.0)
+    projs, Z_integ, eigvals, gammas = build_nonlinear_projectors_maximize(
+        anchors_inter=analysis.anchors_inter,
+        Xs_train_inter=analysis.Xs_train_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+        gamma_type=getattr(analysis.config, "gamma_type", "auto"),
+        gamma_ratio_krr=getattr(analysis.config, "gamma_ratio_krr", 1.0),
+        K_normalization=bool(getattr(analysis.config, "K_normalization", False)),
+        nl_lambda=getattr(analysis.config, "nl_lambda", 1e-2),
+        lw_alpha=lw_alpha,
+        L_within=analysis.L_within,
+        L_between=analysis.L_between,
+    )
+    gamma_mean = float(np.mean(gammas)) if gammas else None
+    analysis.config.gamma_krr_means = gamma_mean
+    extras = {"Z_integ": Z_integ, "eigvals": eigvals, "gammas": gammas}
+    analysis.Z_integ = Z_integ
+    return projs, extras
+
+
+def _run_graph_nonlinear_X_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    # Require graph Laplacians (from intermediate data) for graph_nonlinear_X
+    if analysis.graph_L_within is None or analysis.graph_L_between is None:
+        raise ValueError(
+            "graph_nonlinear_X requires graph Laplacians built from intermediate data. "
+            "Set config.graph_knn_k > 0 to enable build_laplacians_from_intermediate_data and retry."
+        )
+    projs, Z_integ, eigvals, gammas = build_graph_nonlinear_X_projectors(
+        anchors_inter=analysis.anchors_inter,
+        Xs_train_inter=analysis.Xs_train_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+        gamma_type=getattr(analysis.config, "gamma_type", "auto"),
+        gamma_ratio_krr=getattr(analysis.config, "gamma_ratio_krr", 1.0),
+        nl_lambda=getattr(analysis.config, "nl_lambda", 1e-2),
+        graph_mu_align=float(getattr(analysis.config, "graph_mu_align", 1.0) or 1.0),
+        constraint_eps=float(getattr(analysis.config, "graph_stability_eps", 1e-6) or 1e-6),
+        graph_L_within=analysis.graph_L_within,
+        graph_L_between=analysis.graph_L_between,
+        g_type=getattr(analysis.config, "G_type", None),
+    )
+    gammas_mean = float(np.mean(gammas)) if gammas else None
+    analysis.config.gamma_krr_means = gammas_mean
+    extras = {"Z_integ": Z_integ, "eigvals": eigvals, "gammas": gammas}
+    analysis.Z_integ = Z_integ
     return projs, extras
 
 
@@ -351,9 +427,17 @@ _INTEGRATION_RUNNERS: Dict[str, IntegrationRunner] = {
     "gep2": _run_gep2_integration,
     "odc": _run_odc_integration,
     "nonlinear": _run_nonlinear_integration,
+    "nonlinear_maximize": _run_nonlinear_max_integration,
     "graph_nonlinear": _run_graph_nonlinear_integration,
+    "graph_nonlinear_minimize": _run_graph_nonlinear_integration,
+    "graph_nonlinear_maximize": _run_graph_nonlinear_integration,
     "kernel_gep": _run_kernel_gep_integration,
     "kernel_graph_gep": _run_kernel_graph_gep_integration,
+    "kernel_graph_gep_minimize": _run_kernel_graph_gep_integration,
+    "kernel_graph_gep_maximize": _run_kernel_graph_gep_integration,
+    "graph_nonlinear_x": _run_graph_nonlinear_X_integration,
+    "graph_nonlinear_x_minimize": _run_graph_nonlinear_X_integration,
+    "graph_nonlinear_x_maximize": _run_graph_nonlinear_X_integration,
 }
 
 

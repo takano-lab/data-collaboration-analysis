@@ -422,6 +422,7 @@ def build_kernel_graph_gep_projectors(
     mu_align: float = 1.0,
     lambda_rkhs: float = 1e-2,
     stability_eps: float = 1e-6,
+    g_type: Optional[str] = None,
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], Dict[str, Any]]:
     """
     Kernel GEP with graph Laplacian terms derived from intermediate representations.
@@ -452,19 +453,36 @@ def build_kernel_graph_gep_projectors(
     A_w = (A_w + A_w.T) * 0.5
 
     A_align = 2 * c * C - 2 * T
-    B = A_w + mu_align * A_align + lambda_rkhs * C_H
-    B = (B + B.T) * 0.5 + (stability_eps + mu_align * 1e-9) * np.eye(B.shape[0])
+    # Prepare both formulations
+    # minimize: (A_w + μ A_align + λ C_H) a = γ (A_b + ε I) a
+    A_min = (A_w + mu_align * A_align + lambda_rkhs * C_H)
+    A_min = (A_min + A_min.T) * 0.5 + (mu_align * 1e-9) * np.eye(A_min.shape[0])
+    B_min = (A_b + stability_eps * np.eye(A_b.shape[0]))
+    B_min = (B_min + B_min.T) * 0.5
 
-    eigvals, eigvecs = _solve_gep_regularized(A_b, B, orth_ver=False)
+    # maximize: A_b a = γ (A_w + μ A_align + λ C_H + ε I) a
+    A_max = A_b
+    A_max = (A_max + A_max.T) * 0.5
+    B_max = (A_w + mu_align * A_align + lambda_rkhs * C_H + stability_eps * np.eye(A_b.shape[0]))
+    B_max = (B_max + B_max.T) * 0.5
+
+    mode = (g_type or "").lower()
+    use_max = ("maximize" in mode)
+
+    A_use, B_use = (A_max, B_max) if use_max else (A_min, B_min)
+    # Ensure B is SPD to avoid eigh failures on some datasets
+    B_use = _nearest_spd(B_use, min_eig=max(stability_eps, 1e-9))
+    eigvals, eigvecs = _solve_gep_regularized(A_use, B_use, orth_ver=False)
     take = min(dim_integrate, eigvecs.shape[1])
-    order = np.argsort(eigvals)[::-1]
+    # Select eigenvalues: minimize -> ascending, maximize -> descending
+    order = np.argsort(eigvals) if not use_max else np.argsort(eigvals)[::-1]
     select = order[:take]
     eigvals_selected = eigvals[select]
     Alpha_stack = eigvecs[:, select]
 
     for j in range(Alpha_stack.shape[1]):
         vec = Alpha_stack[:, j]
-        denom = float(vec.T @ (B @ vec))
+        denom = float(vec.T @ (B_use @ vec))
         if denom > 0:
             Alpha_stack[:, j] = vec / np.sqrt(denom)
 
@@ -480,8 +498,65 @@ def build_kernel_graph_gep_projectors(
         "alphas": Alpha_stack,
         "eigvals": eigvals_selected,
         "gammas": gammas,
+        "mode": "maximize" if use_max else "minimize",
     }
     return projs, metrics
+
+
+def build_kernel_graph_gep_projectors_maximize(
+    anchors_inter: List[np.ndarray],
+    Xs_train_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    L_within_data: Optional[np.ndarray],
+    L_between_data: Optional[np.ndarray],
+    gamma_type: str = "auto",
+    gamma_ratio_krr: float = 1.0,
+    mu_align: float = 1.0,
+    lambda_rkhs: float = 1e-2,
+    stability_eps: float = 1e-6,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], Dict[str, Any]]:
+    return build_kernel_graph_gep_projectors(
+        anchors_inter,
+        Xs_train_inter,
+        dim_integrate,
+        L_within_data=L_within_data,
+        L_between_data=L_between_data,
+        gamma_type=gamma_type,
+        gamma_ratio_krr=gamma_ratio_krr,
+        mu_align=mu_align,
+        lambda_rkhs=lambda_rkhs,
+        stability_eps=stability_eps,
+        g_type="kernel_graph_gep_maximize",
+    )
+
+
+def build_kernel_graph_gep_projectors_minimize(
+    anchors_inter: List[np.ndarray],
+    Xs_train_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    L_within_data: Optional[np.ndarray],
+    L_between_data: Optional[np.ndarray],
+    gamma_type: str = "auto",
+    gamma_ratio_krr: float = 1.0,
+    mu_align: float = 1.0,
+    lambda_rkhs: float = 1e-2,
+    stability_eps: float = 1e-6,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], Dict[str, Any]]:
+    return build_kernel_graph_gep_projectors(
+        anchors_inter,
+        Xs_train_inter,
+        dim_integrate,
+        L_within_data=L_within_data,
+        L_between_data=L_between_data,
+        gamma_type=gamma_type,
+        gamma_ratio_krr=gamma_ratio_krr,
+        mu_align=mu_align,
+        lambda_rkhs=lambda_rkhs,
+        stability_eps=stability_eps,
+        g_type="kernel_graph_gep_minimize",
+    )
 
 
 def build_odc_projectors(
@@ -582,6 +657,7 @@ def build_graph_nonlinear_projectors(
     constraint_eps: float = 1e-6,
     L_within: Optional[np.ndarray],
     L_between: Optional[np.ndarray],
+    g_type: Optional[str] = None,
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
     if L_within is None or L_between is None:
         raise ValueError("graph_nonlinear requires both L_within and L_between.")
@@ -603,19 +679,33 @@ def build_graph_nonlinear_projectors(
     M = sum((P - I_r).T @ (P - I_r) for P in Ps)
     M = (M + M.T) * 0.5
 
-    A = M + graph_mu_align * L_within
-    B = L_between + constraint_eps * np.eye(L_between.shape[0])
-    B = (B + B.T) * 0.5
+    # Prepare both formulations
+    # minimize: (M + μ L_within) z = γ (L_between + ε I) z
+    A_min = (M + graph_mu_align * L_within)
+    B_min = (L_between + constraint_eps * np.eye(L_between.shape[0]))
+    A_min = (A_min + A_min.T) * 0.5
+    B_min = (B_min + B_min.T) * 0.5
 
-    eigvals_raw, eigvecs = eigh(A, B)
-    order = np.argsort(eigvals_raw)[::-1]
+    # maximize: L_between z = γ (M + μ L_within + ε I) z
+    A_max = (L_between + 0.0)
+    B_max = (M + graph_mu_align * L_within + constraint_eps * np.eye(L_between.shape[0]))
+    A_max = (A_max + A_max.T) * 0.5
+    B_max = (B_max + B_max.T) * 0.5
+
+    mode = (g_type or "").lower()
+    use_max = ("maximize" in mode)
+    A_use, B_use = (A_max, B_max) if use_max else (A_min, B_min)
+
+    eigvals_raw, eigvecs = eigh(A_use, B_use)
+    # Select eigenvalues by mode
+    order = np.argsort(eigvals_raw) if not use_max else np.argsort(eigvals_raw)[::-1]
     take = min(dim_integrate, eigvecs.shape[1])
     select = order[:take]
     eigvals_selected = eigvals_raw[select]
     Z_integ = eigvecs[:, select]
 
     for j in range(Z_integ.shape[1]):
-        denom = float(Z_integ[:, j].T @ (B @ Z_integ[:, j]))
+        denom = float(Z_integ[:, j].T @ (B_use @ Z_integ[:, j]))
         if denom > 0:
             Z_integ[:, j] /= np.sqrt(denom)
 
@@ -626,4 +716,352 @@ def build_graph_nonlinear_projectors(
         projs.append(proj)
 
     return projs, Z_integ, eigvals_selected, gammas
+
+
+def build_nonlinear_projectors_maximize(
+    anchors_inter: List[np.ndarray],
+    Xs_train_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    gamma_type: str = "auto",
+    gamma_ratio_krr: float = 1.0,
+    K_normalization: bool = False,
+    nl_lambda: float = 1e-2,
+    lw_alpha: float = 0.0,
+    L_within: Optional[np.ndarray] = None,
+    L_between: Optional[np.ndarray] = None,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
+    """
+    Maximize-mode variant of build_nonlinear_projectors.
+    Selects largest eigenvalues of the same symmetric objective.
+    """
+    c = len(anchors_inter)
+    r = anchors_inter[0].shape[0]
+    I_r = np.eye(r)
+
+    gammas = _determine_kernel_gammas(anchors_inter, Xs_train_inter, gamma_type, gamma_ratio_krr)
+
+    Ks, Ps, mu_max_list = [], [], []
+    for i, anchor_inter_k in enumerate(anchors_inter):
+        K = rbf_kernel(anchor_inter_k, anchor_inter_k, gamma=gammas[i])
+        if K_normalization:
+            mu_max = max(np.linalg.eigvalsh(K).max(), 1e-12)
+            mu_max_list.append(mu_max)
+            K = K / mu_max
+        else:
+            mu_max_list.append(None)
+        Ks.append(K)
+        Ps.append(K @ np.linalg.inv(K + nl_lambda * I_r))
+
+    M = sum((P - I_r).T @ (P - I_r) for P in Ps)
+    trace_M = np.trace(M)
+    if trace_M > 1e-9:
+        M = M / trace_M
+
+    if lw_alpha == 0:
+        Q = (M + M.T) * 0.5
+    else:
+        if L_within is None or L_between is None:
+            raise ValueError("Non-zero lw_alpha requires both L_within and L_between Laplacians.")
+        Q = (M + M.T) * 0.5 + lw_alpha * (L_within - L_between)
+
+    # Maximize mode: solve I z = λ Q z and take descending λ
+    # This selects directions with small eigenvalues of Q but expressed via
+    # generalized eigenproblem for numerical symmetry with other routines.
+    eps = 1e-9
+    A_use = np.eye(Q.shape[0])
+    B_use = (Q + Q.T) * 0.5 + eps * np.eye(Q.shape[0])
+    eigvals_raw, eigvecs = _solve_gep_regularized(A_use, B_use, orth_ver=False)
+    order = np.argsort(eigvals_raw)[::-1]
+    take = min(dim_integrate, eigvecs.shape[1])
+    select = order[:take]
+    eigvals_selected = eigvals_raw[select]
+    Z_integ = eigvecs[:, select]
+    # Normalize by B metric for stability
+    for j in range(Z_integ.shape[1]):
+        denom = float(Z_integ[:, j].T @ (B_use @ Z_integ[:, j]))
+        if denom > 0:
+            Z_integ[:, j] /= np.sqrt(denom)
+
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    for i, K in enumerate(Ks):
+        B_k = np.linalg.inv(K + nl_lambda * I_r) @ Z_integ
+        proj = make_kernel_integrator(anchors_inter[i], B_k, gamma=gammas[i])
+        projs.append(proj)
+
+    return projs, Z_integ, eigvals_selected, gammas
+
+
+def build_graph_nonlinear_X_projectors(
+    anchors_inter: List[np.ndarray],
+    Xs_train_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    gamma_type: str = "auto",
+    gamma_ratio_krr: float = 1.0,
+    nl_lambda: float = 1e-2,
+    graph_mu_align: float = 1.0,
+    constraint_eps: float = 1e-6,
+    graph_L_within: Optional[np.ndarray],
+    graph_L_between: Optional[np.ndarray],
+    g_type: Optional[str] = None,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
+    """
+    Graph-regularized nonlinear integration using the Schur complement on
+    (anchor + data) blocks per institution.
+
+    Theory mapping (variables use repo naming):
+    - For each k, build kernel blocks K_SS, K_SX, K_XS, K_XX with the same RBF
+      kernel parameter gamma_k.
+    - Hat-matrix approximation using only K_SS inversion:
+        P_SS = K_SS (K_SS + λ I_r)^{-1}
+        P_SX = P_SS K_SX,  P_XS = K_XS (K_SS + λ I_r)^{-1}
+        P_XX = K_XS (K_SS + λ I_r)^{-1} K_SX
+    - Block components of M_k = (I - H_k)^2:
+        A_k = (I_r - P_SS)^2 + P_SX P_XS
+        B_k = - (I_r - P_SS) P_SX - P_SX (I_{n_k} - P_XX)
+        C_k = P_XS P_SX + (I_{n_k} - P_XX)^2
+    - Aggregate A = Σ A_k, B = [B_1 ... B_c], C = blkdiag(C_k) and
+      Ψ = C - B^T A^{-1} B.
+    - Solve the GEP with graph Laplacians over actual data samples X:
+        minimize: (Ψ + μ L_w) w = λ (L_b + ε I) w
+        maximize: L_b w = λ (Ψ + μ L_w + ε I) w
+    - Recover anchor-target u = -A^{-1} B w and build Z^(k) = [u; w^(k)].
+      Projector for institution k uses training points T_k = [S~^(k); X^(k)]:
+        B_k = (K(T_k,T_k) + λ I)^{-1} Z^(k)
+        proj_k(X) = κ(X, T_k) B_k.
+    """
+    if graph_L_within is None or graph_L_between is None:
+        raise ValueError("graph_nonlinear_X requires graph Laplacians over data (graph_L_within/graph_L_between).")
+
+    if not anchors_inter or not Xs_train_inter:
+        return [], np.zeros((0, 0)), np.array([]), []
+
+    if len(anchors_inter) != len(Xs_train_inter):
+        raise ValueError("anchors_inter and Xs_train_inter must have the same length for graph_nonlinear_X.")
+
+    c = len(anchors_inter)
+    r = anchors_inter[0].shape[0]
+    I_r = np.eye(r)
+
+    # Determine per-institution gamma
+    gammas = _determine_kernel_gammas(anchors_inter, Xs_train_inter, gamma_type, gamma_ratio_krr)
+
+    # Build Schur components A, B, C
+    A_accum: Optional[np.ndarray] = None
+    B_blocks: List[np.ndarray] = []
+    C_blocks: List[np.ndarray] = []
+    n_total = 0
+
+    inv_SS_list: List[np.ndarray] = []
+    n_list: List[int] = []
+
+    for k, (S_k, X_k) in enumerate(zip(anchors_inter, Xs_train_inter)):
+        gamma = gammas[k]
+        n_k = X_k.shape[0]
+        n_list.append(n_k)
+        n_total += n_k
+
+        # Kernel blocks
+        K_SS = rbf_kernel(S_k, S_k, gamma=gamma)
+        K_SX = rbf_kernel(S_k, X_k, gamma=gamma)  # r × n_k
+        K_XS = K_SX.T                                  # n_k × r
+        K_XX = rbf_kernel(X_k, X_k, gamma=gamma)
+
+        inv_SS = np.linalg.inv(K_SS + nl_lambda * I_r)
+        inv_SS_list.append(inv_SS)
+        P_SS = K_SS @ inv_SS
+        P_SX = P_SS @ K_SX
+        P_XS = K_XS @ inv_SS
+        P_XX = K_XS @ inv_SS @ K_SX
+
+        I_nk = np.eye(n_k)
+        A_k = (I_r - P_SS) @ (I_r - P_SS) + P_SX @ P_XS
+        B_k = - (I_r - P_SS) @ P_SX - P_SX @ (I_nk - P_XX)
+        C_k = P_XS @ P_SX + (I_nk - P_XX) @ (I_nk - P_XX)
+
+        A_accum = A_k if A_accum is None else (A_accum + A_k)
+        B_blocks.append(B_k)
+        C_blocks.append(C_k)
+
+    if A_accum is None:
+        return [], np.zeros((0, 0)), np.array([]), gammas
+
+    A = (A_accum + A_accum.T) * 0.5
+    A_ridge = A + 1e-9 * np.eye(A.shape[0])
+    B = np.hstack(B_blocks) if B_blocks else np.zeros((r, 0))
+    C = block_diag(*C_blocks) if C_blocks else np.zeros((0, 0))
+
+    # Ψ = C - B^T A^{-1} B via solve
+    A_inv_B = np.linalg.solve(A_ridge, B) if B.size else np.zeros_like(B)
+    Psi = C - B.T @ A_inv_B
+    Psi = (Psi + Psi.T) * 0.5
+
+    # Validate graph Laplacian sizes
+    Lw = np.asarray(graph_L_within)
+    Lb = np.asarray(graph_L_between)
+    if Lw.shape != (n_total, n_total) or Lb.shape != (n_total, n_total):
+        raise ValueError("graph Laplacian sizes must match total number of samples across institutions.")
+
+    # Solve generalized eigenproblem
+    A_min = Psi + graph_mu_align * Lw
+    B_min = Lb + constraint_eps * np.eye(Lb.shape[0])
+    A_min = (A_min + A_min.T) * 0.5
+    B_min = (B_min + B_min.T) * 0.5
+
+    A_max = (Lb + 0.0)
+    B_max = Psi + graph_mu_align * Lw + constraint_eps * np.eye(Lb.shape[0])
+    A_max = (A_max + A_max.T) * 0.5
+    B_max = (B_max + B_max.T) * 0.5
+
+    mode = (g_type or "").lower()
+    use_max = ("maximize" in mode)
+    A_use, B_use = (A_max, B_max) if use_max else (A_min, B_min)
+    # SPD projection for B to stabilize generalized eigen solve
+    B_use = _nearest_spd(B_use, min_eig=max(constraint_eps, 1e-9))
+
+    eigvals_raw, eigvecs = _solve_gep_regularized(A_use, B_use, orth_ver=False)
+    order = np.argsort(eigvals_raw) if not use_max else np.argsort(eigvals_raw)[::-1]
+    take = min(dim_integrate, eigvecs.shape[1])
+    select = order[:take]
+    eigvals_selected = eigvals_raw[select]
+    W = eigvecs[:, select]
+
+    for j in range(W.shape[1]):
+        denom = float(W[:, j].T @ (B_use @ W[:, j]))
+        if denom > 0:
+            W[:, j] /= np.sqrt(denom)
+
+    # Recover u = -A^{-1} B W
+    U = -np.linalg.solve(A_ridge, B @ W) if B.size else np.zeros((r, take))
+
+    # Build per-institution projectors
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    row_offset = 0
+    for k, (S_k, X_k) in enumerate(zip(anchors_inter, Xs_train_inter)):
+        n_k = n_list[k]
+        w_k = W[row_offset:row_offset + n_k, :]
+        row_offset += n_k
+        Z_k = np.vstack([U, w_k])  # (r + n_k) × m
+
+        T_k = np.vstack([S_k, X_k])
+        gamma = gammas[k]
+        K_tk = rbf_kernel(T_k, T_k, gamma=gamma)
+        ridge = nl_lambda * np.eye(K_tk.shape[0])
+        B_k = np.linalg.solve(K_tk + ridge, Z_k)
+        proj = make_kernel_integrator(T_k, B_k, gamma=gamma)
+        projs.append(proj)
+
+    Z_integ_like = U
+    return projs, Z_integ_like, eigvals_selected, gammas
+
+
+def build_graph_nonlinear_X_projectors_maximize(
+    anchors_inter: List[np.ndarray],
+    Xs_train_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    gamma_type: str = "auto",
+    gamma_ratio_krr: float = 1.0,
+    nl_lambda: float = 1e-2,
+    graph_mu_align: float = 1.0,
+    constraint_eps: float = 1e-6,
+    graph_L_within: Optional[np.ndarray],
+    graph_L_between: Optional[np.ndarray],
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
+    return build_graph_nonlinear_X_projectors(
+        anchors_inter,
+        Xs_train_inter,
+        dim_integrate,
+        gamma_type=gamma_type,
+        gamma_ratio_krr=gamma_ratio_krr,
+        nl_lambda=nl_lambda,
+        graph_mu_align=graph_mu_align,
+        constraint_eps=constraint_eps,
+        graph_L_within=graph_L_within,
+        graph_L_between=graph_L_between,
+        g_type="graph_nonlinear_X_maximize",
+    )
+
+
+def build_graph_nonlinear_X_projectors_minimize(
+    anchors_inter: List[np.ndarray],
+    Xs_train_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    gamma_type: str = "auto",
+    gamma_ratio_krr: float = 1.0,
+    nl_lambda: float = 1e-2,
+    graph_mu_align: float = 1.0,
+    constraint_eps: float = 1e-6,
+    graph_L_within: Optional[np.ndarray],
+    graph_L_between: Optional[np.ndarray],
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
+    return build_graph_nonlinear_X_projectors(
+        anchors_inter,
+        Xs_train_inter,
+        dim_integrate,
+        gamma_type=gamma_type,
+        gamma_ratio_krr=gamma_ratio_krr,
+        nl_lambda=nl_lambda,
+        graph_mu_align=graph_mu_align,
+        constraint_eps=constraint_eps,
+        graph_L_within=graph_L_within,
+        graph_L_between=graph_L_between,
+        g_type="graph_nonlinear_X_minimize",
+    )
+def build_graph_nonlinear_projectors_maximize(
+    anchors_inter: List[np.ndarray],
+    Xs_train_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    gamma_type: str = "auto",
+    gamma_ratio_krr: float = 1.0,
+    nl_lambda: float = 1e-2,
+    graph_mu_align: float = 1.0,
+    constraint_eps: float = 1e-6,
+    L_within: Optional[np.ndarray],
+    L_between: Optional[np.ndarray],
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
+    return build_graph_nonlinear_projectors(
+        anchors_inter,
+        Xs_train_inter,
+        dim_integrate,
+        gamma_type=gamma_type,
+        gamma_ratio_krr=gamma_ratio_krr,
+        nl_lambda=nl_lambda,
+        graph_mu_align=graph_mu_align,
+        constraint_eps=constraint_eps,
+        L_within=L_within,
+        L_between=L_between,
+        g_type="graph_nonlinear_maximize",
+    )
+
+
+def build_graph_nonlinear_projectors_minimize(
+    anchors_inter: List[np.ndarray],
+    Xs_train_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    gamma_type: str = "auto",
+    gamma_ratio_krr: float = 1.0,
+    nl_lambda: float = 1e-2,
+    graph_mu_align: float = 1.0,
+    constraint_eps: float = 1e-6,
+    L_within: Optional[np.ndarray],
+    L_between: Optional[np.ndarray],
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
+    return build_graph_nonlinear_projectors(
+        anchors_inter,
+        Xs_train_inter,
+        dim_integrate,
+        gamma_type=gamma_type,
+        gamma_ratio_krr=gamma_ratio_krr,
+        nl_lambda=nl_lambda,
+        graph_mu_align=graph_mu_align,
+        constraint_eps=constraint_eps,
+        L_within=L_within,
+        L_between=L_between,
+        g_type="graph_nonlinear_minimize",
+    )
 
