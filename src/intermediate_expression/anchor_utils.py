@@ -177,7 +177,9 @@ def assign_anchor_labels(
     Xs_train_inter: Sequence[np.ndarray],
     ys_train: Sequence[np.ndarray],
     k: int = 10,
+    max_neighbor_dist: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
+    print(11111234566666666611111)
     if not anchors_inter:
         raise ValueError("assign_anchor_labels requires at least one institution.")
     num_institutions = len(anchors_inter)
@@ -200,7 +202,11 @@ def assign_anchor_labels(
     counts_anchor = np.zeros((num_anchor, len(unique_labels)), dtype=float)
     counts_anchor_test = np.zeros((num_anchor_test, len(unique_labels)), dtype=float)
 
-    for X_proj, anchor_proj, anchor_test_proj, y_raw in zip(Xs_train_inter, anchors_inter, anchors_test_inter, ys_train):
+    all_min_dists: list[np.ndarray] = []
+
+    for X_proj, anchor_proj, anchor_test_proj, y_raw in zip(
+        Xs_train_inter, anchors_inter, anchors_test_inter, ys_train
+    ):
         if X_proj is None or len(X_proj) == 0:
             continue
         X_arr = np.asarray(X_proj)
@@ -218,18 +224,63 @@ def assign_anchor_labels(
 
         anchor_proj = np.asarray(anchor_proj)
         if anchor_proj.size > 0:
-            neighbor_idx = knn.kneighbors(anchor_proj, return_distance=False)
-            _accumulate_label_counts(counts_anchor, neighbor_idx, y_arr, label_to_idx)
+            if max_neighbor_dist > 0.0:
+                neighbor_dist, neighbor_idx = knn.kneighbors(anchor_proj, return_distance=True)
+                min_dists = np.min(neighbor_dist, axis=1)
+                all_min_dists.append(min_dists)
+                # 近傍データが十分近くにないアンカーは無ラベル候補として扱う
+                far_mask = min_dists > float(max_neighbor_dist)
+                _accumulate_label_counts(counts_anchor, neighbor_idx, y_arr, label_to_idx)
+                if np.any(far_mask):
+                    counts_anchor[far_mask, :] = 0.0
+            else:
+                neighbor_idx = knn.kneighbors(anchor_proj, return_distance=False)
+                _accumulate_label_counts(counts_anchor, neighbor_idx, y_arr, label_to_idx)
 
         if anchor_test_proj is not None:
             anchor_test_arr = np.asarray(anchor_test_proj)
             if anchor_test_arr.size > 0:
-                neighbor_idx_test = knn.kneighbors(anchor_test_arr, return_distance=False)
-                _accumulate_label_counts(counts_anchor_test, neighbor_idx_test, y_arr, label_to_idx)
+                if max_neighbor_dist > 0.0:
+                    neighbor_dist_test, neighbor_idx_test = knn.kneighbors(
+                        anchor_test_arr, return_distance=True
+                    )
+                    far_mask_test = np.min(neighbor_dist_test, axis=1) > float(max_neighbor_dist)
+                    _accumulate_label_counts(counts_anchor_test, neighbor_idx_test, y_arr, label_to_idx)
+                    if np.any(far_mask_test):
+                        counts_anchor_test[far_mask_test, :] = 0.0
+                else:
+                    neighbor_idx_test = knn.kneighbors(anchor_test_arr, return_distance=False)
+                    _accumulate_label_counts(counts_anchor_test, neighbor_idx_test, y_arr, label_to_idx)
+
+    # 無ラベル比率と最近傍距離 5% 点を表示（診断用）
+    sums_anchor = counts_anchor.sum(axis=1)
+    print(f"[assign_anchor_labels] unlabeled anchors: {np.count_nonzero(sums_anchor == 0)}/{sums_anchor.size}")
+    if sums_anchor.size > 0:
+        num_unlabeled = int(np.count_nonzero(sums_anchor == 0))
+        ratio_unlabeled = num_unlabeled / float(sums_anchor.size)
+        print(f"[assign_anchor_labels] unlabeled anchors: {num_unlabeled}/{sums_anchor.size} ({ratio_unlabeled:.3f})")
+    if all_min_dists:
+        all_min_dists_arr = np.concatenate(all_min_dists)
+        try:
+            p5 = float(np.percentile(all_min_dists_arr, 5))
+            print(f"[assign_anchor_labels] 5th percentile of min neighbor distances: {p5}")
+        except Exception:
+            pass
 
     fallback_label = unique_labels[np.argmax(counts_anchor.sum(axis=0))]
-    anchor_labels = _counts_to_labels(counts_anchor, unique_labels, fallback_label)
-    anchor_test_labels = _counts_to_labels(counts_anchor_test, unique_labels, fallback_label)
+    use_fallback = max_neighbor_dist <= 0.0
+    anchor_labels = _counts_to_labels(
+        counts_anchor,
+        unique_labels,
+        fallback_label,
+        use_fallback_for_zeros=use_fallback,
+    )
+    anchor_test_labels = _counts_to_labels(
+        counts_anchor_test,
+        unique_labels,
+        fallback_label,
+        use_fallback_for_zeros=use_fallback,
+    )
     return anchor_labels, anchor_test_labels
 
 
@@ -254,6 +305,8 @@ def _counts_to_labels(
     counts: np.ndarray,
     unique_labels: np.ndarray,
     fallback_label: Any,
+    *,
+    use_fallback_for_zeros: bool = True,
 ) -> np.ndarray:
     if counts.size == 0:
         return np.array([], dtype=unique_labels.dtype)
@@ -262,7 +315,12 @@ def _counts_to_labels(
     sums = counts.sum(axis=1)
     zero_mask = sums == 0
     if np.any(zero_mask):
-        labels[zero_mask] = fallback_label
+        if use_fallback_for_zeros:
+            labels[zero_mask] = fallback_label
+        else:
+            # 無ラベルを表現：NaN を使う（float 変換されるが後段では _valid_label_mask で除外する）
+            labels = labels.astype(float)
+            labels[zero_mask] = np.nan
     return labels
 
 
@@ -335,6 +393,13 @@ def build_laplacians_from_anchor_labels(
 
     k_val = int(k_neighbors) if k_neighbors is not None else 5
     adjacency = _symmetric_knn_graph(anchor, k_val, metric=metric)
+
+    # 無ラベル（NaN など）と判定されたアンカーは、ラプラシアン構築時には接続を持たないようにする
+    valid_mask = _valid_label_mask(anchor_y)
+    if not np.all(valid_mask):
+        invalid = ~valid_mask
+        adjacency[invalid, :] = 0.0
+        adjacency[:, invalid] = 0.0
 
     same_label_mask = anchor_y.reshape(-1, 1) == anchor_y.reshape(1, -1)
     diff_label_mask = ~same_label_mask

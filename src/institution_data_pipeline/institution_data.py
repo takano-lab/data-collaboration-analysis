@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import logging
 from typing import List, Tuple
 
 import numpy as np
@@ -21,6 +22,8 @@ import pandas as pd
 from sklearn.model_selection import train_test_split as sk_train_test_split
 
 from config.config import Config
+
+logger = logging.getLogger(__name__)
 
 
 # ------------------------- 共通ヘルパ ------------------------- #
@@ -46,12 +49,16 @@ def ensure_institution_params(df: pd.DataFrame, config: Config) -> None:
     classes, counts = np.unique(y, return_counts=True)
     n_classes = len(classes)
 
+    # 'label_num' 特殊指定は後段（division_split など）で処理するためここでは数値確定しない
     if _is_undefined(config.num_institution):
         if _is_undefined(config.num_institution_user) or config.num_institution_user < n_classes:
             config.num_institution_user = max(int(config.num_institution_user or 0), n_classes)
         max_by_total = len(df) // (2 * config.num_institution_user)
         max_by_class = int(np.min(counts) // 2) if counts.size else 1
         config.num_institution = max(1, min(max_by_total, max_by_class))
+    elif isinstance(getattr(config, 'num_institution'), str) and str(getattr(config, 'num_institution')).lower() == 'label_num':
+        # 何もしない（division/bias モードでラベル数に置換）
+        pass
     
     # --- inter_integ_dim_ratio 適用（未設定/None/空/False は 1 とみなす・一度だけ）---
     ratio_raw = getattr(config, "inter_integ_dim_ratio", 1)
@@ -74,9 +81,19 @@ def ensure_institution_params(df: pd.DataFrame, config: Config) -> None:
 
     # Ensure total rows are sufficient for even split; adjust downward if needed
     total_rows = len(df)
-    num_inst = int(getattr(config, "num_institution", 1) or 1)
+    raw_inst = getattr(config, "num_institution", 1)
+    if isinstance(raw_inst, str) and raw_inst.lower() == "label_num":
+        num_inst = n_classes
+    else:
+        try:
+            num_inst = int(raw_inst or 1)
+        except (TypeError, ValueError):
+            num_inst = 1
     num_inst = max(1, num_inst)
-    num_inst_user = int(getattr(config, "num_institution_user", n_classes) or n_classes)
+    try:
+        num_inst_user = int(getattr(config, "num_institution_user", n_classes) or n_classes)
+    except (TypeError, ValueError):
+        num_inst_user = n_classes
     num_inst_user = max(n_classes, num_inst_user)
 
     max_per_user = total_rows // (2 * num_inst) if num_inst > 0 else 0
@@ -105,7 +122,9 @@ def ensure_institution_params(df: pd.DataFrame, config: Config) -> None:
     if needed_total > total_rows and num_inst_user > n_classes:
         num_inst_user = max(n_classes, total_rows // (2 * num_inst))
 
-    config.num_institution = max(1, num_inst)
+    # 'label_num' の場合はここで上書きしない
+    if not (isinstance(getattr(config, 'num_institution'), str) and str(getattr(config, 'num_institution')).lower() == 'label_num'):
+        config.num_institution = max(1, num_inst)
     config.num_institution_user = max(n_classes, num_inst_user)
 
 def _parse_ratio(raw_value, default: float) -> float:
@@ -204,12 +223,17 @@ def apply_bias_mixing(train_df: pd.DataFrame, config: Config) -> pd.DataFrame:
         return df
     rng = np.random.default_rng(getattr(config, "seed", 42))
     original = df.copy()
-    labels = sorted(original[label_col].unique().tolist())
-    for inst_idx, lab in enumerate(labels):
+    # 機関ブロック単位で処理（num_institution がラベル数と異なるケース対応）
+    for inst_idx in range(num_inst):
         start = inst_idx * per_inst
         end = min(start + per_inst, len(df))
-        if start >= end:
+        if end - start <= 0:
             continue
+        block = original.iloc[start:end]
+        block_labels = block[label_col].unique()
+        if block_labels.size == 0:
+            continue
+        lab = block_labels[0]
         replace_count = min(contam_count, end - start)
         if replace_count <= 0:
             continue
@@ -360,28 +384,60 @@ def division_split(
         train_parts.append(df.iloc[train_idx])
         test_label_parts.append(df.iloc[test_idx])
 
-    # 2. 機関数設定
+    # 2. 機関数設定 (指定可能)
     num_label = len(labels)
-    config.num_institution = num_label
+    desired_raw = getattr(config, "num_institution", None)
+    if isinstance(desired_raw, str):
+        if desired_raw.lower() == "label_num":
+            n_inst = num_label
+        else:
+            try:
+                n_inst = int(desired_raw)
+            except ValueError:
+                n_inst = num_label
+    elif isinstance(desired_raw, (int, np.integer)) and int(desired_raw) > 0:
+        n_inst = int(desired_raw)
+    else:
+        n_inst = num_label
+    # 最低 1
+    n_inst = max(1, n_inst)
+    config.num_institution = n_inst
 
-    # 3. 機関当たりサンプル数の上限 (train 側最小) を算出
-    train_counts = [len(p) for p in train_parts]
-    max_num_institution_user = int(min(train_counts)) if train_counts else 0
+    # ラベル割当マップ (機関 i -> labels[i % num_label])
+    institution_labels = [labels[i % num_label] for i in range(n_inst)]
+
+    # 3. 機関当たりサンプル数上限 (ラベル毎の train サンプルを割当回数で割る)
+    train_counts_map = {lab: len(part) for lab, part in zip(labels, train_parts)}
+    occ_map = {lab: institution_labels.count(lab) for lab in labels}
+    per_inst_limit_candidates = []
+    for lab in labels:
+        occ = occ_map[lab]
+        if occ <= 0:
+            continue
+        per_inst_limit_candidates.append(train_counts_map[lab] // occ)
+    max_num_institution_user = int(min(per_inst_limit_candidates)) if per_inst_limit_candidates else 0
     if max_num_institution_user <= 0:
-        raise ValueError("division_split: 有効な train サンプルがありません")
+        raise ValueError("division_split: 各ラベルの学習サンプルが機関割当数に足りません")
     if max_num_institution_user < config.num_institution_user:
         config.num_institution_user = max_num_institution_user
 
     per_inst = config.num_institution_user
 
-    # 4. train_df 構築（ラベル昇順で per_inst 件ずつ）
-    trimmed_train_blocks = []
-    for lab, part in zip(labels, train_parts):
-        if len(part) < per_inst:
-            # 必要件数不足 → 上で per_inst 調整済のはずだがガード
-            raise ValueError(f"label {lab}: train サンプル不足 {len(part)} < {per_inst}")
-        trimmed_train_blocks.append(part.iloc[:per_inst].copy())
-    train_df = pd.concat(trimmed_train_blocks, axis=0).reset_index(drop=True)
+    # 4. train_df 構築（機関順で per_inst 件ずつ）
+    # ラベルごとに使用済みオフセットを管理
+    train_parts_dict = {lab: part.reset_index(drop=True) for lab, part in zip(labels, train_parts)}
+    used_offset = {lab: 0 for lab in labels}
+    train_blocks = []
+    for inst_lab in institution_labels:
+        part = train_parts_dict[inst_lab]
+        start = used_offset[inst_lab]
+        end = start + per_inst
+        if end > len(part):
+            raise ValueError(f"label {inst_lab}: 割当不足 {len(part)} < {end}")
+        block = part.iloc[start:end].copy()
+        train_blocks.append(block)
+        used_offset[inst_lab] = end
+    train_df = pd.concat(train_blocks, axis=0).reset_index(drop=True)
 
     # 5. test base セット構築
     test_counts = [len(p) for p in test_label_parts]
@@ -394,7 +450,7 @@ def division_split(
     for lab, part in zip(labels, test_label_parts):
         if len(part) < per_inst:
             raise ValueError(f"label {lab}: test サンプル不足 {len(part)} < {per_inst}")
-        trimmed_test_blocks.append(part.iloc[:per_inst].copy())
+        trimmed_test_blocks.append(part.reset_index(drop=True).iloc[:per_inst].copy())
     test_base_df = pd.concat(trimmed_test_blocks, axis=0).reset_index(drop=True)
 
     # test_df は 1 セットのみ（配列化で複製）
@@ -428,17 +484,18 @@ def to_institution_arrays(
     dist = getattr(config, "data_distribution", None)
 
     if dist in ("division", "bias"):
-        # --- train blocks (one block per label) ---
+        # --- train blocks (機関順で per_inst 件ずつ) ---
         y_train_ser = train_df[y_name]
         X_train_df = train_df.drop(columns=[y_name])
-        labels = sorted(y_train_ser.unique())
         if len(train_df) != n_inst * per_inst:
             raise ValueError(
                 f"division train_df 行数不整合: {len(train_df)} != {n_inst * per_inst}"
             )
-        for i, lab in enumerate(labels):
-            block = X_train_df.iloc[i * per_inst : (i + 1) * per_inst]
-            y_block = y_train_ser.iloc[i * per_inst : (i + 1) * per_inst]
+        for i in range(n_inst):
+            start = i * per_inst
+            end = start + per_inst
+            block = X_train_df.iloc[start:end]
+            y_block = y_train_ser.iloc[start:end]
             if dist == "division" and len(set(y_block)) != 1:
                 raise ValueError("division train block に単一ラベル以外が含まれています")
             Xs_train.append(block.to_numpy())
@@ -450,7 +507,7 @@ def to_institution_arrays(
         # ラベル均等性 (警告のみ) ※ 厳密には各ラベル per_inst 行が理想
         counts = y_test_ser.value_counts()
         if (counts < per_inst).any():
-            self.logger.warning(
+            logger.warning(
                 f"[WARN] division test: 一部ラベル不足 counts={counts.to_dict()} < {per_inst}. 利用可能件数で進行"
             )
         # そのままの順序で base セット化
@@ -488,6 +545,10 @@ def prepare_institutional_dataset(
     ensure_institution_params(df, config)
     df_lim = df
     dist = getattr(config, "data_distribution", None)
+    # even / semi モードで 'label_num' 指定が来た場合はここで数値化
+    if dist not in ("division", "bias") and isinstance(getattr(config, 'num_institution'), str) and str(getattr(config, 'num_institution')).lower() == 'label_num':
+        labels_unique = df_lim[config.y_name].unique()
+        config.num_institution = len(labels_unique)
     if dist == "division":
         train_df, test_df = division_split(df_lim, config)
     elif dist == "bias":

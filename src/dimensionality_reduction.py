@@ -249,6 +249,20 @@ def _cfg_str(cfg, name, default: str) -> str:
         return default
     return s
 
+
+def _resolve_seed(seed: Optional[int], config, default: int = 0) -> int:
+    """
+    seed 引数 -> config.f_seed -> config.seed の優先度でシード値を決める
+    """
+    if seed is not None:
+        return int(seed)
+    f_seed = None
+    if config is not None:
+        f_seed = getattr(config, "f_seed", None)
+    if f_seed is not None:
+        return int(f_seed)
+    return int(_cfg_int(config, "seed", default))
+
 # ============================================================
 # 実行ラッパ（F_type ごとの実装）
 # すべて「4要素タプル (train, test, anchor, anchor_test)」を返す
@@ -266,13 +280,11 @@ def _run_svd(X, n_components, **kwargs) -> Projector:
     return projector
 
 
-def _run_diffspan(X, n_components, *, config=None, **kwargs) -> Projector:
+def _run_diffspan(X, n_components, *, config=None, seed=None, **kwargs) -> Projector:
     svd = SVDScratch(n_components=n_components, center=True)
     svd.fit(X)
-    seed = 0
-    if config is not None and hasattr(config, "seed") and hasattr(config, "f_seed"):
-        seed = int(config.seed) + int(config.f_seed)
-    rng = np.random.default_rng(seed)
+    seed_val = _resolve_seed(seed, config)
+    rng = np.random.default_rng(seed_val)
     E = rng.uniform(low=-1.0, high=1.0, size=(n_components, n_components))
 
     def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
@@ -283,22 +295,36 @@ def _run_diffspan(X, n_components, *, config=None, **kwargs) -> Projector:
     return projector
 
 
-def _run_samespan_orth(X, n_components, *, config=None, **kwargs) -> Projector:
+def _run_diffspan_orth(X, n_components, *, config=None, seed=None, **kwargs) -> Projector:
+    """
+    diffspan_orth: ほぼ SVD と同じ振る舞い（直交基底）
+    """
+    model = SVDScratch(n_components=n_components, center=True)
+    model.fit(X)
+
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        return model.transform(data)
+
+    return projector
+
+
+def _run_samespan_orth(X, n_components, *, config=None, seed=None, **kwargs) -> Projector:
     m = X.shape[1]
     l = n_components
     if l > m:
         raise ValueError("samespan_orth: l(=n_components) > 特徴次元 は未対応です")
-    f_seed = int(getattr(config, "f_seed", 0))
-    rng = np.random.default_rng(f_seed)
+    seed_val = _resolve_seed(seed, config)
+    rng = np.random.default_rng(seed_val)
     A = rng.standard_normal(size=(m, l))
     Q, R = np.linalg.qr(A, mode="reduced")
     signs = np.sign(np.diag(R))
     Q *= signs
     F_prime = Q
-    Rmat = np.random.standard_normal(size=(l, l))
+    Rmat = rng.standard_normal(size=(l, l))
     QE, _ = np.linalg.qr(Rmat)
-    E = QE
-    F = F_prime @ E
+    F = F_prime @ QE
 
     def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
         if data is None:
@@ -307,19 +333,19 @@ def _run_samespan_orth(X, n_components, *, config=None, **kwargs) -> Projector:
 
     return projector
 
-def _run_samespan(X, n_components, *, config=None, **kwargs) -> Projector:
+def _run_samespan(X, n_components, *, config=None, seed=None, **kwargs) -> Projector:
     m = X.shape[1]
     l = n_components
     if l > m:
         raise ValueError("samespan: l(=n_components) > 特徴次元 は未対応です")
-    seed = int(getattr(config, "seed", 0))
-    rng = np.random.default_rng(seed)
+    seed_val = _resolve_seed(seed, config)
+    rng = np.random.default_rng(seed_val)
     A = rng.standard_normal(size=(m, l))
     Q, R = np.linalg.qr(A, mode="reduced")
     signs = np.sign(np.diag(R))
     Q *= signs
     F_prime = Q
-    E = np.random.standard_normal(size=(l, l))
+    E = rng.standard_normal(size=(l, l))
     F = F_prime @ E
 
     def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
@@ -449,8 +475,10 @@ def _run_umap(
     seed_val = seed
     if seed_val is None and config is not None:
         seed_val = getattr(config, "f_seed", None)
+        print(f"UMAP f_seed: {seed_val}")
     if seed_val is None:
         seed_val = _cfg_int(config, "seed", 0)
+        print(f"UMAP seed: {seed_val}")
     seed = int(seed_val)
     print(f"UMAP seed: {seed}")
     metric_choices = ("correlation", "cosine", "euclidean")
@@ -461,7 +489,11 @@ def _run_umap(
     n_neighbors = max(2, min(nn_sample, max(2, Xts.shape[0] - 1)))
     # min_dist: 0.05〜0.8 の一様連続
     min_dist = float(rng.uniform(0.0, 0.8))
-
+    
+    #min_dist = 0.1
+    #n_neighbors = 15
+    #metric = "euclidean"
+    
     # 追加オプション（必要に応じて）
     extra_params = {}
     tm = _cfg_str(config, "umap_transform_mode", None)
@@ -476,6 +508,8 @@ def _run_umap(
     mix = _cfg_float(config, "umap_set_op_mix_ratio", None)
     if mix is not None:
         extra_params["set_op_mix_ratio"] = float(mix)
+    
+    #extra_params["repulsion_strength"] = 2.0
 
     model = UMAP(
         n_components=n_components,
@@ -753,6 +787,7 @@ def _run_autoencoder(
 _RUNNERS: Dict[str, Any] = {
     "svd": _run_svd,
     "diffspan": _run_diffspan,
+    "diffspan_orth": _run_diffspan_orth,
     "samespan_orth": _run_samespan_orth,
     "samespan": _run_samespan,
     "random_projection": _run_random_projection,

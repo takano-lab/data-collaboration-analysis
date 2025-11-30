@@ -23,25 +23,25 @@ from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "F_type": ["umap"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
     "dataset": [
-    "fashion_mnist",
-    "mnist",
+    #"fashion_mnist",
+    #"mnist",
     #"mnist_1248",
-    "mice",
+    #"mice",
     #"statlog",
     #"qsar",
-    "digits",
+    #"digits",
     #"breast_cancer",
     #"adult",
     #"glass", 
     #"seeds", 
     #"letter_recognition",
     #"wine_quality",
-    "har",
+    #"har",
     #"cifar10",
     #"diabetes130",
     #"bank_marketing",
     #"cifar10_800",
-    #'3D_gaussian_clusters',
+    '3D_gaussian_clusters',
     #"concentric_three_circles",
     #"iris",
     #"ecoli",
@@ -50,7 +50,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
 ],# + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "G_type": ["nonlinear", "graph_nonlinear", "gep", "imakura", "odc", "individual", "centralize",  "fl"],#, "graph_nonlinear_maximize",  "graph_nonlinear_x", "graph_nonlinear_x_maximize", "kernel_gep", "kernel_graph_gep",  "kernel_graph_gep_maximize", 
+    "G_type": ["multi_cca", "nonlinear", "gep", "imakura", "odc", "individual", "centralize",  "fl"],#, "graph_nonlinear_maximize",  "graph_nonlinear_x", "graph_nonlinear_x_maximize", "kernel_gep", "kernel_graph_gep",  "kernel_graph_gep_maximize", 
     #"gamma_type": ["median"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
     "gamma_ratio_krr": [1], #, 0.1, 0.3, 3, 10 
     "graph_knn_k": [10],
@@ -61,11 +61,11 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "nl_lambda": [0.3], # LOCKで止められる, 0.00001
     "lw_alpha": [0],
     "metrics": ["accuracy"],
-    "visualize": [False],
+    "visualize": [True],
     #"feature_num": [2],
-    #"dim_intermediate": ["*0.8"],#[20, 10, 5, 2], 6
-    #"dim_integrate": ["*0.8"],#[20, 10, 5, 2], 6
-    "num_institution_user": [100],
+    "dim_intermediate": [2],#[20, 10, 5, 2], 6
+    "dim_integrate": [2],#[20, 10, 5, 2], 6
+    #"num_institution_user": [100],
     #"num_institution": [3],
     "K_normalization":[False],
     "anchor_method":["smote"], #gaussian smote 
@@ -78,8 +78,8 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "umap_neighbors":[10],
     "bias_ratio":[0.1], # 0.1, 0.4, 0.6, 0.95, 0.8 
     "max_dim":[500],
-    "svd_ratio":[0, 0.2, 0.4, 0.6, 0.8, 1.0],
-    "seed_values":[[1, 2, 3]],
+    "svd_ratio":[1.0],
+    "seed_values":[[1]],
     })
 
 # "gamma_ratio"

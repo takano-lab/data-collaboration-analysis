@@ -18,6 +18,19 @@ def make_linear_integrator(G_k: np.ndarray) -> Callable[[np.ndarray], np.ndarray
     return projector
 
 
+def make_centered_linear_integrator(
+    G_k: np.ndarray,
+    mu_k: np.ndarray,
+) -> Callable[[np.ndarray], np.ndarray]:
+    """Return projector X -> (X - mu_k) @ G_k with row-wise centering."""
+    mu_k = np.asarray(mu_k, dtype=float).reshape(1, -1)
+
+    def projector(X: np.ndarray) -> np.ndarray:
+        return (X - mu_k) @ G_k
+
+    return projector
+
+
 def make_kernel_integrator(
     S_train: np.ndarray,
     B_k: np.ndarray,
@@ -196,6 +209,122 @@ def build_targetvec_projectors(
         proj, _Gk = compute_linear_integrator_from_Z_anchor(Z_integ, anchor_inter_k)
         projs.append(proj)
     return projs, Z_integ
+
+
+def build_multi_cca_projectors(
+    anchors_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    stability_eps: float = 1e-6,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], Dict[str, Any]]:
+    """
+    Multi-view CCA (SUMCOR) based projector builders.
+
+    Given per-institution anchor representations S~^(k) (rows: anchor samples,
+    columns: institution-specific features), this implementation:
+      1. Centers each S~^(k) across rows to obtain S̄^(k).
+      2. Builds within-view covariances Σ_kk and cross-covariances Σ_kℓ.
+      3. Forms the block matrix M = D^{-1/2} R D^{-1/2} where D is blockdiag(Σ_kk)
+         and R has off-diagonal blocks Σ_kℓ (diagonal blocks are zero).
+      4. Solves the eigenproblem M u_j = λ_j u_j and takes the top
+         `dim_integrate` eigenvectors.
+      5. Computes per-view projection matrices W^(k) = Σ_kk^{-1/2} U^(k),
+         where U^(k) is the block of U corresponding to view k.
+
+    The returned projectors apply X -> X @ W^(k) for each institution k.
+    """
+    if not anchors_inter:
+        return [], {"eigvals": np.array([]), "W_list": [], "Z_integ": None}
+
+    c = len(anchors_inter)
+    r = anchors_inter[0].shape[0]
+    for anchor in anchors_inter:
+        if anchor.shape[0] != r:
+            raise ValueError("All anchor matrices must share the same number of rows for multi-view CCA.")
+
+    # Step 1: center each anchor representation
+    centered: List[np.ndarray] = []
+    means: List[np.ndarray] = []
+    for S in anchors_inter:
+        mu = np.mean(S, axis=0, keepdims=True)
+        means.append(mu)
+        centered.append(S - mu)
+
+    # Step 2: build within- and cross-view covariance blocks
+    factor = 1.0 / max(r - 1, 1)
+    dims = [S.shape[1] for S in centered]
+    p_total = int(sum(dims))
+
+    Sigma_kk: List[np.ndarray] = []
+    for S in centered:
+        cov = factor * (S.T @ S)
+        cov = _nearest_spd(cov, min_eig=stability_eps)
+        Sigma_kk.append(cov)
+
+    Sigma_kl: List[List[Optional[np.ndarray]]] = [[None for _ in range(c)] for _ in range(c)]
+    for k in range(c):
+        for ell in range(k + 1, c):
+            cov_kell = factor * (centered[k].T @ centered[ell])
+            Sigma_kl[k][ell] = cov_kell
+            Sigma_kl[ell][k] = cov_kell.T
+
+    # Precompute Σ_kk^{-1/2} via eigen-decomposition
+    Sigma_kk_inv_sqrt: List[np.ndarray] = []
+    for cov in Sigma_kk:
+        eigvals_cov, eigvecs_cov = np.linalg.eigh(cov)
+        eigvals_cov = np.maximum(eigvals_cov, stability_eps)
+        inv_sqrt_vals = 1.0 / np.sqrt(eigvals_cov)
+        cov_inv_sqrt = eigvecs_cov @ np.diag(inv_sqrt_vals) @ eigvecs_cov.T
+        Sigma_kk_inv_sqrt.append(cov_inv_sqrt)
+
+    # Step 3: build M = D^{-1/2} R D^{-1/2} in block form
+    M = np.zeros((p_total, p_total), dtype=float)
+    cum_dims = np.cumsum([0] + dims)
+    for k in range(c):
+        i0, i1 = cum_dims[k], cum_dims[k + 1]
+        for ell in range(c):
+            if k == ell:
+                continue
+            j0, j1 = cum_dims[ell], cum_dims[ell + 1]
+            cov_kell = Sigma_kl[k][ell]
+            if cov_kell is None:
+                continue
+            block = Sigma_kk_inv_sqrt[k] @ cov_kell @ Sigma_kk_inv_sqrt[ell]
+            M[i0:i1, j0:j1] = block
+
+    # Ensure symmetry
+    M = (M + M.T) * 0.5
+
+    # Step 4: eigen-decomposition of M (SUMCOR -> use largest eigenvalues)
+    eigvals_raw, eigvecs = np.linalg.eigh(M)
+    if eigvals_raw.ndim == 0:
+        eigvals_raw = np.asarray([eigvals_raw])
+        eigvecs = eigvecs.reshape(-1, 1)
+    order = np.argsort(eigvals_raw)[::-1]
+    take = min(dim_integrate, eigvecs.shape[1])
+    select = order[:take]
+    eigvals_selected = eigvals_raw[select]
+    U = eigvecs[:, select]
+
+    # Step 5: per-view projection matrices W^(k) = Σ_kk^{-1/2} U^(k)
+    W_list: List[np.ndarray] = []
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    for k in range(c):
+        i0, i1 = cum_dims[k], cum_dims[k + 1]
+        U_k = U[i0:i1, :]
+        W_k = Sigma_kk_inv_sqrt[k] @ U_k
+        W_list.append(W_k)
+        projs.append(make_centered_linear_integrator(W_k, means[k]))
+
+    metrics: Dict[str, Any] = {
+        "eigvals": eigvals_selected,
+        "W_list": W_list,
+        "means": means,
+        # There is no single canonical Z_integ; projected anchors per view are:
+        # [centered[k] @ W_list[k] for k in range(c)]
+        "Z_integ": None,
+    }
+    return projs, metrics
 
 
 def _solve_gep_standard(A: np.ndarray, B: np.ndarray, orth_ver: bool) -> Tuple[np.ndarray, np.ndarray]:
@@ -578,6 +707,23 @@ def build_odc_projectors(
     return projs, Z_integ
 
 
+def _zerosum_helmert_basis(n: int) -> np.ndarray:
+    """
+    Construct an orthonormal basis of the zero-sum subspace in R^n (Helmert type).
+
+    Columns of the returned matrix B (shape: n x (n-1)) satisfy:
+        1^T b_k = 0,  ||b_k|| = 1,  and they are mutually orthogonal.
+    """
+    if n <= 1:
+        raise ValueError("zerosum basis requires n >= 2.")
+    B = np.zeros((n, n - 1), dtype=float)
+    for k in range(1, n):
+        denom = np.sqrt(k * (k + 1))
+        B[:k, k - 1] = 1.0 / denom
+        B[k, k - 1] = -k / denom
+    return B
+
+
 def build_nonlinear_projectors(
     anchors_inter: List[np.ndarray],
     Xs_train_inter: List[np.ndarray],
@@ -590,6 +736,7 @@ def build_nonlinear_projectors(
     lw_alpha: float = 0.0,
     L_within: Optional[np.ndarray] = None,
     L_between: Optional[np.ndarray] = None,
+    zerosum: bool = False,
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
     """
     Kernel (nonlinear) based projector builders.
@@ -614,21 +761,40 @@ def build_nonlinear_projectors(
         Ps.append(K @ np.linalg.inv(K + nl_lambda * I_r))
 
     M = sum((P - I_r).T @ (P - I_r) for P in Ps)
-    trace_M = np.trace(M)
-    if trace_M > 1e-9:
-        M = M / trace_M
-    
+
     if lw_alpha == 0:
         Q = (M + M.T) * 0.5
     else:
         if L_within is None or L_between is None:
             raise ValueError("Non-zero lw_alpha requires both L_within and L_between Laplacians.")
-        Q = (M + M.T) * 0.5 + lw_alpha *(L_within - L_between)
-    eigvals_raw, eigvecs = np.linalg.eigh(Q)
-    eigvals_raw[eigvals_raw < 0] = 0.0
+        Msym = (M + M.T) * 0.5
+
+        eps = 1e-12
+        norm_M  = np.linalg.norm(Msym, "fro")
+        norm_Lw = np.linalg.norm(L_within, "fro")
+        norm_Lb = np.linalg.norm(L_between, "fro")
+
+        scale_w = norm_M / max(norm_Lw, eps)
+        scale_b = norm_M / max(norm_Lb, eps)
+
+        Q = Msym + lw_alpha * (scale_w * L_within - scale_b * L_between)
+
+
+    if zerosum:
+        B = _zerosum_helmert_basis(Q.shape[0])
+        Q_tilde = B.T @ Q @ B
+        I_sub = np.eye(Q_tilde.shape[0])
+        eigvals_raw, eigvecs_sub = eigh(Q_tilde, I_sub)
+    else:
+        I_full = np.eye(Q.shape[0])
+        eigvals_raw, eigvecs_sub = eigh(Q, I_full)
     order = np.argsort(eigvals_raw)
     eigvals_selected = eigvals_raw[order[:dim_integrate]]
-    Z_integ = eigvecs[:, order[:dim_integrate]]
+    eigvecs = eigvecs_sub[:, order[:dim_integrate]]
+    if zerosum:
+        Z_integ = B @ eigvecs
+    else:
+        Z_integ = eigvecs
     for j in range(Z_integ.shape[1]):
         nz = np.linalg.norm(Z_integ[:, j])
         if nz > 0:
@@ -641,6 +807,14 @@ def build_nonlinear_projectors(
             anchors_inter[i], B_k, gamma=gammas[i], normalize=K_normalization, mu_max=mu_max_list[i]
         )
         projs.append(proj)
+            
+    # Z_integ の各列の総和を計算
+    col_sums = np.sum(Z_integ, axis=0)
+    # print で表示
+    print("Column sums:", col_sums)
+    # もし logging を使うなら
+    import logging
+    logging.info(f"Column sums: {col_sums}")
 
     return projs, Z_integ, eigvals_selected, gammas
 
@@ -658,6 +832,7 @@ def build_graph_nonlinear_projectors(
     L_within: Optional[np.ndarray],
     L_between: Optional[np.ndarray],
     g_type: Optional[str] = None,
+    zerosum: bool = False,
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
     if L_within is None or L_between is None:
         raise ValueError("graph_nonlinear requires both L_within and L_between.")
@@ -678,31 +853,55 @@ def build_graph_nonlinear_projectors(
 
     M = sum((P - I_r).T @ (P - I_r) for P in Ps)
     M = (M + M.T) * 0.5
-
+    
+    eps = 1e-12
+    tr_M  = np.trace(M)
+    tr_Lw = np.trace(L_within)
+    scale_Lw = tr_M / max(tr_Lw, eps)  # L_within のスケール
+    
+    tr_Lb = np.trace(L_between)
+    n = L_between.shape[0]
+    scale_Lb = n / max(tr_Lb, eps)  # tr(scale_Lb * L_between) ≒ tr(I) = n
+    
     # Prepare both formulations
     # minimize: (M + μ L_within) z = γ (L_between + ε I) z
-    A_min = (M + graph_mu_align * L_within)
-    B_min = (L_between + constraint_eps * np.eye(L_between.shape[0]))
+    
+    A_min = M + graph_mu_align * scale_Lw * L_within
+    B_min = scale_Lb * L_between + constraint_eps * np.eye(L_between.shape[0])
     A_min = (A_min + A_min.T) * 0.5
     B_min = (B_min + B_min.T) * 0.5
-
+    print(" constraint_eps :", constraint_eps)
+    print(" scale_Lw  :", scale_Lw)
+    print(" scale_Lb  :", scale_Lb)
+    print("graph_mu_align:", graph_mu_align)
     # maximize: L_between z = γ (M + μ L_within + ε I) z
-    A_max = (L_between + 0.0)
-    B_max = (M + graph_mu_align * L_within + constraint_eps * np.eye(L_between.shape[0]))
+    A_max = (scale_Lb * L_between + 0.0)
+    B_max = (M + graph_mu_align  * scale_Lw * L_within + constraint_eps * np.eye(L_between.shape[0]))
     A_max = (A_max + A_max.T) * 0.5
     B_max = (B_max + B_max.T) * 0.5
 
     mode = (g_type or "").lower()
     use_max = ("maximize" in mode)
+    print("use_max", use_max)
     A_use, B_use = (A_max, B_max) if use_max else (A_min, B_min)
 
-    eigvals_raw, eigvecs = eigh(A_use, B_use)
+    if zerosum:
+        B_zero = _zerosum_helmert_basis(A_use.shape[0])
+        A_use_tilde = B_zero.T @ A_use @ B_zero
+        B_use_tilde = B_zero.T @ B_use @ B_zero
+        eigvals_raw, eigvecs_sub = eigh(A_use_tilde, B_use_tilde)
+    else:
+        eigvals_raw, eigvecs_sub = eigh(A_use, B_use)
     # Select eigenvalues by mode
     order = np.argsort(eigvals_raw) if not use_max else np.argsort(eigvals_raw)[::-1]
-    take = min(dim_integrate, eigvecs.shape[1])
+    take = min(dim_integrate, eigvecs_sub.shape[1])
     select = order[:take]
     eigvals_selected = eigvals_raw[select]
-    Z_integ = eigvecs[:, select]
+    eigvecs = eigvecs_sub[:, select]
+    if zerosum:
+        Z_integ = B_zero @ eigvecs
+    else:
+        Z_integ = eigvecs
 
     for j in range(Z_integ.shape[1]):
         denom = float(Z_integ[:, j].T @ (B_use @ Z_integ[:, j]))
@@ -714,6 +913,12 @@ def build_graph_nonlinear_projectors(
         B_k = np.linalg.inv(K + nl_lambda * I_r) @ Z_integ
         proj = make_kernel_integrator(anchors_inter[i], B_k, gamma=gammas[i])
         projs.append(proj)
+
+    # Z_integ の各列の総和を計算
+    col_sums = np.sum(Z_integ, axis=0)
+    # print で表示
+    print("Column sums:", col_sums)
+
 
     return projs, Z_integ, eigvals_selected, gammas
 

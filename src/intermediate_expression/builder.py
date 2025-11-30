@@ -16,6 +16,7 @@ from .anchor_utils import (
     build_laplacians_from_anchor_labels,
     build_laplacians_from_intermediate_data,
     produce_anchor,
+    _valid_label_mask,
 )
 
 
@@ -121,13 +122,34 @@ class IntermediateExpressionBuilder:
             self.anchors_test_inter.append(anchor_test_reduced)
 
         assign_k = int(getattr(self.config, "anchor_assign_k", 10) or 10)
+        max_anchor_dist = float(getattr(self.config, "anchor_label_max_dist", 0.0) or 0.0)
         self.anchor_y, self.anchor_y_test = assign_anchor_labels(
             anchors_inter=self.anchors_inter,
             anchors_test_inter=self.anchors_test_inter,
             Xs_train_inter=self.Xs_train_inter,
             ys_train=dataset.ys_train,
             k=assign_k,
+            max_neighbor_dist=max_anchor_dist,
         )
+
+        # 全機関からラベルが付かなかったアンカー（無ラベル）は、そもそもアンカーとして除外する
+        if self.anchor_y.size:
+            valid_mask = _valid_label_mask(self.anchor_y)
+            if not np.all(valid_mask):
+                num_before = self.anchor.shape[0]
+                num_after = int(np.count_nonzero(valid_mask))
+                print(
+                    f"[IntermediateExpressionBuilder] dropping {num_before - num_after} unlabeled anchors "
+                    f"(kept {num_after})"
+                )
+                self.anchor = self.anchor[valid_mask]
+                if self.anchor_test.size:
+                    self.anchor_test = self.anchor_test[valid_mask]
+                self.anchor_y = self.anchor_y[valid_mask]
+                if self.anchor_y_test.size:
+                    self.anchor_y_test = self.anchor_y_test[valid_mask]
+                self.anchors_inter = [anc[valid_mask] for anc in self.anchors_inter]
+                self.anchors_test_inter = [anc[valid_mask] for anc in self.anchors_test_inter]
 
         lw_alpha = float(getattr(self.config, "lw_alpha", 0.0) or 0.0)
         need_anchor_laplacian = (lw_alpha > 0.0) or self._needs_anchor_laplacian()
@@ -195,10 +217,23 @@ class IntermediateExpressionBuilder:
         base_seed = int(getattr(self.config, "f_seed", 0) or 0)
         projectors = []
         count = len(dataset.Xs_train)
+
+        # Build per-institution F_type list, with optional svd_ratio override
+        ftypes_per_inst = [ftypes[i % len(ftypes)] for i in range(count)] if count > 0 else []
+        try:
+            svd_ratio = float(getattr(self.config, "svd_ratio", None))
+        except (TypeError, ValueError):
+            svd_ratio = None
+        if svd_ratio is not None:
+            svd_ratio = min(max(svd_ratio, 0.0), 1.0)
+            n_svd = int(round(count * svd_ratio))
+            for i in range(min(n_svd, count)):
+                ftypes_per_inst[i] = "svd"
+
         index_iter = tqdm(range(count), desc="Building intermediate projectors", unit="inst") if count > 1 else range(count)
         for idx in index_iter:
             X_train = dataset.Xs_train[idx]
-            current_ftype = ftypes[idx % len(ftypes)]
+            current_ftype = ftypes_per_inst[idx]
             y_train = dataset.ys_train[idx] if idx < len(dataset.ys_train) else None
             projector = build_dimensionality_projector(
                 X=X_train,

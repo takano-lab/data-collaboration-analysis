@@ -21,11 +21,10 @@ from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 # 1) 全探索したいパラメータ（config.◯◯に代入）
 
 PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
-    "F_type": ["ae"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
     "dataset": [
-    "fashion_mnist",
-    "mnist",
-    #"mnist_1248",
+    #"fashion_mnist",
+    #"mnist",
+    "mnist_1248",
     #"mice",
     #"statlog",
     #"qsar",
@@ -50,35 +49,39 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
 ],# + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "G_type": ["graph_nonlinear_x_maximize"],#, "kernel_graph_gep_maximize", "nonlinear", "graph_nonlinear", "graph_nonlinear_maximize",  "kernel_graph_gep",  "kernel_graph_gep_maximize", "kernel_gep", "gep", "imakura", "odc", "individual", "centralize",  "fl"
-    #"gamma_type": ["median"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
+    "F_type": ["umap",], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
+    "G_type": ["nonlinear"],#,"graph_nonlinear", "nonlinear" "graph_nonlinear_maximize",  "graph_nonlinear_x", "graph_nonlinear_x_maximize", "kernel_gep", "kernel_graph_gep",  "kernel_graph_gep_maximize", 
+    "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
     "gamma_ratio_krr": [1], #, 0.1, 0.3, 3, 10 
-    "graph_knn_k": [10],
-    "graph_mu_align": [1],
-    "graph_lambda_rkhs": [0.3],
-    "graph_stability_eps": [0.1],
-    "num_anchor_data": [500],
-    "nl_lambda": [0.3], # LOCKで止められる, 0.00001
-    "lw_alpha": [0],
-    "metrics": ["accuracy"],
-    "visualize": [False],
+    "graph_knn_k": [1000],
+    "graph_mu_align": [3],
+    "graph_lambda_rkhs": [0.1],
+    "graph_stability_eps": [0.01],
+    "num_anchor_data": [2000],
+    "nl_lambda": [0.1], # LOCKで止められる, 0.00001
+    "lw_alpha": [0.01],
+    "metrics": ["accuracy"], #"accuracy"
+    "visualize": [True],
     #"feature_num": [2],
-    #"dim_intermediate": ["*0.8"],#[20, 10, 5, 2], 6
-    #"dim_integrate": ["*0.8"],#[20, 10, 5, 2], 6
-    "num_institution_user": [100],
-    #"num_institution": [3],
+    "dim_intermediate": [2],#[20, 10, 5, 2], 6
+    "dim_integrate": [2],#[20, 10, 5, 2], 6
+    "num_institution_user": [300],
+    "num_institution": [10],
     "K_normalization":[False],
     "anchor_method":["smote"], #gaussian smote 
-    "smote_ratio":[1],#, 0, 0.1, 0.25, 0.5, 1],
+    "smote_ratio":[0.9],#, 0, 0.1, 0.25, 0.5, 1],
     "data_distribution":["bias"],# "division" "even"
     "inter_normalization":[True],
     "evaluate_integrate_metrics":[True],
     "load_df_data":[True],
     "load_intermediate_data":[True],
     "umap_neighbors":[10],
-    "bias_ratio":[0.8], # 0.1, 0.4, 0.6, 0.95, 0.8 
+    "bias_ratio":[0.1], # 0.1, 0.4, 0.6, 0.95, 0.8 
     "max_dim":[500],
-    "seed_values":[[1,2,3]],
+    "svd_ratio":[0], #, 0.2, 0.5, 1.0
+    "zerosum":[True],
+    "anchor_label_max_dist": [0.8],
+    "seed_values":[[5]],
     })
 
 # "gamma_ratio"
@@ -90,7 +93,7 @@ ERROR_SKIP = True
 
 # 3) DataFrameに保持したい「パラメータ列」（順序もこの通り）
 PARAM_COLUMNS: List[str] = [
-    "dataset", "h_model", "F_type", "G_type", "gamma_ratio", "gamma_type", "gamma_ratio_krr", "num_anchor_data", "nl_lambda", "lw_alpha", "metrics", "dim_intermediate", "dim_integrate", "num_institution_user", "num_institution", "anchor_method", "smote_ratio", "data_distribution", "inter_normalization", "evaluate_integrate_metrics", "umap_neighbors", "bias_ratio",
+    "dataset", "h_model", "F_type", "G_type", "gamma_ratio", "gamma_type", "gamma_ratio_krr", "num_anchor_data", "nl_lambda", "lw_alpha", "metrics", "dim_intermediate", "dim_integrate", "num_institution_user", "num_institution", "anchor_method", "smote_ratio", "data_distribution", "inter_normalization", "evaluate_integrate_metrics", "umap_neighbors", "bias_ratio", "svd_ratio", "zerosum"
 ]
 
 # 3-2) train/test_df のDataFrameに保持する名前
@@ -100,7 +103,7 @@ DF_COLUMNS: List[str] = [
 
 # 3-3) 中間表現のDataFrameに保持する名前
 INTERMEDIATE_COLUMNS: List[str] = [
-    "dataset", "F_type", "gamma_ratio", "data_distribution", "dim_intermediate", "num_institution_user", "num_institution", "seed_values", "umap_neighbors", "bias_ratio", "anchor_method", "smote_ratio", "num_anchor_data","max_dim"
+    "dataset", "F_type", "gamma_ratio", "data_distribution", "dim_intermediate", "num_institution_user", "num_institution", "seed_values", "umap_neighbors", "bias_ratio", "anchor_method", "smote_ratio", "num_anchor_data","max_dim", "svd_ratio", "anchor_label_max_dist"
 ]
 
 # 4) 条件ルール
@@ -133,7 +136,7 @@ DEFAULTS = {
 DEFAULT_SMOTE = 1.0
 DEFAULT_BIAS = 0.8
 NON_DEFAULT_SMOTE = [0, 0.1, 0.25, 0.5]          # 1.0 以外
-NON_DEFAULT_BIAS = [0.1, 0.4, 0.6, 0.95]         # 0.8 以外
+NON_DEFAULT_BIAS = [0.8, 0.4, 0.6, 0.95]         # 0.8 以外
 NON_DEFAULT_GAMMA_KRR = [0.1, 0.3, 3, 10]        # 1 以外
 # --- 追加: dataset ごとのデフォルト適用（定数のみ。動的は未設定）---
 _DATASET_DEFAULTS = {
@@ -169,16 +172,17 @@ RULES: List[Dict[str, Any]] = [
     {"type": "LOCK", "when": {"G_type": ["centralize", "individual"]}, "lock": {"gamma_ratio": DEFAULTS["gamma_ratio"]}},
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "imakura", "gep", "gep2",  "odc",]}, "lock": {"nl_lambda": DEFAULTS["nl_lambda"]}},
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "gep", "gep2",  "odc",]}, "lock": {"gamma_ratio_krr": DEFAULTS["gamma_ratio_krr"]}},
-    {"type": "LOCK", "when": {"G_type": ["nonlinear"]}, "lock": {"inter_normalization": False}},
+    #{"type": "LOCK", "when": {"G_type": ["nonlinear"]}, "lock": {"inter_normalization": False}},
+    {"type": "LOCK", "when": {"G_type": ["graph_nonlinear_x_maximize"]}, "lock": {"graph_mu_align": 0.5}},
     {"type": "LOCK", "when": {"G_type": ["graph_nonlinear",  "kernel_graph_gep", "kernel_gep", "gep", "imakura", "odc", "individual", "centralize",  "fl"]}, "lock": {"lw_alpha":  DEFAULTS["lw_alpha"]}},
     # F_type による固定: ae のとき比率指定と gamma_type=median
-    {"type": "LOCK", "when": {"F_type": ["ae"]}, "lock": {"dim_intermediate": "*0.8", "dim_integrate": "*0.8", "gamma_type": "median"}},
+    #{"type": "LOCK", "when": {"F_type": ["ae"]}, "lock": {"dim_intermediate": "*0.8", "dim_integrate": "*0.8", "gamma_type": "median"}},
     # F_type による固定: umap のとき固定次元と gamma_type=fixed
-    {"type": "LOCK", "when": {"F_type": ["umap"]}, "lock": {"dim_intermediate": 6, "dim_integrate": 6, "gamma_type": "fixed"}},
+    #{"type": "LOCK", "when": {"F_type": ["umap"]}, "lock": {"dim_intermediate": 6, "dim_integrate": 6, "gamma_type": "fixed"}},
     #{"type": "SKIP", "when": {"F_type": ["kernel_pca"], "G_type": ["GEP_weighted"]}},
-    {"type": "SKIP", "when": {"gamma_ratio_krr": NON_DEFAULT_GAMMA_KRR, "smote_ratio": NON_DEFAULT_SMOTE}},
-    {"type": "SKIP", "when": {"gamma_ratio_krr": NON_DEFAULT_GAMMA_KRR, "bias_ratio": NON_DEFAULT_BIAS}},
-    {"type": "SKIP", "when": {"smote_ratio": NON_DEFAULT_SMOTE, "bias_ratio": NON_DEFAULT_BIAS}},
+    #{"type": "SKIP", "when": {"gamma_ratio_krr": NON_DEFAULT_GAMMA_KRR, "smote_ratio": NON_DEFAULT_SMOTE}},
+    #{"type": "SKIP", "when": {"gamma_ratio_krr": NON_DEFAULT_GAMMA_KRR, "bias_ratio": NON_DEFAULT_BIAS}},
+    #{"type": "SKIP", "when": {"smote_ratio": NON_DEFAULT_SMOTE, "bias_ratio": NON_DEFAULT_BIAS}},
 ]
 # ============================================
 
@@ -389,7 +393,7 @@ def run_grid(
             cfg.seed = seed_value
             cfg.dataset = dataset
             cfg.metrics = metrics_name
-            cfg.plot_name = f"{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}_{combo.get('gamma_ratio_krr','-')}_{combo.get('graph_knn_k','-')}_{combo.get('graph_mu_align','-')}_{combo.get('graph_lambda_rkhs','-')}_{combo.get('graph_stability_eps','-')}.png"
+            cfg.plot_name = f"{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}_{combo.get('gamma_ratio_krr','-')}_{combo.get('graph_knn_k','-')}_{combo.get('graph_mu_align','-')}_{combo.get('graph_lambda_rkhs','-')}_{combo.get('zerosum','-')}.png"
             _set_config_from_combo(cfg, combo)
             _apply_defaults(cfg, dataset, combo)
             cfg.seed_values = seed_value
