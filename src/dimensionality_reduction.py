@@ -10,6 +10,7 @@ from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
 from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
+from sklearn.metrics import pairwise_distances
 
 # torch, UMAP は遅延インポート（_run_umap 内で import）
 
@@ -176,6 +177,16 @@ class KCCAScratch:
 # ============================================================
 # 共通ユーティリティ
 # ============================================================
+def median_heuristic_gamma(X: np.ndarray, *, standardize: bool = True) -> float:
+    X = np.asarray(X, dtype=float)
+    if standardize:
+        X = (X - X.mean(axis=0)) / X.std(axis=0, ddof=0)
+
+    D = pairwise_distances(X, metric="euclidean")
+    # 対角は 0 なので除外
+    d = np.median(D[D > 0])
+    gamma = 1.0 / (2.0 * d ** 2)   # RBF: exp(-gamma ||x-y||^2)
+    return float(gamma)
 
 def self_tuning_gamma(
     X: np.ndarray, *,
@@ -440,7 +451,8 @@ def _run_kpca_family(X, n_components, *, mode: str, config=None, seed=None, **kw
         ratio = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 1.0
         gamma *= ratio
     elif mode == "kernel_pca_self_tuning":
-        gamma = self_tuning_gamma(Xts, standardize=False, k=7, summary='median')
+        #gamma = self_tuning_gamma(Xts, standardize=False, k=7, summary='median')
+        gamma = median_heuristic_gamma(Xts, standardize=False)
         ratio = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 1.0
         gamma *= ratio
     elif mode == "kernel_pca_gamma_fixed":

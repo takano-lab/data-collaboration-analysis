@@ -24,64 +24,64 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "dataset": [
     #"fashion_mnist",
     #"mnist",
-    "mnist_1248",
-    #"mice",
-    #"statlog",
-    #"qsar",
+    # "mnist_1248",
+    # "mice",
+    # "statlog",
+    # "qsar",
     #"digits",
-    #"breast_cancer",
-    #"adult",
-    #"glass", 
-    #"seeds", 
-    #"letter_recognition",
-    #"wine_quality",
-    #"har",
+    # "breast_cancer",
+    # "adult",
+    # "glass", 
+    # "seeds", 
+    # "letter_recognition",
+    # "wine_quality",
+    # "har",
     #"cifar10",
-    #"diabetes130",
-    #"bank_marketing",
-    #"cifar10_800",
-    #'3D_gaussian_clusters',
-    #"concentric_three_circles",
-    #"iris",
-    #"ecoli",
-    #"vowel"
-    #"coil20"
-],# + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
+    # "diabetes130",
+    # "bank_marketing",
+    # "cifar10_800",
+    # '3D_gaussian_clusters',
+    # "concentric_three_circles",
+    # "iris",
+    # "ecoli",
+    # "vowel"
+    # "coil20"
+] + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
     "F_type": ["umap",], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["nonlinear"],#,"graph_nonlinear", "nonlinear" "graph_nonlinear_maximize",  "graph_nonlinear_x", "graph_nonlinear_x_maximize", "kernel_gep", "kernel_graph_gep",  "kernel_graph_gep_maximize", 
+    "G_type": ["nonlinear", "odc", "imakura", "gep"],#,"graph_nonlinear", "nonlinear" "graph_nonlinear_maximize",  "graph_nonlinear_x", "graph_nonlinear_x_maximize", "kernel_gep", "kernel_graph_gep",  "kernel_graph_gep_maximize", 
     "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
     "gamma_ratio_krr": [1], #, 0.1, 0.3, 3, 10 
-    "graph_knn_k": [1000],
-    "graph_mu_align": [3],
+    "graph_knn_k": [30],
+    "graph_mu_align": [3], # 0.5, 1, 3, 10, 30
     "graph_lambda_rkhs": [0.1],
-    "graph_stability_eps": [0.01],
+    "graph_stability_eps": [0.1],
     "num_anchor_data": [2000],
-    "nl_lambda": [0.1], # LOCKで止められる, 0.00001
-    "lw_alpha": [0.01],
+    "nl_lambda": [0.3], # LOCKで止められる, 0.00001
+    "lw_alpha": [0],
     "metrics": ["accuracy"], #"accuracy"
-    "visualize": [True],
+    "visualize": [False],
     #"feature_num": [2],
-    "dim_intermediate": [2],#[20, 10, 5, 2], 6
-    "dim_integrate": [2],#[20, 10, 5, 2], 6
-    "num_institution_user": [300],
+    "dim_intermediate": [6],#[20, 10, 5, 2], 6
+    "dim_integrate": [6],#[20, 10, 5, 2], 6
+    "num_institution_user": [100],
     "num_institution": [10],
     "K_normalization":[False],
     "anchor_method":["smote"], #gaussian smote 
-    "smote_ratio":[0.9],#, 0, 0.1, 0.25, 0.5, 1],
+    "smote_ratio":[0.8],#, 0, 0.1, 0.25, 0.5, 1],
     "data_distribution":["bias"],# "division" "even"
     "inter_normalization":[True],
     "evaluate_integrate_metrics":[True],
     "load_df_data":[True],
     "load_intermediate_data":[True],
     "umap_neighbors":[10],
-    "bias_ratio":[0.1], # 0.1, 0.4, 0.6, 0.95, 0.8 
+    "bias_ratio":[0.8], # 0.1, 0.4, 0.6, 0.95, 0.8 
     "max_dim":[500],
     "svd_ratio":[0], #, 0.2, 0.5, 1.0
     "zerosum":[True],
-    "anchor_label_max_dist": [0.8],
-    "seed_values":[[5]],
+    "anchor_label_max_dist": [100],
+    "seed_values":[[1]],
     })
 
 # "gamma_ratio"
@@ -168,10 +168,12 @@ _DATASET_DEFAULTS = {
     #"vowel":              {"dim_intermediate": 4},
     #"cifar10":              {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user":100, "data_distribution": "division", "gamma_ratio":0.0001, "gamma_ratio_krr":1, "F_type": "kernel_pca_gamma_fixed"},
 }
+    
 RULES: List[Dict[str, Any]] = [
     {"type": "LOCK", "when": {"G_type": ["centralize", "individual"]}, "lock": {"gamma_ratio": DEFAULTS["gamma_ratio"]}},
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "imakura", "gep", "gep2",  "odc",]}, "lock": {"nl_lambda": DEFAULTS["nl_lambda"]}},
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "gep", "gep2",  "odc",]}, "lock": {"gamma_ratio_krr": DEFAULTS["gamma_ratio_krr"]}},
+    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "gep", "gep2",  "odc", "nonlinear"]}, "lock": {"graph_mu_align": 0, "graph_lambda_rkhs": 0, "graph_knn_k": None, "graph_stability_eps": 0}},
     #{"type": "LOCK", "when": {"G_type": ["nonlinear"]}, "lock": {"inter_normalization": False}},
     {"type": "LOCK", "when": {"G_type": ["graph_nonlinear_x_maximize"]}, "lock": {"graph_mu_align": 0.5}},
     {"type": "LOCK", "when": {"G_type": ["graph_nonlinear",  "kernel_graph_gep", "kernel_gep", "gep", "imakura", "odc", "individual", "centralize",  "fl"]}, "lock": {"lw_alpha":  DEFAULTS["lw_alpha"]}},

@@ -811,10 +811,7 @@ def build_nonlinear_projectors(
     # Z_integ の各列の総和を計算
     col_sums = np.sum(Z_integ, axis=0)
     # print で表示
-    print("Column sums:", col_sums)
-    # もし logging を使うなら
-    import logging
-    logging.info(f"Column sums: {col_sums}")
+    #print("Column sums:", col_sums)
 
     return projs, Z_integ, eigvals_selected, gammas
 
@@ -917,7 +914,7 @@ def build_graph_nonlinear_projectors(
     # Z_integ の各列の総和を計算
     col_sums = np.sum(Z_integ, axis=0)
     # print で表示
-    print("Column sums:", col_sums)
+    #print("Column sums:", col_sums)
 
 
     return projs, Z_integ, eigvals_selected, gammas
