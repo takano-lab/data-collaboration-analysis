@@ -8,6 +8,7 @@ from scipy.linalg import block_diag, eigh
 from sklearn.metrics.pairwise import pairwise_distances, rbf_kernel
 
 from src.dimensionality_reduction import self_tuning_gamma
+from src.intermediate_expression.anchor_utils import _symmetric_knn_graph
 
 # --- Basic projector factories ---
 
@@ -38,13 +39,23 @@ def make_kernel_integrator(
     gamma: float,
     normalize: bool = False,
     mu_max: Optional[float] = None,
+    kernel_type: str = "rbf",
 ) -> Callable[[np.ndarray], np.ndarray]:
-    """Return kernel projector X -> K(X, S_train) @ B_k with optional spectral normalization."""
+    """Return kernel projector X -> K(X, S_train) @ B_k with optional spectral normalization.
+
+    kernel_type: "rbf" (default) or "linear".
+    """
+    kernel_type_key = (kernel_type or "rbf").lower()
+
     def projector(X: np.ndarray) -> np.ndarray:
-        K_x = rbf_kernel(X, S_train, gamma=gamma)
+        if kernel_type_key == "linear":
+            K_x = X @ S_train.T
+        else:
+            K_x = rbf_kernel(X, S_train, gamma=gamma)
         if normalize and (mu_max is not None) and mu_max > 0:
             K_x = K_x / mu_max
         return K_x @ B_k
+
     return projector
 
 
@@ -731,9 +742,10 @@ def build_nonlinear_projectors(
     *,
     gamma_type: str = "auto",
     gamma_ratio_krr: float = 1.0,
+    kernel_type: str = "rbf",
     K_normalization: bool = False,
     nl_lambda: float = 1e-2,
-    lw_alpha: float = 0.0,
+    graph_mu_align: float = 0.0,
     L_within: Optional[np.ndarray] = None,
     L_between: Optional[np.ndarray] = None,
     zerosum: bool = False,
@@ -747,10 +759,14 @@ def build_nonlinear_projectors(
     I_r = np.eye(r)
 
     gammas = _determine_kernel_gammas(anchors_inter, Xs_train_inter, gamma_type, gamma_ratio_krr)
+    kernel_type_key = (kernel_type or "rbf").lower()
 
     Ks, Ps, mu_max_list = [], [], []
     for i, anchor_inter_k in enumerate(anchors_inter):
-        K = rbf_kernel(anchor_inter_k, anchor_inter_k, gamma=gammas[i])
+        if kernel_type_key == "linear":
+            K = anchor_inter_k @ anchor_inter_k.T
+        else:
+            K = rbf_kernel(anchor_inter_k, anchor_inter_k, gamma=gammas[i])
         if K_normalization:
             mu_max = max(np.linalg.eigvalsh(K).max(), 1e-12)
             mu_max_list.append(mu_max)
@@ -761,23 +777,19 @@ def build_nonlinear_projectors(
         Ps.append(K @ np.linalg.inv(K + nl_lambda * I_r))
 
     M = sum((P - I_r).T @ (P - I_r) for P in Ps)
+    Msym = (M + M.T) * 0.5
 
-    if lw_alpha == 0:
-        Q = (M + M.T) * 0.5
+    if graph_mu_align == 0.0 or L_within is None or L_between is None:
+        Q = Msym
     else:
-        if L_within is None or L_between is None:
-            raise ValueError("Non-zero lw_alpha requires both L_within and L_between Laplacians.")
-        Msym = (M + M.T) * 0.5
-
         eps = 1e-12
-        norm_M  = np.linalg.norm(Msym, "fro")
-        norm_Lw = np.linalg.norm(L_within, "fro")
-        norm_Lb = np.linalg.norm(L_between, "fro")
-
-        scale_w = norm_M / max(norm_Lw, eps)
-        scale_b = norm_M / max(norm_Lb, eps)
-
-        Q = Msym + lw_alpha * (scale_w * L_within - scale_b * L_between)
+        tr_M = float(np.trace(Msym))
+        tr_Lw = float(np.trace(L_within))
+        tr_Lb = float(np.trace(L_between))
+        scale_Lw = tr_M / max(tr_Lw, eps) if tr_Lw > 0 else 1.0
+        n = L_between.shape[0]
+        scale_Lb = n / max(tr_Lb, eps) if tr_Lb > 0 else 1.0
+        Q = Msym + float(graph_mu_align) * (scale_Lw * L_within - scale_Lb * L_between)
 
 
     if zerosum:
@@ -804,7 +816,12 @@ def build_nonlinear_projectors(
     for i, K in enumerate(Ks):
         B_k = np.linalg.inv(K + nl_lambda * I_r) @ Z_integ
         proj = make_kernel_integrator(
-            anchors_inter[i], B_k, gamma=gammas[i], normalize=K_normalization, mu_max=mu_max_list[i]
+            anchors_inter[i],
+            B_k,
+            gamma=gammas[i],
+            normalize=K_normalization,
+            mu_max=mu_max_list[i],
+            kernel_type=kernel_type_key,
         )
         projs.append(proj)
             
@@ -830,6 +847,7 @@ def build_graph_nonlinear_projectors(
     L_between: Optional[np.ndarray],
     g_type: Optional[str] = None,
     zerosum: bool = False,
+    kernel_type: str = "rbf",
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
     if L_within is None or L_between is None:
         raise ValueError("graph_nonlinear requires both L_within and L_between.")
@@ -841,8 +859,12 @@ def build_graph_nonlinear_projectors(
     gammas = _determine_kernel_gammas(anchors_inter, Xs_train_inter, gamma_type, gamma_ratio_krr)
 
     Ks, Ps, mu_max_list = [], [], []
+    kernel_type_key = (kernel_type or "rbf").lower()
     for i, anchor_inter_k in enumerate(anchors_inter):
-        K = rbf_kernel(anchor_inter_k, anchor_inter_k, gamma=gammas[i])
+        if kernel_type_key == "linear":
+            K = anchor_inter_k @ anchor_inter_k.T
+        else:
+            K = rbf_kernel(anchor_inter_k, anchor_inter_k, gamma=gammas[i])
         mu_max = None
         Ks.append(K)
         Ps.append(K @ np.linalg.inv(K + nl_lambda * I_r))
@@ -908,7 +930,7 @@ def build_graph_nonlinear_projectors(
     projs: List[Callable[[np.ndarray], np.ndarray]] = []
     for i, K in enumerate(Ks):
         B_k = np.linalg.inv(K + nl_lambda * I_r) @ Z_integ
-        proj = make_kernel_integrator(anchors_inter[i], B_k, gamma=gammas[i])
+        proj = make_kernel_integrator(anchors_inter[i], B_k, gamma=gammas[i], kernel_type=kernel_type_key)
         projs.append(proj)
 
     # Z_integ の各列の総和を計算
@@ -916,6 +938,129 @@ def build_graph_nonlinear_projectors(
     # print で表示
     #print("Column sums:", col_sums)
 
+
+    return projs, Z_integ, eigvals_selected, gammas
+
+
+def _build_unlabeled_anchor_laplacian(
+    anchors_inter: List[np.ndarray],
+    k_neighbors: int,
+) -> np.ndarray:
+    """
+    Build a label-agnostic Laplacian on anchors using an averaged k-NN graph
+    over per-institution anchor intermediate representations.
+    """
+    if not anchors_inter:
+        return np.zeros((0, 0))
+    r = anchors_inter[0].shape[0]
+    if r == 0:
+        return np.zeros((0, 0))
+    for A in anchors_inter:
+        if A.shape[0] != r:
+            raise ValueError("All anchor projections must share the same number of rows.")
+
+    k_eff = max(1, min(int(k_neighbors), r - 1))
+    if k_eff <= 0:
+        return np.zeros((r, r))
+
+    W_sum = np.zeros((r, r), dtype=float)
+    for anchor_inst in anchors_inter:
+        adjacency = _symmetric_knn_graph(anchor_inst, k_eff, metric="euclidean")
+        if adjacency.size == 0:
+            continue
+        W_sum += adjacency
+
+    if not np.any(W_sum):
+        return np.zeros((r, r))
+
+    W = W_sum / float(len(anchors_inter))
+    d = W.sum(axis=1)
+    L = np.diag(d) - W
+    return L
+
+
+def build_laplacian_nonlinear_projectors(
+    anchors_inter: List[np.ndarray],
+    Xs_train_inter: List[np.ndarray],
+    anchor: np.ndarray,
+    dim_integrate: int,
+    *,
+    gamma_type: str = "auto",
+    gamma_ratio_krr: float = 1.0,
+    nl_lambda: float = 1e-2,
+    kernel_type: str = "rbf",
+    graph_mu_align: float = 1.0,
+    laplacian_k: int = 10,
+    zerosum: bool = False,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
+    """
+    Laplacian-regularized kernel (nonlinear) projectors with label-agnostic Laplacian.
+    Uses a k-NN Laplacian over anchors scaled by graph_mu_align.
+    """
+    if not anchors_inter:
+        return [], np.zeros((0, 0)), np.zeros((0,)), []
+
+    c = len(anchors_inter)
+    r = anchors_inter[0].shape[0]
+    if r == 0:
+        return [], np.zeros((0, 0)), np.zeros((0,)), []
+    I_r = np.eye(r)
+
+    gammas = _determine_kernel_gammas(anchors_inter, Xs_train_inter, gamma_type, gamma_ratio_krr)
+    kernel_type_key = (kernel_type or "rbf").lower()
+
+    Ks: List[np.ndarray] = []
+    Ps: List[np.ndarray] = []
+    for i, anchor_inter_k in enumerate(anchors_inter):
+        if kernel_type_key == "linear":
+            K = anchor_inter_k @ anchor_inter_k.T
+        else:
+            K = rbf_kernel(anchor_inter_k, anchor_inter_k, gamma=gammas[i])
+        Ks.append(K)
+        Ps.append(K @ np.linalg.inv(K + nl_lambda * I_r))
+
+    M = sum((P - I_r).T @ (P - I_r) for P in Ps)
+    M = (M + M.T) * 0.5
+
+    L_plain = _build_unlabeled_anchor_laplacian(anchors_inter, k_neighbors=laplacian_k)
+    if L_plain.shape != M.shape:
+        A = M
+    else:
+        eps = 1e-12
+        tr_M = float(np.trace(M))
+        tr_L = float(np.trace(L_plain))
+        scale_L = tr_M / max(tr_L, eps) if tr_L > 0 else 1.0
+        A = M + float(graph_mu_align) * scale_L * L_plain
+    A = (A + A.T) * 0.5
+
+    if zerosum:
+        B_zero = _zerosum_helmert_basis(A.shape[0])
+        A_tilde = B_zero.T @ A @ B_zero
+        eigvals_raw, eigvecs_sub = eigh(A_tilde, np.eye(A_tilde.shape[0]))
+    else:
+        eigvals_raw, eigvecs_sub = eigh(A, np.eye(A.shape[0]))
+
+    order = np.argsort(eigvals_raw)
+    take = min(dim_integrate, eigvecs_sub.shape[1])
+    select = order[:take]
+    eigvals_selected = eigvals_raw[select]
+    eigvecs = eigvecs_sub[:, select]
+
+    if zerosum:
+        Z_integ = B_zero @ eigvecs
+    else:
+        Z_integ = eigvecs
+
+    for j in range(Z_integ.shape[1]):
+        nz = np.linalg.norm(Z_integ[:, j])
+        if nz > 0:
+            Z_integ[:, j] /= nz
+
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    for i, K in enumerate(Ks):
+        B_k = np.linalg.inv(K + nl_lambda * I_r) @ Z_integ
+        proj = make_kernel_integrator(anchors_inter[i], B_k, gamma=gammas[i], kernel_type=kernel_type_key)
+        projs.append(proj)
 
     return projs, Z_integ, eigvals_selected, gammas
 
@@ -988,7 +1133,7 @@ def build_nonlinear_projectors_maximize(
     projs: List[Callable[[np.ndarray], np.ndarray]] = []
     for i, K in enumerate(Ks):
         B_k = np.linalg.inv(K + nl_lambda * I_r) @ Z_integ
-        proj = make_kernel_integrator(anchors_inter[i], B_k, gamma=gammas[i])
+        proj = make_kernel_integrator(anchors_inter[i], B_k, gamma=gammas[i], kernel_type=kernel_type_key)
         projs.append(proj)
 
     return projs, Z_integ, eigvals_selected, gammas

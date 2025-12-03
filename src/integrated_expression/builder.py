@@ -23,10 +23,12 @@ from .runners import (
     build_kernel_graph_gep_projectors,
     build_nonlinear_projectors,
     build_nonlinear_projectors_maximize,
+    build_laplacian_nonlinear_projectors,
     build_multi_cca_projectors,
     build_odc_projectors,
     build_targetvec_projectors,
 )
+from src.intermediate_expression.anchor_utils import build_laplacians_from_anchor_labels
 
 logger = TypeVar("logger")
 IntegrationRunner = Callable[["IntegratedExpressionBuilder"], Tuple[List, Dict[str, object]]]
@@ -99,6 +101,7 @@ class IntegratedExpressionBuilder:
             "kernel_graph_gep",
             "kernel_graph_gep_minimize",
             "kernel_graph_gep_maximize",
+            "laplacian_nonlinear",
         }
         should_eval_lni = gtype_key in lni_enabled_types
         if should_eval_lni:
@@ -199,6 +202,30 @@ class IntegratedExpressionBuilder:
         self.ys_test_integ = list(artifacts.ys_test_integ)
         self.Z_integ = artifacts.Z_integ
 
+    def _build_anchor_laplacians_for_integrated(self) -> tuple[np.ndarray | None, np.ndarray | None]:
+        """
+        Build label-aware anchor Laplacians (L_within, L_between) at integration stage.
+        Uses the same construction as intermediate_expression.builder.
+        """
+        anchor = self.anchor
+        anchor_y = self.anchor_y
+        if anchor.size == 0 or anchor_y.size == 0:
+            return None, None
+
+        assign_k = int(getattr(self.config, "anchor_assign_k", 10) or 10)
+        anchor_lap_k = int(getattr(self.config, "anchor_laplacian_k", assign_k) or assign_k)
+        gamma = getattr(self.config, "laplacian_gamma", None)
+
+        L_within, L_between = build_laplacians_from_anchor_labels(
+            anchor=anchor,
+            anchor_y=anchor_y,
+            gamma=gamma,
+            k_neighbors=anchor_lap_k,
+            metric="euclidean",
+            logger=self.logger,
+        )
+        return L_within, L_between
+
 # ---------------------------------------------------------------------- #
 # Integration runners
 # ---------------------------------------------------------------------- #
@@ -283,18 +310,21 @@ def _run_odc_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list,
 
 
 def _run_nonlinear_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
-    lw_alpha = float(getattr(analysis.config, "lw_alpha", 0.0) or 0.0)
+    graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 0.0)
+    graph_mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 0.0
+    L_within, L_between = analysis._build_anchor_laplacians_for_integrated()
     projs, Z_integ, eigvals, gammas = build_nonlinear_projectors(
         anchors_inter=analysis.anchors_inter,
         Xs_train_inter=analysis.Xs_train_inter,
         dim_integrate=_dim_integrate(analysis.config),
         gamma_type=getattr(analysis.config, "gamma_type", "auto"),
         gamma_ratio_krr=getattr(analysis.config, "gamma_ratio_krr", 1.0),
+        kernel_type=str(getattr(analysis.config, "kernel_type", "rbf") or "rbf"),
         K_normalization=bool(getattr(analysis.config, "K_normalization", False)),
         nl_lambda=getattr(analysis.config, "nl_lambda", 1e-2),
-        lw_alpha=lw_alpha,
-        L_within=analysis.L_within,
-        L_between=analysis.L_between,
+        graph_mu_align=graph_mu_align,
+        L_within=L_within,
+        L_between=L_between,
         zerosum=bool(getattr(analysis.config, "zerosum", False)),
     )
     gamma_mean = float(np.mean(gammas)) if gammas else None
@@ -307,10 +337,11 @@ def _run_nonlinear_integration(analysis: "IntegratedExpressionBuilder") -> tuple
 
 
 def _run_graph_nonlinear_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
-    if analysis.L_within is None or analysis.L_between is None:
-        raise ValueError("graph_nonlinear requires anchor Laplacians. Enable anchor_laplacian_k or lw_alpha > 0.")
     graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 1.0)
     graph_mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 1.0
+    L_within, L_between = analysis._build_anchor_laplacians_for_integrated()
+    if L_within is None or L_between is None:
+        raise ValueError("graph_nonlinear requires anchor Laplacians built from anchor labels.")
     projs, Z_integ, eigvals, gammas = build_graph_nonlinear_projectors(
         anchors_inter=analysis.anchors_inter,
         Xs_train_inter=analysis.Xs_train_inter,
@@ -318,10 +349,11 @@ def _run_graph_nonlinear_integration(analysis: "IntegratedExpressionBuilder") ->
         gamma_type=getattr(analysis.config, "gamma_type", "auto"),
         gamma_ratio_krr=getattr(analysis.config, "gamma_ratio_krr", 1.0),
         nl_lambda=getattr(analysis.config, "nl_lambda", 1e-2),
+        kernel_type=str(getattr(analysis.config, "kernel_type", "rbf") or "rbf"),
         graph_mu_align=graph_mu_align,
         constraint_eps=float(getattr(analysis.config, "graph_stability_eps", 1e-6) or 1e-6),
-        L_within=analysis.L_within,
-        L_between=analysis.L_between,
+        L_within=L_within,
+        L_between=L_between,
         g_type=getattr(analysis.config, "G_type", None),
         zerosum=bool(getattr(analysis.config, "zerosum", False)),
     )
@@ -431,6 +463,37 @@ def _run_graph_nonlinear_X_integration(analysis: "IntegratedExpressionBuilder") 
     return projs, extras
 
 
+def _run_laplacian_nonlinear_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 1.0)
+    graph_mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 1.0
+    # Use graph_knn_k for unlabeled Laplacian k
+    graph_k_cfg = getattr(analysis.config, "graph_knn_k", None)
+    try:
+        graph_k = int(graph_k_cfg) if graph_k_cfg is not None else 0
+    except (TypeError, ValueError):
+        graph_k = 0
+    if graph_k <= 0:
+        graph_k = 10
+    projs, Z_integ, eigvals, gammas = build_laplacian_nonlinear_projectors(
+        anchors_inter=analysis.anchors_inter,
+        Xs_train_inter=analysis.Xs_train_inter,
+        anchor=analysis.anchor,
+        dim_integrate=_dim_integrate(analysis.config),
+        gamma_type=getattr(analysis.config, "gamma_type", "auto"),
+        gamma_ratio_krr=getattr(analysis.config, "gamma_ratio_krr", 1.0),
+        nl_lambda=getattr(analysis.config, "nl_lambda", 1e-2),
+        kernel_type=str(getattr(analysis.config, "kernel_type", "rbf") or "rbf"),
+        graph_mu_align=graph_mu_align,
+        laplacian_k=graph_k,
+        zerosum=bool(getattr(analysis.config, "zerosum", False)),
+    )
+    gammas_mean = float(np.mean(gammas)) if gammas else None
+    analysis.config.gamma_krr_means = gammas_mean
+    extras = {"Z_integ": Z_integ, "eigvals": eigvals, "gammas": gammas}
+    analysis.Z_integ = Z_integ
+    return projs, extras
+
+
 def _dim_integrate(config: Config) -> int:
     dim = getattr(config, "dim_integrate", None)
     if dim is None:
@@ -449,6 +512,7 @@ _INTEGRATION_RUNNERS: Dict[str, IntegrationRunner] = {
     "odc": _run_odc_integration,
     "nonlinear": _run_nonlinear_integration,
     "nonlinear_maximize": _run_nonlinear_max_integration,
+    "laplacian_nonlinear": _run_laplacian_nonlinear_integration,
     "graph_nonlinear": _run_graph_nonlinear_integration,
     "graph_nonlinear_minimize": _run_graph_nonlinear_integration,
     "graph_nonlinear_maximize": _run_graph_nonlinear_integration,

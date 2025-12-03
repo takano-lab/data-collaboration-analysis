@@ -541,6 +541,95 @@ def _run_umap(
 
     return projector
 
+
+def _run_supervised_umap(
+    X, n_components, *, y=None, config=None, seed=None, **kwargs
+) -> Projector:
+    """
+    y を用いた supervised UMAP。
+    乱数に関する挙動（seed から metric / n_neighbors / min_dist を決める）は
+    _run_umap と同一に保つ。
+    """
+    try:
+        from umap import UMAP
+    except Exception as e:
+        raise RuntimeError("UMAP を利用するには 'umap-learn' のインストールが必要です") from e
+
+    if y is None:
+        raise ValueError("supervised_umap には y が必要です")
+
+    y_arr = np.asarray(y)
+    if y_arr.shape[0] != X.shape[0]:
+        raise ValueError("supervised_umap: X と y のサンプル数が一致していません")
+
+    scaler = StandardScaler()
+    Xts = scaler.fit_transform(X)
+
+    # _run_umap と同じ seed ロジック
+    seed_val = seed
+    if seed_val is None and config is not None:
+        seed_val = getattr(config, "f_seed", None)
+        print(f"Supervised UMAP f_seed: {seed_val}")
+    if seed_val is None:
+        seed_val = _cfg_int(config, "seed", 0)
+        print(f"Supervised UMAP seed: {seed_val}")
+    seed = int(seed_val)
+    print(f"Supervised UMAP seed: {seed}")
+
+    metric_choices = ("correlation", "cosine", "euclidean")
+    metric = metric_choices[seed % 3]
+    rng = np.random.default_rng(seed + 1337)
+    nn_sample = int(rng.integers(low=2, high=8))  # high は排他的上限
+    n_neighbors = max(2, min(nn_sample, max(2, Xts.shape[0] - 1)))
+    min_dist = float(rng.uniform(0.0, 0.8))
+
+    extra_params = {}
+    tm = _cfg_str(config, "umap_transform_mode", None)
+    if tm:
+        extra_params["transform_mode"] = tm
+    rs = _cfg_float(config, "umap_repulsion_strength", None)
+    if rs is not None:
+        extra_params["repulsion_strength"] = float(rs)
+    init = _cfg_str(config, "umap_init", None)
+    if init:
+        extra_params["init"] = init
+    mix = _cfg_float(config, "umap_set_op_mix_ratio", None)
+    if mix is not None:
+        extra_params["set_op_mix_ratio"] = float(mix)
+
+    target_metric = _cfg_str(config, "umap_target_metric", None)
+    if target_metric is None:
+        if np.issubdtype(y_arr.dtype, np.integer):
+            target_metric = "categorical"
+        else:
+            target_metric = "euclidean"
+    extra_params["target_metric"] = target_metric
+
+    # ラベル分離を強めたい場合の重み（0〜1）。指定がなければやや強めの 0.8。
+    tw = _cfg_float(config, "umap_target_weight", None)
+    if tw is None:
+        tw = 0.5
+    tw = float(max(0.0, min(1.0, tw)))
+    extra_params["target_weight"] = tw
+
+    model = UMAP(
+        n_components=n_components,
+        n_neighbors=int(n_neighbors),
+        min_dist=float(min_dist),
+        metric=metric,
+        random_state=int(seed),
+        **extra_params,
+    )
+    model.fit(Xts, y_arr)
+
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        data_scaled = scaler.transform(data)
+        return model.transform(data_scaled)
+
+    return projector
+
 def _run_dm(
     X, n_components, *, config=None, **kwargs
 ) -> Projector:
@@ -809,6 +898,7 @@ _RUNNERS: Dict[str, Any] = {
     "kernel_pca_self_tuning": lambda *a, **kw: _run_kpca_family(*a, mode="kernel_pca_self_tuning", **kw),
     "kernel_pca_gamma_fixed": lambda *a, **kw: _run_kpca_family(*a, mode="kernel_pca_gamma_fixed", **kw),
     "umap": _run_umap,
+    "supervised_umap": _run_supervised_umap,
     "dm": _run_dm,
     "le": _run_le,
     "autoencoder": _run_autoencoder,
