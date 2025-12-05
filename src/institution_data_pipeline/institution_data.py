@@ -35,6 +35,84 @@ def _is_undefined(v) -> bool:
     )
 
 
+def _reserve_smote_anchor_data(
+    df: pd.DataFrame,
+    config: Config,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    When anchor_method == \"smote\", reserve up to num_institution_user rows
+    as public data for SMOTE anchors, trying to balance label distribution.
+
+    Returns (anchor_df, remaining_df).
+    """
+    anchor_method = getattr(config, "anchor_method", None)
+    label_col = getattr(config, "y_name", "target")
+    if anchor_method != "smote" or label_col not in df.columns or df.empty:
+        return df.iloc[0:0].copy(), df
+
+    try:
+        total_anchor = int(getattr(config, "num_institution_user", 0) or 0)
+    except (TypeError, ValueError):
+        total_anchor = 0
+    if total_anchor <= 0:
+        return df.iloc[0:0].copy(), df
+
+    total_anchor = min(total_anchor, len(df))
+    if total_anchor <= 0:
+        return df.iloc[0:0].copy(), df
+
+    rng = np.random.default_rng(getattr(config, "seed", 42))
+    y = df[label_col].to_numpy()
+    classes, counts = np.unique(y, return_counts=True)
+    n_classes = len(classes)
+    if n_classes == 0:
+        return df.iloc[0:0].copy(), df
+
+    base = total_anchor // n_classes
+    rem = total_anchor % n_classes
+
+    per_class_indices = {}
+    for lab in classes:
+        idx = np.flatnonzero(y == lab)
+        rng.shuffle(idx)
+        per_class_indices[lab] = idx
+
+    selected: list[int] = []
+
+    # First pass: try to allocate roughly equal counts per class
+    for i, lab in enumerate(classes):
+        want = base + (1 if i < rem else 0)
+        idx = per_class_indices[lab]
+        take = min(want, idx.size)
+        if take > 0:
+            selected.extend(idx[:take])
+            per_class_indices[lab] = idx[take:]
+
+    # Remove duplicates while preserving order
+    selected = list(dict.fromkeys(selected))
+
+    # If still short, fill from remaining pool
+    if len(selected) < total_anchor:
+        remaining_lists = [idx for idx in per_class_indices.values() if idx.size > 0]
+        if remaining_lists:
+            all_remaining = np.concatenate(remaining_lists)
+            need = min(total_anchor - len(selected), all_remaining.size)
+            if need > 0:
+                extra = rng.choice(all_remaining, size=need, replace=False)
+                selected.extend(int(i) for i in extra)
+
+    if not selected:
+        return df.iloc[0:0].copy(), df
+
+    selected_arr = np.array(sorted(set(selected)), dtype=int)
+    keep_mask = np.ones(len(df), dtype=bool)
+    keep_mask[selected_arr] = False
+
+    anchor_df = df.iloc[selected_arr].reset_index(drop=True)
+    remaining_df = df.iloc[keep_mask].reset_index(drop=True)
+    return anchor_df, remaining_df
+
+
 def ensure_institution_params(df: pd.DataFrame, config: Config) -> None:
     """未設定パラメータを df に基づき安全に補完 (元 load_data の挙動を踏襲)"""
     if _is_undefined(config.feature_num):
@@ -540,10 +618,32 @@ def to_institution_arrays(
 # ------------------------- 高水準 API ------------------------- #
 def prepare_institutional_dataset(
     df: pd.DataFrame, config: Config
-) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], List[np.ndarray], pd.DataFrame, pd.DataFrame]:
+) -> Tuple[
+    List[np.ndarray],
+    List[np.ndarray],
+    List[np.ndarray],
+    List[np.ndarray],
+    pd.DataFrame,
+    pd.DataFrame,
+    np.ndarray,
+    np.ndarray,
+]:
     """前処理済み df から機関配列を構築 (even / division)"""
     ensure_institution_params(df, config)
+
+    smote_anchor = np.empty((0, 0), dtype=float)
+    smote_anchor_y = np.empty((0,), dtype=float)
+
+    # If SMOTE anchors are requested, reserve public data for them first.
+    anchor_method = getattr(config, "anchor_method", None)
     df_lim = df
+    if anchor_method == "smote":
+        anchor_df, df_lim = _reserve_smote_anchor_data(df_lim, config)
+        if not anchor_df.empty:
+            label_col = getattr(config, "y_name", "target")
+            if label_col in anchor_df.columns:
+                smote_anchor = anchor_df.drop(columns=[label_col]).to_numpy()
+                smote_anchor_y = anchor_df[label_col].to_numpy()
     dist = getattr(config, "data_distribution", None)
     # even / semi モードで 'label_num' 指定が来た場合はここで数値化
     if dist not in ("division", "bias") and isinstance(getattr(config, 'num_institution'), str) and str(getattr(config, 'num_institution')).lower() == 'label_num':
@@ -572,7 +672,7 @@ def prepare_institutional_dataset(
             random_state=42,  # ベースライン
         )
     Xs_train, Xs_test, ys_train, ys_test = to_institution_arrays(train_df, test_df, config)
-    return Xs_train, Xs_test, ys_train, ys_test, train_df, test_df
+    return Xs_train, Xs_test, ys_train, ys_test, train_df, test_df, smote_anchor, smote_anchor_y
 
 
 __all__ = [

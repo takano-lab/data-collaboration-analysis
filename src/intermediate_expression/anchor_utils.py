@@ -21,6 +21,8 @@ def produce_anchor(
     Xs_test: Sequence[np.ndarray],
     ys_train: Sequence[np.ndarray],
     ys_test: Sequence[np.ndarray],
+    smote_X: Optional[np.ndarray] = None,
+    smote_y: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     Build anchor samples according to config.anchor_method.
@@ -54,7 +56,16 @@ def produce_anchor(
         return col_min + U * width
 
     if method == "smote":
+        
         rng = np.random.default_rng(seed)
+
+        # X_test_all = np.vstack(Xs_test)
+        # y_test_all = np.hstack(ys_test)
+
+        # n_public = min(config.num_institution_user, X_test_all.shape[0])  # 何個にするかは好みで
+        # idx = rng.choice(X_test_all.shape[0], size=n_public, replace=False)
+        # smote_X = X_test_all[idx]
+        # smote_y = y_test_all[idx]
 
         smote_ratio = getattr(config, "smote_ratio", 1.0)
         try:
@@ -63,17 +74,29 @@ def produce_anchor(
             smote_ratio = 1.0
         smote_ratio = min(max(smote_ratio, 0.0), 1.0)
 
-        n_smote = int(round(num_row * smote_ratio))
-        n_gauss = max(0, num_row - n_smote)
+        # Public anchor data used as part of anchors, with the remainder filled by SMOTE/Gaussian.
+        n_public = int(smote_X.shape[0]) if smote_X is not None else 0
+        if n_public >= num_row and smote_X is not None:
+            Xpub = np.asarray(smote_X)
+            if Xpub.shape[1] < num_col:
+                num_col_eff = Xpub.shape[1]
+            else:
+                num_col_eff = num_col
+            idx = rng.choice(Xpub.shape[0], size=num_row, replace=False)
+            return Xpub[idx, :num_col_eff]
 
-        if n_smote > 0 and (not Xs_train or not ys_train):
-            raise RuntimeError("SMOTE anchor requires non-empty institutional data.")
+        remaining = max(0, num_row - n_public)
+        n_smote = int(round(remaining * smote_ratio))
+        n_smote = min(max(n_smote, 0), remaining)
+        n_gauss = max(0, remaining - n_smote)
+
+        if remaining > 0:
+            if smote_X is None or smote_y is None or smote_X.size == 0 or smote_y.size == 0:
+                raise RuntimeError("SMOTE anchor requires explicit smote_X and smote_y data.")
 
         def _generate_smote_samples(target_rows: int, target_cols: int) -> np.ndarray:
-            X_test_all = np.vstack(Xs_test) if len(Xs_test) > 1 else Xs_test[0]
-            y_test_all = np.hstack(ys_test) if len(ys_test) > 1 else ys_test[0]
-            X0 = np.vstack([X_test_all])
-            y0 = np.hstack([y_test_all])
+            X0 = np.asarray(smote_X)
+            y0 = np.asarray(smote_y).ravel()
 
             columns = target_cols
             if X0.shape[1] < columns:
@@ -121,7 +144,15 @@ def produce_anchor(
                 while len(interpolated) < n_gen:
                     idx = rng.integers(0, Nc)
                     nn_idx = rng.choice(neighbors[idx])
-                    lam = rng.random()
+                    # Allow mild extrapolation beyond [0, 1]
+                    # lam in [ -eps, 1+eps ], default eps=0.1
+                    eps_raw = getattr(config, "smote_extrap_eps", 0.01)
+                    try:
+                        eps = float(eps_raw)
+                    except (TypeError, ValueError):
+                        eps = 0.1
+                    eps = max(0.0, min(eps, 1.0))
+                    lam = rng.uniform(-eps, 1.0 + eps)
                     interpolated.append(Xc[idx] + lam * (Xc[nn_idx] - Xc[idx]))
                 synthetic_list.append(np.vstack(interpolated[:n_gen]))
 
@@ -139,13 +170,19 @@ def produce_anchor(
         samples = []
         effective_cols = num_col
 
+        if n_public > 0 and smote_X is not None:
+            Xpub = np.asarray(smote_X)
+            pub_cols = min(Xpub.shape[1], num_col)
+            samples.append(Xpub[:, :pub_cols])
+            effective_cols = pub_cols
+
         if n_smote > 0:
-            smote_samples = _generate_smote_samples(n_smote, num_col)
+            smote_samples = _generate_smote_samples(n_smote, effective_cols)
             effective_cols = smote_samples.shape[1]
             samples.append(smote_samples)
 
         if n_gauss > 0:
-            gaussian_cols = effective_cols if n_smote > 0 else num_col
+            gaussian_cols = effective_cols if samples else num_col
             samples.append(rng.normal(size=(n_gauss, gaussian_cols)))
 
         if not samples:
@@ -179,7 +216,6 @@ def assign_anchor_labels(
     k: int = 10,
     max_neighbor_dist: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    print(11111234566666666611111)
     if not anchors_inter:
         raise ValueError("assign_anchor_labels requires at least one institution.")
     num_institutions = len(anchors_inter)
