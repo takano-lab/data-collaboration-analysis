@@ -33,6 +33,8 @@ class InstitutionDatasetBuilder:
         self.Xs_test: list = []
         self.ys_train: list = []
         self.ys_test: list = []
+        self.smote_anchor = None
+        self.smote_anchor_y = None
         self.artifacts: DatasetArtifacts | None = None
 
     # ------------------------------------------------------------------ #
@@ -70,6 +72,8 @@ class InstitutionDatasetBuilder:
             ys_test,
             train_df,
             test_df,
+            smote_anchor,
+            smote_anchor_y,
         ) = prepare_institutional_dataset(raw_df, self.config)
 
         return DatasetArtifacts(
@@ -79,6 +83,8 @@ class InstitutionDatasetBuilder:
             Xs_test=list(Xs_test),
             ys_train=list(ys_train),
             ys_test=list(ys_test),
+            smote_anchor=smote_anchor,
+            smote_anchor_y=smote_anchor_y,
         )
 
     def _load_from_store(self) -> DatasetArtifacts | None:
@@ -96,6 +102,8 @@ class InstitutionDatasetBuilder:
         self.Xs_test = list(artifacts.Xs_test)
         self.ys_train = list(artifacts.ys_train)
         self.ys_test = list(artifacts.ys_test)
+        self.smote_anchor = getattr(artifacts, "smote_anchor", None)
+        self.smote_anchor_y = getattr(artifacts, "smote_anchor_y", None)
 
     def _apply_dimension_overrides(self, artifacts: DatasetArtifacts) -> DatasetArtifacts:
         xs_train = artifacts.Xs_train

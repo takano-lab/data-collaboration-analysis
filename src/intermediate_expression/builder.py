@@ -82,6 +82,8 @@ class IntermediateExpressionBuilder:
             raise RuntimeError("Dataset artifacts do not contain institutional splits.")
 
         num_features = dataset.Xs_train[0].shape[1]
+        smote_X = getattr(dataset, "smote_anchor", None)
+        smote_y = getattr(dataset, "smote_anchor_y", None)
         self.anchor = produce_anchor(
             num_row=self.config.num_anchor_data,
             num_col=num_features,
@@ -92,6 +94,8 @@ class IntermediateExpressionBuilder:
             Xs_test=dataset.Xs_test,
             ys_train=dataset.ys_train,
             ys_test=dataset.ys_test,
+            smote_X=smote_X,
+            smote_y=smote_y,
         )
         self.anchor_test = produce_anchor(
             num_row=self.config.num_anchor_data,
@@ -103,6 +107,8 @@ class IntermediateExpressionBuilder:
             Xs_test=dataset.Xs_test,
             ys_train=dataset.ys_train,
             ys_test=dataset.ys_test,
+            smote_X=smote_X,
+            smote_y=smote_y,
         )
 
         projectors = self._build_projectors(dataset)
