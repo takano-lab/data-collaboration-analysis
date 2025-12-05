@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
 from scipy.linalg import eigh
@@ -10,6 +10,7 @@ from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
 from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
+from sklearn.metrics import pairwise_distances
 
 # torch, UMAP は遅延インポート（_run_umap 内で import）
 
@@ -176,6 +177,16 @@ class KCCAScratch:
 # ============================================================
 # 共通ユーティリティ
 # ============================================================
+def median_heuristic_gamma(X: np.ndarray, *, standardize: bool = True) -> float:
+    X = np.asarray(X, dtype=float)
+    if standardize:
+        X = (X - X.mean(axis=0)) / X.std(axis=0, ddof=0)
+
+    D = pairwise_distances(X, metric="euclidean")
+    # 対角は 0 なので除外
+    d = np.median(D[D > 0])
+    gamma = 1.0 / (2.0 * d ** 2)   # RBF: exp(-gamma ||x-y||^2)
+    return float(gamma)
 
 def self_tuning_gamma(
     X: np.ndarray, *,
@@ -205,8 +216,7 @@ def self_tuning_gamma(
         return float(np.mean(gamma_i))
     raise ValueError("summary must be 'median', 'mean', or None")
 
-def _to_tuple4(a, b, c=None, d=None) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
-    return a, b, c, d
+Projector = Callable[[Optional[np.ndarray]], Optional[np.ndarray]]
 
 def _cfg_get(cfg, name, default=None):
     if cfg is None:
@@ -250,94 +260,120 @@ def _cfg_str(cfg, name, default: str) -> str:
         return default
     return s
 
+
+def _resolve_seed(seed: Optional[int], config, default: int = 0) -> int:
+    """
+    seed 引数 -> config.f_seed -> config.seed の優先度でシード値を決める
+    """
+    if seed is not None:
+        return int(seed)
+    f_seed = None
+    if config is not None:
+        f_seed = getattr(config, "f_seed", None)
+    if f_seed is not None:
+        return int(f_seed)
+    return int(_cfg_int(config, "seed", default))
+
 # ============================================================
 # 実行ラッパ（F_type ごとの実装）
 # すべて「4要素タプル (train, test, anchor, anchor_test)」を返す
 # ============================================================
 
-def _run_svd(X_train, X_test, n_components, *, anchor=None, anchor_test=None, **kwargs):
+def _run_svd(X, n_components, **kwargs) -> Projector:
     model = SVDScratch(n_components=n_components, center=True)
-    Xt = model.fit_transform(X_train)
-    Xv = model.transform(X_test)
-    Xa = model.transform(anchor) if anchor is not None else None
-    Xat = model.transform(anchor_test) if anchor_test is not None else None
-    return _to_tuple4(Xt, Xv, Xa, Xat)
+    model.fit(X)
+
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        return model.transform(data)
+
+    return projector
 
 
-def _run_diffspan(X_train, X_test, n_components, *, config=None, anchor=None, anchor_test=None, **kwargs):
+def _run_diffspan(X, n_components, *, config=None, seed=None, **kwargs) -> Projector:
     svd = SVDScratch(n_components=n_components, center=True)
-    Ft_train = svd.fit_transform(X_train)
-    Ft_test = svd.transform(X_test)
-    # 直交性を崩すランダム行列 E
-    seed = 0
-    if config is not None and hasattr(config, "seed") and hasattr(config, "f_seed"):
-        seed = int(config.seed) + int(config.f_seed)
-    rng = np.random.default_rng(seed)
+    svd.fit(X)
+    seed_val = _resolve_seed(seed, config)
+    rng = np.random.default_rng(seed_val)
     E = rng.uniform(low=-1.0, high=1.0, size=(n_components, n_components))
-    Xt = Ft_train @ E
-    Xv = Ft_test @ E
-    Xa = svd.transform(anchor) @ E if anchor is not None else None
-    Xat = svd.transform(anchor_test) @ E if anchor_test is not None else None
-    return _to_tuple4(Xt, Xv, Xa, Xat)
+
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        return svd.transform(data) @ E
+
+    return projector
 
 
-def _run_samespan_orth(X_train, X_test, n_components, *, config=None, anchor=None, anchor_test=None, **kwargs):
-    m = X_train.shape[1]
+def _run_diffspan_orth(X, n_components, *, config=None, seed=None, **kwargs) -> Projector:
+    """
+    diffspan_orth: ほぼ SVD と同じ振る舞い（直交基底）
+    """
+    model = SVDScratch(n_components=n_components, center=True)
+    model.fit(X)
+
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        return model.transform(data)
+
+    return projector
+
+
+def _run_samespan_orth(X, n_components, *, config=None, seed=None, **kwargs) -> Projector:
+    m = X.shape[1]
     l = n_components
     if l > m:
-        raise ValueError("samespan_orth: l(=n_components) は m(特徴量) 以下である必要があります。")
-    # 列直交 F'（seed: f_seed）
-    f_seed = int(getattr(config, "f_seed", 0))
-    rng = np.random.default_rng(f_seed)
+        raise ValueError("samespan_orth: l(=n_components) > 特徴次元 は未対応です")
+    seed_val = _resolve_seed(seed, config)
+    rng = np.random.default_rng(seed_val)
     A = rng.standard_normal(size=(m, l))
     Q, R = np.linalg.qr(A, mode="reduced")
     signs = np.sign(np.diag(R))
     Q *= signs
     F_prime = Q
-    # ランダム直交 E（seedなし）
-    Rmat = np.random.standard_normal(size=(l, l))
+    Rmat = rng.standard_normal(size=(l, l))
     QE, _ = np.linalg.qr(Rmat)
-    E = QE
-    F = F_prime @ E
-    Xt = X_train @ F
-    Xv = X_test @ F
-    Xa = anchor @ F if anchor is not None else None
-    Xat = anchor_test @ F if anchor_test is not None else None
-    return _to_tuple4(Xt, Xv, Xa, Xat)
+    F = F_prime @ QE
 
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        return data @ F
 
-def _run_samespan(X_train, X_test, n_components, *, config=None, anchor=None, anchor_test=None, **kwargs):
-    m = X_train.shape[1]
+    return projector
+
+def _run_samespan(X, n_components, *, config=None, seed=None, **kwargs) -> Projector:
+    m = X.shape[1]
     l = n_components
     if l > m:
-        raise ValueError("samespan: l(=n_components) は m(特徴量) 以下である必要があります。")
-    seed = int(getattr(config, "seed", 0))
-    rng = np.random.default_rng(seed)
+        raise ValueError("samespan: l(=n_components) > 特徴次元 は未対応です")
+    seed_val = _resolve_seed(seed, config)
+    rng = np.random.default_rng(seed_val)
     A = rng.standard_normal(size=(m, l))
     Q, R = np.linalg.qr(A, mode="reduced")
     signs = np.sign(np.diag(R))
     Q *= signs
     F_prime = Q
-    E = np.random.standard_normal(size=(l, l))  # 直交までは要求しない
+    E = rng.standard_normal(size=(l, l))
     F = F_prime @ E
-    Xt = X_train @ F
-    Xv = X_test @ F
-    Xa = anchor @ F if anchor is not None else None
-    Xat = anchor_test @ F if anchor_test is not None else None
-    return _to_tuple4(Xt, Xv, Xa, Xat)
 
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        return data @ F
+
+    return projector
 
 def _run_random_projection(
-    X_train,
-    X_test,
+    X,
     n_components,
     *,
     config=None,
-    anchor=None,
-    anchor_test=None,
     seed=None,
     **kwargs,
-):
+) -> Projector:
     seed_val = seed if seed is not None else _cfg_int(config, "seed", 0)
     proj_kind = _cfg_str(config, "random_projection_type", "gaussian").lower()
     if proj_kind not in ("gaussian", "sparse"):
@@ -355,111 +391,108 @@ def _run_random_projection(
     else:
         model = GaussianRandomProjection(**model_kwargs)
 
-    Xt = model.fit_transform(X_train)
-    Xv = model.transform(X_test)
-    Xa = model.transform(anchor) if anchor is not None else None
-    Xat = model.transform(anchor_test) if anchor_test is not None else None
-    return _to_tuple4(Xt, Xv, Xa, Xat)
+    model.fit(X)
+
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        return model.transform(data)
+
+    return projector
 
 
-def _run_lpp(X_train, X_test, n_components, *, config=None, anchor=None, anchor_test=None, **kwargs):
-    # 近傍数の既定: num_institution_user * 0.2（無い場合は 5）
+def _run_lpp(X, n_components, *, config=None, **kwargs) -> Projector:
     if config is not None and hasattr(config, "num_institution_user") and config.num_institution_user:
         k = max(1, int(config.num_institution_user * 0.2))
     else:
         k = 5
     model = LPPScratch(n_components=n_components, t=0.01, k_neighbors=k)
-    Xt = model.fit_transform(X_train)
-    Xv = model.transform(X_test)
-    Xa = model.transform(anchor) if anchor is not None else None
-    Xat = model.transform(anchor_test) if anchor_test is not None else None
-    return _to_tuple4(Xt, Xv, Xa, Xat)
+    model.fit(X)
 
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        return model.transform(data)
 
-def _run_kcca(X_train, X_test, n_components, *, y_train=None, anchor=None, anchor_test=None, **kwargs):
-    # スケーリング
+    return projector
+
+def _run_kcca(X, n_components, *, y=None, **kwargs) -> Projector:
     scaler = StandardScaler()
-    Xts = scaler.fit_transform(X_train)
-    Xvs = scaler.transform(X_test)
-    Xas = scaler.transform(anchor) if anchor is not None else None
+    Xs = scaler.fit_transform(X)
 
-    # y がカテゴリなら OneHot
-    if y_train is None:
-        raise ValueError("kcca には y_train が必要です")
-    if np.issubdtype(y_train.dtype, np.integer):
+    if y is None:
+        raise ValueError("kcca には y が必要です")
+    if np.issubdtype(np.asarray(y).dtype, np.integer):
         from sklearn.preprocessing import OneHotEncoder
         enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
-        Yv = enc.fit_transform(y_train.reshape(-1, 1))
+        Yv = enc.fit_transform(np.asarray(y).reshape(-1, 1))
     else:
-        Yv = y_train.reshape(-1, 1) if y_train.ndim == 1 else y_train
+        y_arr = np.asarray(y)
+        Yv = y_arr.reshape(-1, 1) if y_arr.ndim == 1 else y_arr
 
-    gamma_x = 1.0 / X_train.shape[1]
+    gamma_x = 1.0 / X.shape[1]
     model = KCCAScratch(n_components=n_components, reg=1e-4, kernel_x='rbf', kernel_y='linear', gamma_x=gamma_x)
-    Xt = model.fit_transform(Xts, Yv)
-    Xv = model.transform(Xvs)
-    Xa = model.transform(Xas) if Xas is not None else None
-    # anchor_test は y が無いので変換不可
-    return _to_tuple4(Xt, Xv, Xa, None)
+    model.fit(Xs, Yv)
 
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        data_scaled = scaler.transform(data)
+        return model.transform(data_scaled)
 
-def _run_kpca_family(X_train, X_test, n_components, *, mode: str, config=None, seed=None,
-                     anchor=None, anchor_test=None, **kwargs):
-    """
-    mode in {"auto", "kernel_pca_self_tuning"}
-    """
+    return projector
+
+def _run_kpca_family(X, n_components, *, mode: str, config=None, seed=None, **kwargs) -> Projector:
     scaler = StandardScaler()
-    Xts = scaler.fit_transform(X_train)
-    Xvs = scaler.transform(X_test)
-    Xas = scaler.transform(anchor) if anchor is not None else None
-    Xats = scaler.transform(anchor_test) if anchor_test is not None else None
+    Xts = scaler.fit_transform(X)
 
     if mode == "auto":
-        gamma = 1.0 / X_train.shape[1]
+        gamma = 1.0 / X.shape[1]
         ratio = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 1.0
         gamma *= ratio
     elif mode == "kernel_pca_self_tuning":
-        gamma = self_tuning_gamma(Xts, standardize=False, k=7, summary='median')
+        #gamma = self_tuning_gamma(Xts, standardize=False, k=7, summary='median')
+        gamma = median_heuristic_gamma(Xts, standardize=False)
         ratio = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 1.0
         gamma *= ratio
-        if config is not None:
-            if not hasattr(config, "nl_gammas") or config.nl_gammas is None:
-                config.nl_gammas = []
-            config.nl_gammas.append(gamma)
     elif mode == "kernel_pca_gamma_fixed":
-        gamma = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 0.0001
-        if config is not None:
-            if not hasattr(config, "nl_gammas") or config.nl_gammas is None:
-                config.nl_gammas = []
-            config.nl_gammas.append(gamma)
+        gamma = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 1e-4
     else:
         raise ValueError(f"unknown kpca mode: {mode}")
-    
-    model = KernelPCA(n_components=n_components, kernel="rbf", gamma=gamma, eigen_solver="auto", n_jobs=-1)
-    Xt = model.fit_transform(Xts)
-    Xv = model.transform(Xvs)
-    Xa = model.transform(Xas) if Xas is not None else None
-    Xat = model.transform(Xats) if Xats is not None else None
-    return _to_tuple4(Xt, Xv, Xa, Xat)
 
-# 追加: UMAP ランナー
+    model = KernelPCA(n_components=n_components, kernel="rbf", gamma=gamma, eigen_solver="auto", n_jobs=-1)
+    model.fit(Xts)
+
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        data_scaled = scaler.transform(data)
+        return model.transform(data_scaled)
+
+    return projector
+
 def _run_umap(
-    X_train, X_test, n_components, *, config=None, anchor=None, anchor_test=None, **kwargs
-):
-    # 遅延インポート（使う時だけ読み込む）
+    X, n_components, *, config=None, seed=None, **kwargs
+) -> Projector:
     try:
         from umap import UMAP
     except Exception as e:
-        raise RuntimeError("UMAPを使うには 'umap-learn' が必要です。uv sync -E umap で導入してください。") from e
+        raise RuntimeError("UMAP を利用するには 'umap-learn' のインストールが必要です") from e
 
     scaler = StandardScaler()
-    Xts = scaler.fit_transform(X_train)
-    Xvs = scaler.transform(X_test)
-    Xas = scaler.transform(anchor) if anchor is not None else None
-    Xats = scaler.transform(anchor_test) if anchor_test is not None else None
+    Xts = scaler.fit_transform(X)
 
     # metric は seed%3 で切替、n_neighbors と min_dist は seed に応じてランダム化。
-    # f_seed を優先して使用（なければ seed）
-    seed = int(getattr(config, "f_seed", _cfg_int(config, "seed", 0)))
+    # 明示的に渡された seed -> f_seed -> seed の優先順位で決定
+    seed_val = seed
+    if seed_val is None and config is not None:
+        seed_val = getattr(config, "f_seed", None)
+        print(f"UMAP f_seed: {seed_val}")
+    if seed_val is None:
+        seed_val = _cfg_int(config, "seed", 0)
+        print(f"UMAP seed: {seed_val}")
+    seed = int(seed_val)
+    print(f"UMAP seed: {seed}")
     metric_choices = ("correlation", "cosine", "euclidean")
     metric = metric_choices[seed % 3]
     rng = np.random.default_rng(seed + 1337)
@@ -468,7 +501,11 @@ def _run_umap(
     n_neighbors = max(2, min(nn_sample, max(2, Xts.shape[0] - 1)))
     # min_dist: 0.05〜0.8 の一様連続
     min_dist = float(rng.uniform(0.0, 0.8))
-
+    
+    #min_dist = 0.1
+    #n_neighbors = 15
+    #metric = "euclidean"
+    
     # 追加オプション（必要に応じて）
     extra_params = {}
     tm = _cfg_str(config, "umap_transform_mode", None)
@@ -483,6 +520,8 @@ def _run_umap(
     mix = _cfg_float(config, "umap_set_op_mix_ratio", None)
     if mix is not None:
         extra_params["set_op_mix_ratio"] = float(mix)
+    
+    #extra_params["repulsion_strength"] = 2.0
 
     model = UMAP(
         n_components=n_components,
@@ -492,19 +531,110 @@ def _run_umap(
         random_state=int(seed),
         **extra_params,
     )
-    Xt = model.fit_transform(Xts)
-    Xv = model.transform(Xvs)
-    Xa = model.transform(Xas) if Xas is not None else None
-    Xat = model.transform(Xats) if Xats is not None else None
-    return _to_tuple4(Xt, Xv, Xa, Xat)
+    model.fit(Xts)
+
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        data_scaled = scaler.transform(data)
+        return model.transform(data_scaled)
+
+    return projector
 
 
-# 追加: Diffusion Maps ランナー（Nyström 拡張付き）
+def _run_supervised_umap(
+    X, n_components, *, y=None, config=None, seed=None, **kwargs
+) -> Projector:
+    """
+    y を用いた supervised UMAP。
+    乱数に関する挙動（seed から metric / n_neighbors / min_dist を決める）は
+    _run_umap と同一に保つ。
+    """
+    try:
+        from umap import UMAP
+    except Exception as e:
+        raise RuntimeError("UMAP を利用するには 'umap-learn' のインストールが必要です") from e
+
+    if y is None:
+        raise ValueError("supervised_umap には y が必要です")
+
+    y_arr = np.asarray(y)
+    if y_arr.shape[0] != X.shape[0]:
+        raise ValueError("supervised_umap: X と y のサンプル数が一致していません")
+
+    scaler = StandardScaler()
+    Xts = scaler.fit_transform(X)
+
+    # _run_umap と同じ seed ロジック
+    seed_val = seed
+    if seed_val is None and config is not None:
+        seed_val = getattr(config, "f_seed", None)
+        print(f"Supervised UMAP f_seed: {seed_val}")
+    if seed_val is None:
+        seed_val = _cfg_int(config, "seed", 0)
+        print(f"Supervised UMAP seed: {seed_val}")
+    seed = int(seed_val)
+    print(f"Supervised UMAP seed: {seed}")
+
+    metric_choices = ("correlation", "cosine", "euclidean")
+    metric = metric_choices[seed % 3]
+    rng = np.random.default_rng(seed + 1337)
+    nn_sample = int(rng.integers(low=2, high=8))  # high は排他的上限
+    n_neighbors = max(2, min(nn_sample, max(2, Xts.shape[0] - 1)))
+    min_dist = float(rng.uniform(0.0, 0.8))
+
+    extra_params = {}
+    tm = _cfg_str(config, "umap_transform_mode", None)
+    if tm:
+        extra_params["transform_mode"] = tm
+    rs = _cfg_float(config, "umap_repulsion_strength", None)
+    if rs is not None:
+        extra_params["repulsion_strength"] = float(rs)
+    init = _cfg_str(config, "umap_init", None)
+    if init:
+        extra_params["init"] = init
+    mix = _cfg_float(config, "umap_set_op_mix_ratio", None)
+    if mix is not None:
+        extra_params["set_op_mix_ratio"] = float(mix)
+
+    target_metric = _cfg_str(config, "umap_target_metric", None)
+    if target_metric is None:
+        if np.issubdtype(y_arr.dtype, np.integer):
+            target_metric = "categorical"
+        else:
+            target_metric = "euclidean"
+    extra_params["target_metric"] = target_metric
+
+    # ラベル分離を強めたい場合の重み（0〜1）。指定がなければやや強めの 0.8。
+    tw = _cfg_float(config, "umap_target_weight", None)
+    if tw is None:
+        tw = 0.5
+    tw = float(max(0.0, min(1.0, tw)))
+    extra_params["target_weight"] = tw
+
+    model = UMAP(
+        n_components=n_components,
+        n_neighbors=int(n_neighbors),
+        min_dist=float(min_dist),
+        metric=metric,
+        random_state=int(seed),
+        **extra_params,
+    )
+    model.fit(Xts, y_arr)
+
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        data_scaled = scaler.transform(data)
+        return model.transform(data_scaled)
+
+    return projector
+
 def _run_dm(
-    X_train, X_test, n_components, *, config=None, anchor=None, anchor_test=None, **kwargs
-):
-    def _median_gamma(X: np.ndarray) -> float:
-        D = pairwise_distances(X, metric="euclidean")
+    X, n_components, *, config=None, **kwargs
+) -> Projector:
+    def _median_gamma(X_arr: np.ndarray) -> float:
+        D = pairwise_distances(X_arr, metric="euclidean")
         vals = D[D > 0]
         med = np.median(vals) if vals.size else 1.0
         if not np.isfinite(med) or med <= 0:
@@ -512,17 +642,13 @@ def _run_dm(
         return 1.0 / (2.0 * (med ** 2))
 
     scaler = StandardScaler()
-    Xts = scaler.fit_transform(X_train)
-    Xvs = scaler.transform(X_test)
-    Xas = scaler.transform(anchor) if anchor is not None else None
-    Xats = scaler.transform(anchor_test) if anchor_test is not None else None
+    Xts = scaler.fit_transform(X)
 
     gamma = _cfg_float(config, "dm_gamma", -1.0)
     if gamma is None or gamma <= 0:
         gamma = _median_gamma(Xts)
     t = _cfg_float(config, "dm_t", 1.0)
 
-    # K, P を学習データ上で構築
     D2 = pairwise_distances(Xts, metric="sqeuclidean")
     K = np.exp(-gamma * D2)
     np.fill_diagonal(K, 0.0)
@@ -531,49 +657,42 @@ def _run_dm(
     P = K / d
 
     w, V = np.linalg.eig(P)
-    # 実部へ
     w = np.real(w)
     V = np.real(V)
     order = np.argsort(-np.abs(w))
     w = w[order]
     V = V[:, order]
-    # 先頭(λ≈1)は無視して次の n_components を使用
-    start = 1 if V.shape[1] > 1 else 0
-    k = min(n_components, max(0, V.shape[1] - start))
-    eigvals_sel = w[start:start + k]
-    eigvecs_sel = V[:, start:start + k]
-    # 拡散距離スケール（t乗）
-    if k > 0:
-        scale = np.power(np.abs(eigvals_sel), t)
-        Xt = eigvecs_sel * scale
-    else:
-        Xt = np.zeros((Xts.shape[0], 0))
+    start_idx = 1 if V.shape[1] > 1 else 0
+    k = min(n_components, max(0, V.shape[1] - start_idx))
+    eigvals_sel = w[start_idx:start_idx + k]
+    eigvecs_sel = V[:, start_idx:start_idx + k]
+    scale = np.power(np.abs(eigvals_sel), t) if k > 0 else np.array([])
 
     def _embed_new(Xnew: np.ndarray) -> np.ndarray:
         if k == 0 or Xnew is None:
-            return None
+            return np.zeros((0, 0)) if Xnew is None else np.zeros((Xnew.shape[0], 0))
+        Xnew = scaler.transform(Xnew)
         D2n = pairwise_distances(Xnew, Xts, metric="sqeuclidean")
         Kny = np.exp(-gamma * D2n)
         row = Kny.sum(axis=1, keepdims=True)
         row[row == 0] = 1.0
         Pny = Kny / row
-        # Nyström: phi_j(y) = (1/lambda_j) sum_i P(y,i) phi_j(i) ; その後 t 乗でスケール
         Phi = (Pny @ eigvecs_sel) / np.maximum(np.abs(eigvals_sel), 1e-12)
-        Phi *= np.power(np.abs(eigvals_sel), t)
+        Phi *= scale
         return Phi
 
-    Xv = _embed_new(Xvs)
-    Xa = _embed_new(Xas) if Xas is not None else None
-    Xat = _embed_new(Xats) if Xats is not None else None
-    return _to_tuple4(Xt, Xv, Xa, Xat)
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        return _embed_new(data)
 
+    return projector
 
-# 追加: Laplacian Eigenmaps ランナー（RBF+KNN, Nyström 拡張）
 def _run_le(
-    X_train, X_test, n_components, *, config=None, anchor=None, anchor_test=None, **kwargs
-):
-    def _median_gamma(X: np.ndarray) -> float:
-        D = pairwise_distances(X, metric="euclidean")
+    X, n_components, *, config=None, **kwargs
+) -> Projector:
+    def _median_gamma(X_arr: np.ndarray) -> float:
+        D = pairwise_distances(X_arr, metric="euclidean")
         vals = D[D > 0]
         med = np.median(vals) if vals.size else 1.0
         if not np.isfinite(med) or med <= 0:
@@ -581,10 +700,7 @@ def _run_le(
         return 1.0 / (2.0 * (med ** 2))
 
     scaler = StandardScaler()
-    Xts = scaler.fit_transform(X_train)
-    Xvs = scaler.transform(X_test)
-    Xas = scaler.transform(anchor) if anchor is not None else None
-    Xats = scaler.transform(anchor_test) if anchor_test is not None else None
+    Xts = scaler.fit_transform(X)
 
     k_nb = _cfg_int(config, "le_neighbors", 10)
     gamma = _cfg_float(config, "le_gamma", -1.0)
@@ -592,7 +708,6 @@ def _run_le(
         gamma = _median_gamma(Xts)
 
     n = Xts.shape[0]
-    # KNN グラフ作成（対称化）
     nn = NearestNeighbors(n_neighbors=min(max(1, k_nb), max(1, n - 1))).fit(Xts)
     ind = nn.kneighbors(return_distance=False)
     W = np.zeros((n, n), dtype=float)
@@ -603,34 +718,31 @@ def _run_le(
             diff = Xts[i] - Xts[j]
             w = np.exp(-gamma * float(np.dot(diff, diff)))
             W[i, j] = w
-            W[j, i] = max(W[j, i], w)  # 対称化（最大）
+            W[j, i] = max(W[j, i], w)
     D = np.diag(W.sum(axis=1))
     D_sqrt_inv = np.diag(1.0 / np.maximum(np.sqrt(np.diag(D)), 1e-12))
-    Lsym = D_sqrt_inv @ W @ D_sqrt_inv  # = I - L_norm ではなく、類似度正規化（固有値は [0,1]）
+    Lsym = D_sqrt_inv @ W @ D_sqrt_inv
 
-    # 固有分解（最大固有値の次から n_components）
     evals, evecs = eigh(Lsym)
-    order = np.argsort(evals)[::-1]  # 大きい順
+    order = np.argsort(evals)[::-1]
     evals = evals[order]
     evecs = evecs[:, order]
-    start = 1 if evecs.shape[1] > 1 else 0  # 先頭はトリビアル
-    k = min(n_components, max(0, evecs.shape[1] - start))
-    U = evecs[:, start:start + k]
-    Xt = U
-
-    # Nyström 拡張: psi_j(y) ≈ (1/sqrt(d(y))) Σ_i W(y,i)/sqrt(d_i) * psi_j(i)
+    start_idx = 1 if evecs.shape[1] > 1 else 0
+    k = min(n_components, max(0, evecs.shape[1] - start_idx))
+    U = evecs[:, start_idx:start_idx + k]
     d_i_sqrt = np.sqrt(np.maximum(np.diag(D), 1e-12))
 
     def _embed_new(Xnew: np.ndarray) -> np.ndarray:
-        if Xnew is None or k == 0:
-            return None
+        if k == 0 or Xnew is None:
+            return np.zeros((0, 0)) if Xnew is None else np.zeros((Xnew.shape[0], 0))
+        Xnew_std = scaler.transform(Xnew)
         nn_new = NearestNeighbors(n_neighbors=min(max(1, k_nb), n)).fit(Xts)
-        neigh_ind = nn_new.kneighbors(Xnew, return_distance=False)
-        Z = np.zeros((Xnew.shape[0], k), dtype=float)
+        neigh_ind = nn_new.kneighbors(Xnew_std, return_distance=False)
+        Z = np.zeros((Xnew_std.shape[0], k), dtype=float)
         for r, nbrs in enumerate(neigh_ind):
             wrow = np.zeros(n, dtype=float)
             for j in nbrs:
-                diff = Xnew[r] - Xts[j]
+                diff = Xnew_std[r] - Xts[j]
                 wrow[j] = np.exp(-gamma * float(np.dot(diff, diff)))
             d_y = wrow.sum()
             if d_y <= 0:
@@ -639,23 +751,23 @@ def _run_le(
             Z[r] = (coef @ U) / np.sqrt(d_y)
         return Z
 
-    Xv = _embed_new(Xvs)
-    Xa = _embed_new(Xas) if Xas is not None else None
-    Xat = _embed_new(Xats) if Xats is not None else None
-    return _to_tuple4(Xt, Xv, Xa, Xat)
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        return _embed_new(data)
+
+    return projector
 
 def _run_autoencoder(
-    X_train, X_test, n_components, *, config=None, anchor=None, anchor_test=None, **kwargs
-):
-    # 遅延インポート（使う時だけ読み込む）
+    X, n_components, *, config=None, **kwargs
+) -> Projector:
     try:
         import torch
         import torch.nn as nn
         from torch.utils.data import DataLoader, TensorDataset, random_split
     except Exception as e:
-        raise RuntimeError("AutoEncoderを使うには 'torch' が必要です。uv sync -E ae で導入してください。") from e
+        raise RuntimeError("AutoEncoder を利用するには 'torch' が必要です") from e
 
-    # 乱数・決定論モード設定（AE全体の再現性を担保）
     ae_seed = 0
     try:
         base_seed = int(_cfg_int(config, "seed", 0))
@@ -664,7 +776,6 @@ def _run_autoencoder(
     except Exception:
         ae_seed = 0
     try:
-        import torch
         torch.manual_seed(ae_seed)
         try:
             torch.cuda.manual_seed_all(ae_seed)
@@ -676,7 +787,6 @@ def _run_autoencoder(
         except Exception:
             pass
         try:
-            # 一部環境で未提供のため warn_only=True で呼ぶ
             torch.use_deterministic_algorithms(True, warn_only=True)
         except Exception:
             pass
@@ -691,18 +801,12 @@ def _run_autoencoder(
     except Exception:
         pass
 
-    # スケーリング
     scaler = StandardScaler()
-    Xts = scaler.fit_transform(X_train).astype(np.float32)
-    Xvs = scaler.transform(X_test).astype(np.float32)
-    Xas = scaler.transform(anchor).astype(np.float32) if anchor is not None else None
-    Xats = scaler.transform(anchor_test).astype(np.float32) if anchor_test is not None else None
+    Xts = scaler.fit_transform(X).astype(np.float32)
 
-    # ここを安全取得に変更
     epochs = _cfg_int(config, "ae_epochs", 20)
     batch = _cfg_int(config, "ae_batch", 256)
 
-    # モデル定義（ここで nn を使える）
     class _AE(nn.Module):
         def __init__(self, input_dim: int, latent_dim: int):
             super().__init__()
@@ -719,69 +823,72 @@ def _run_autoencoder(
         def forward(self, x):
             z = self.encoder(x)
             xhat = self.decoder(z)
-            return xhat
+            return xhat, z
 
-    def _train_torch_autoencoder(X_train_np: np.ndarray, input_dim: int, latent_dim: int) -> "_AE":
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = _AE(input_dim, latent_dim).to(device)
-        opt = torch.optim.Adam(model.parameters(), lr=1e-3)
-        crit = nn.MSELoss()
+    input_dim = Xts.shape[1]
+    model = _AE(input_dim, n_components)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    dataset = TensorDataset(torch.from_numpy(Xts))
+    val_ratio = 0.1
+    val_size = max(1, int(len(dataset) * val_ratio))
+    train_size = len(dataset) - val_size
+    train_set, val_set = random_split(dataset, [train_size, val_size])
+    dl_tr = DataLoader(train_set, batch_size=batch, shuffle=True)
+    dl_va = DataLoader(val_set, batch_size=batch, shuffle=False)
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    crit = nn.MSELoss()
 
-        X = torch.from_numpy(X_train_np.astype(np.float32))
-        ds = TensorDataset(X)
-        n_total = len(ds)
-        n_val = max(1, int(0.1 * n_total))
-        n_tr = max(1, n_total - n_val)
-        # データ分割もシードを共有
-        tr_set, va_set = random_split(ds, [n_tr, n_val], generator=torch.Generator().manual_seed(ae_seed))
-        # DataLoader のシャッフルも決定論的（グローバルseed設定済み）
-        dl_tr = DataLoader(tr_set, batch_size=batch, shuffle=True, num_workers=0)
-        dl_va = DataLoader(va_set, batch_size=batch, shuffle=False, num_workers=0)
-
-        best_state, best_val, patience, bad = None, float("inf"), 3, 0
-        for _ in range(epochs):
-            model.train()
-            for (xb,) in dl_tr:
+    best_state, best_val, patience, bad = None, float("inf"), 3, 0
+    for _ in range(epochs):
+        model.train()
+        for (xb,) in dl_tr:
+            xb = xb.to(device)
+            opt.zero_grad()
+            recon, _ = model(xb)
+            loss = crit(recon, xb)
+            loss.backward()
+            opt.step()
+        model.eval()
+        va = 0.0
+        with torch.no_grad():
+            for (xb,) in dl_va:
                 xb = xb.to(device)
-                opt.zero_grad()
-                loss = crit(model(xb), xb)
-                loss.backward()
-                opt.step()
-            # val
-            model.eval()
-            va = 0.0
-            with torch.no_grad():
-                for (xb,) in dl_va:
-                    xb = xb.to(device)
-                    va += crit(model(xb), xb).item() * xb.size(0)
-            va /= max(1, len(va_set))
-            if va + 1e-8 < best_val:
-                best_val = va
-                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-                bad = 0
-            else:
-                bad += 1
-                if bad >= patience:
-                    break
+                recon, _ = model(xb)
+                va += crit(recon, xb).item() * xb.size(0)
+        va /= max(1, len(val_set))
+        if va + 1e-8 < best_val:
+            best_val = va
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            bad = 0
+        else:
+            bad += 1
+            if bad >= patience:
+                break
 
-        if best_state is not None:
-            model.load_state_dict(best_state)
-        model.to("cpu")
-        return model
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    model.to("cpu")
+    model.eval()
 
-    model = _train_torch_autoencoder(Xts, input_dim=Xts.shape[1], latent_dim=int(n_components))
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        arr = scaler.transform(data).astype(np.float32)
+        with torch.no_grad():
+            z = model.encoder(torch.from_numpy(arr))
+        return z.numpy()
 
-    with torch.no_grad():
-        Xt = model.encoder(torch.from_numpy(Xts)).numpy()
-        Xv = model.encoder(torch.from_numpy(Xvs)).numpy()
-        Xa = model.encoder(torch.from_numpy(Xas)).numpy() if Xas is not None else None
-        Xat = model.encoder(torch.from_numpy(Xats)).numpy() if Xats is not None else None
-    return _to_tuple4(Xt, Xv, Xa, Xat)
+    return projector
 
-# F_type → 実行関数マップ
+# ============================================================
+# 公開API
+# ============================================================
+
 _RUNNERS: Dict[str, Any] = {
     "svd": _run_svd,
     "diffspan": _run_diffspan,
+    "diffspan_orth": _run_diffspan_orth,
     "samespan_orth": _run_samespan_orth,
     "samespan": _run_samespan,
     "random_projection": _run_random_projection,
@@ -790,39 +897,34 @@ _RUNNERS: Dict[str, Any] = {
     "kernel_pca": lambda *a, **kw: _run_kpca_family(*a, mode="auto", **kw),
     "kernel_pca_self_tuning": lambda *a, **kw: _run_kpca_family(*a, mode="kernel_pca_self_tuning", **kw),
     "kernel_pca_gamma_fixed": lambda *a, **kw: _run_kpca_family(*a, mode="kernel_pca_gamma_fixed", **kw),
-    # 追加
     "umap": _run_umap,
+    "supervised_umap": _run_supervised_umap,
     "dm": _run_dm,
     "le": _run_le,
     "autoencoder": _run_autoencoder,
     "ae": _run_autoencoder,
 }
 
-# ============================================================
-# 公開API
-# ============================================================
 
-def reduce_dimensions(
-    X_train: np.ndarray,
-    X_test: np.ndarray,
+def build_dimensionality_projector(
+    X: np.ndarray,
     n_components: int,
-    y_train: Optional[np.ndarray] = None,
-    anchor: Optional[np.ndarray] = None,
-    anchor_test: Optional[np.ndarray] = None,
+    *,
+    y: Optional[np.ndarray] = None,
     F_type: str = "kernel_pca",
     seed: Optional[int] = None,
     param: Any = None,
     config: Any = None,
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
-    """
-    次元削減の統一エントリポイント。
-    常に (X_train_reduced, X_test_reduced, anchor_reduced or None, anchor_test_reduced or None) を返す。
-    """
+) -> Projector:
     if F_type not in _RUNNERS:
         raise ValueError(f"未知の F_type: {F_type}")
     runner = _RUNNERS[F_type]
     return runner(
-        X_train, X_test, n_components,
-        y_train=y_train, anchor=anchor, anchor_test=anchor_test,
-        F_type=F_type, seed=seed, param=param, config=config
+        X,
+        n_components,
+        y=y,
+        seed=seed,
+        param=param,
+        config=config,
     )
+

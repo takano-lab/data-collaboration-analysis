@@ -56,3 +56,8 @@ profile = "black"
 
 [tool.hatch.build.targets.wheel]
 packages = ["datacollaborationanalysis"]
+
+[tool.pytest.ini_options]
+markers = [
+  "slow: mark tests that take a long time to finish",
+]

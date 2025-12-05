@@ -23,7 +23,7 @@ def record_config(cfg: "Config", csv_path: CsvPath) -> None:
     csv_path : str | Path
         CSV ファイルの保存先（存在しなければ自動作成）
     """
-    exclude = set(["output_path", "input_path", "name", "seed", "y_name", "eigenvalues", "nl_gammas", "g_abs_sum", "nl_lambda_opt", "nl_gamma_opt", "plot_name", "lambda_gen_eigen", "objective_direction_ratio", "lambda_pred", "lambda_offdiag", "semi_integ", "orth_ver", "f_seed_2", "jreg_gep", "g_norm_val_gep", "sum_objective_function", "g_mean_var", "g_condition_number", "集中解析", "個別解析", "now", "df_name", "intermediate_name"])
+    exclude = set(["output_path", "input_path", "name", "seed", "y_name", "eigenvalues", "nl_gammas", "g_abs_sum", "nl_lambda_opt", "nl_gamma_opt", "plot_name", "lambda_gen_eigen", "lambda_pred", "lambda_offdiag", "semi_integ", "orth_ver", "f_seed_2", "jreg_gep", "g_norm_val_gep", "sum_objective_function", "g_mean_var", "g_condition_number", "集中解析", "個別解析", "now", "df_name", "intermediate_name", "V_sel", "lambdas"])
     row = {k: v for k, v in cfg.__dict__.items() if k not in exclude}
     _append_row(row, csv_path)
 
@@ -104,10 +104,8 @@ def record_value_to_cfg(
     filename: str = "output.csv",
 ) -> None:
     """
-    cfg.output_path/filename に (column,value) を格納。
-    - 列が無ければ追加
-    - 最後の行のその列が "" ならそこを書き換え
-    - 既に値が入っていれば新しい行として追記
+cfg.output_path/filename に (column,value) を追記する。
+大きなファイルでもメモリを使いすぎないよう、1 行ずつ読み書きする。
     """
     from pathlib import Path
     import csv
@@ -116,43 +114,45 @@ def record_value_to_cfg(
     csv_path = Path(cfg.output_path) / filename
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # ---------------- 1) ファイル読み込み (ヘッダーも) -----------------
-    rows: list[list[str]]
+    temp_path = csv_path.with_suffix(csv_path.suffix + ".tmp")
+
     if csv_path.exists():
-        rows = csv_path.read_text(encoding="utf-8").splitlines()
-        rows = [r.split(",") for r in rows]
-        header = rows[0]
+        with csv_path.open("r", newline="", encoding="utf-8") as in_f, temp_path.open("w", newline="", encoding="utf-8") as out_f:
+            reader = csv.reader(in_f)
+            writer = csv.writer(out_f)
+            try:
+                header = next(reader)
+            except StopIteration:
+                header = []
+            if column not in header:
+                header.append(column)
+            col_idx = header.index(column)
+            writer.writerow(header)
+
+            prev_row = None
+            for row in reader:
+                row.extend([""] * (len(header) - len(row)))
+                if prev_row is not None:
+                    writer.writerow(prev_row)
+                prev_row = row
+
+            if prev_row is None:
+                prev_row = [""] * len(header)
+
+            if prev_row[col_idx] == "":
+                prev_row[col_idx] = str(value)
+                writer.writerow(prev_row)
+            else:
+                writer.writerow(prev_row)
+                new_row = [""] * len(header)
+                new_row[col_idx] = str(value)
+                writer.writerow(new_row)
     else:
-        header, rows = [], []
+        header = [column]
+        with temp_path.open("w", newline="", encoding="utf-8") as out_f:
+            writer = csv.writer(out_f)
+            writer.writerow(header)
+            writer.writerow([str(value)])
 
-    # ---------------- 2) ヘッダー拡張 -----------------
-    if column not in header:
-        header.append(column)
-        # 古い行の足りない列を空白で埋める
-        for r in rows[1:]:
-            r.extend([""] * (len(header) - len(r)))
-    n_cols = len(header)
-
-    # ---------------- 3) 最終行をチェック -----------------
-    if len(rows) <= 1:  # データ行が無い → 新行
-        target_row = [""] * n_cols
-        rows.append(target_row)
-    else:
-        target_row = rows[-1]
-        target_row.extend([""] * (n_cols - len(target_row)))  # 列合わせ
-
-    if target_row[header.index(column)] == "":
-        # 空欄ならここへ格納
-        target_row[header.index(column)] = str(value)
-    else:
-        # 既に埋まっていれば新たな行を append
-        new_row = [""] * n_cols
-        new_row[header.index(column)] = str(value)
-        rows.append(new_row)
-
-    # ---------------- 4) ファイル書き戻し -----------------
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-        writer.writerows(rows[1:] if rows and rows[0] == header else rows)
+    temp_path.replace(csv_path)
 
