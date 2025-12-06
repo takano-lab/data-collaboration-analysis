@@ -23,7 +23,8 @@ def produce_anchor(
     ys_test: Sequence[np.ndarray],
     smote_X: Optional[np.ndarray] = None,
     smote_y: Optional[np.ndarray] = None,
-) -> np.ndarray:
+    return_labels: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """
     Build anchor samples according to config.anchor_method.
     """
@@ -56,16 +57,7 @@ def produce_anchor(
         return col_min + U * width
 
     if method == "smote":
-        
         rng = np.random.default_rng(seed)
-
-        # X_test_all = np.vstack(Xs_test)
-        # y_test_all = np.hstack(ys_test)
-
-        # n_public = min(config.num_institution_user, X_test_all.shape[0])  # 何個にするかは好みで
-        # idx = rng.choice(X_test_all.shape[0], size=n_public, replace=False)
-        # smote_X = X_test_all[idx]
-        # smote_y = y_test_all[idx]
 
         smote_ratio = getattr(config, "smote_ratio", 1.0)
         try:
@@ -76,54 +68,78 @@ def produce_anchor(
 
         # Public anchor data used as part of anchors, with the remainder filled by SMOTE/Gaussian.
         n_public = int(smote_X.shape[0]) if smote_X is not None else 0
-        if n_public >= num_row and smote_X is not None:
-            Xpub = np.asarray(smote_X)
-            if Xpub.shape[1] < num_col:
-                num_col_eff = Xpub.shape[1]
-            else:
-                num_col_eff = num_col
-            idx = rng.choice(Xpub.shape[0], size=num_row, replace=False)
-            return Xpub[idx, :num_col_eff]
+        y_public = np.asarray(smote_y).ravel() if smote_y is not None else None
+        if n_public <= 0 or y_public is None or y_public.size != n_public:
+            raise RuntimeError("SMOTE anchor requires explicit smote_X and smote_y data.")
+
+        X0_full = np.asarray(smote_X)
+        columns = min(X0_full.shape[1], num_col)
+        X0 = X0_full[:, :columns]
+        y0 = y_public
+
+        # If public data already exceeds required anchors, sample a subset.
+        if n_public >= num_row:
+            idx = rng.choice(n_public, size=num_row, replace=False)
+            anchor = X0[idx]
+            anchor_labels = y0[idx]
+            if return_labels:
+                return anchor, anchor_labels
+            return anchor
 
         remaining = max(0, num_row - n_public)
         n_smote = int(round(remaining * smote_ratio))
         n_smote = min(max(n_smote, 0), remaining)
         n_gauss = max(0, remaining - n_smote)
 
-        if remaining > 0:
-            if smote_X is None or smote_y is None or smote_X.size == 0 or smote_y.size == 0:
-                raise RuntimeError("SMOTE anchor requires explicit smote_X and smote_y data.")
+        classes, counts = np.unique(y0, return_counts=True)
+        N_total = int(len(y0))
+        if N_total == 0:
+            X_rand = rng.normal(size=(num_row, columns))
+            y_rand = np.full((num_row,), np.nan)
+            if return_labels:
+                return X_rand, y_rand
+            return X_rand
 
-        def _generate_smote_samples(target_rows: int, target_cols: int) -> np.ndarray:
-            X0 = np.asarray(smote_X)
-            y0 = np.asarray(smote_y).ravel()
+        # decide same-label vs cross-label fraction within SMOTE portion
+        raw = getattr(config, "smote_cross_label_ratio", None)
+        if raw in (None, ""):
+            cross_ratio = 0.1
+        else:
+            try:
+                cross_ratio = float(raw)
+            except (TypeError, ValueError):
+                cross_ratio = 0.1
+        cross_ratio = max(0.0, min(cross_ratio, 1.0))
 
-            columns = target_cols
-            if X0.shape[1] < columns:
-                columns = X0.shape[1]
-            X0_clip = X0[:, :columns]
+        n_cross = int(round(n_smote * cross_ratio)) if len(classes) > 1 else 0
+        n_cross = min(max(n_cross, 0), n_smote)
+        n_same = max(0, n_smote - n_cross)
 
-            classes, counts = np.unique(y0, return_counts=True)
-            N_total = int(len(y0))
-            if N_total == 0:
-                return rng.normal(size=(target_rows, columns))
+        # allocate same-label samples per class
+        same_target_counts: list[int] = []
+        allocated = 0
+        for i, _ in enumerate(classes):
+            if i < len(classes) - 1:
+                n_c = int(round(n_same * (counts[i] / N_total))) if n_same > 0 else 0
+                same_target_counts.append(n_c)
+                allocated += n_c
+            else:
+                same_target_counts.append(max(0, n_same - allocated))
 
-            target_counts = []
-            allocated = 0
-            for i, _ in enumerate(classes):
-                if i < len(classes) - 1:
-                    n_c = int(round(target_rows * (counts[i] / N_total)))
-                    target_counts.append(n_c)
-                    allocated += n_c
-                else:
-                    target_counts.append(target_rows - allocated)
+        X_parts: list[np.ndarray] = []
+        y_parts: list[np.ndarray] = []
 
-            synthetic_list = []
-            for c, n_gen in zip(classes, target_counts):
+        # 1) public anchors
+        X_parts.append(X0)
+        y_parts.append(y0)
+
+        # 2) same-label SMOTE
+        if n_same > 0:
+            for c, n_gen in zip(classes, same_target_counts):
                 if n_gen <= 0:
                     continue
                 mask = (y0 == c)
-                Xc = X0_clip[mask]
+                Xc = X0[mask]
                 Nc = Xc.shape[0]
                 if Nc == 0:
                     continue
@@ -132,66 +148,85 @@ def produce_anchor(
                 if Nc == 1:
                     repeated = np.repeat(Xc, repeats=max(n_gen, 1), axis=0)
                     noise = rng.normal(scale=0.01, size=repeated.shape)
-                    synthetic_list.append((repeated + noise)[:n_gen])
+                    X_syn = (repeated + noise)[:n_gen]
+                else:
+                    nbrs = KNeighborsClassifier(n_neighbors=k)
+                    y_dummy = np.arange(Nc)
+                    nbrs.fit(Xc, y_dummy)
+                    neighbors = nbrs.kneighbors(Xc, return_distance=False)
+
+                    interpolated = []
+                    while len(interpolated) < n_gen:
+                        idx = rng.integers(0, Nc)
+                        nn_idx = rng.choice(neighbors[idx])
+                        # Allow mild extrapolation beyond [0, 1]
+                        eps_raw = getattr(config, "smote_extrap_eps", 0.05)
+                        if eps_raw in (None, ""):
+                            eps = 0.0
+                        else:
+                            try:
+                                eps = float(eps_raw)
+                            except (TypeError, ValueError):
+                                eps = 0.0
+                        eps = max(0.0, min(eps, 1.0))
+                        lam = rng.uniform(-eps, 1.0 + eps)
+                        interpolated.append(Xc[idx] + lam * (Xc[nn_idx] - Xc[idx]))
+                    X_syn = np.vstack(interpolated[:n_gen])
+
+                y_syn = np.full((X_syn.shape[0],), c)
+                X_parts.append(X_syn)
+                y_parts.append(y_syn)
+
+        # 3) cross-label interpolation (within [0, 1] between different labels)
+        if n_cross > 0 and len(classes) > 1 and N_total > 1:
+            X_all = X0
+            y_all = y0
+            cross_X: list[np.ndarray] = []
+            cross_y: list[Any] = []
+            while len(cross_X) < n_cross:
+                i = rng.integers(0, N_total)
+                j = rng.integers(0, N_total)
+                if y_all[i] == y_all[j]:
                     continue
+                lam = rng.random()  # [0, 1]
+                z = X_all[i] + lam * (X_all[j] - X_all[i])
+                y_z = y_all[i] if lam <= 0.5 else y_all[j]
+                cross_X.append(z)
+                cross_y.append(y_z)
+            X_cross = np.vstack(cross_X[:n_cross])
+            y_cross = np.asarray(cross_y[:n_cross])
+            X_parts.append(X_cross)
+            y_parts.append(y_cross)
 
-                nbrs = KNeighborsClassifier(n_neighbors=k)
-                y_dummy = np.arange(Nc)
-                nbrs.fit(Xc, y_dummy)
-                neighbors = nbrs.kneighbors(Xc, return_distance=False)
-
-                interpolated = []
-                while len(interpolated) < n_gen:
-                    idx = rng.integers(0, Nc)
-                    nn_idx = rng.choice(neighbors[idx])
-                    # Allow mild extrapolation beyond [0, 1]
-                    # lam in [ -eps, 1+eps ], default eps=0.1
-                    eps_raw = getattr(config, "smote_extrap_eps", 0.01)
-                    try:
-                        eps = float(eps_raw)
-                    except (TypeError, ValueError):
-                        eps = 0.1
-                    eps = max(0.0, min(eps, 1.0))
-                    lam = rng.uniform(-eps, 1.0 + eps)
-                    interpolated.append(Xc[idx] + lam * (Xc[nn_idx] - Xc[idx]))
-                synthetic_list.append(np.vstack(interpolated[:n_gen]))
-
-            if synthetic_list:
-                Xpub_syn = np.vstack(synthetic_list)
-            else:
-                Xpub_syn = rng.normal(size=(target_rows, columns))
-
-            if Xpub_syn.shape[0] < target_rows:
-                deficit = target_rows - Xpub_syn.shape[0]
-                extra = rng.normal(size=(deficit, Xpub_syn.shape[1]))
-                Xpub_syn = np.vstack([Xpub_syn, extra])
-            return Xpub_syn[:target_rows, :columns]
-
-        samples = []
-        effective_cols = num_col
-
-        if n_public > 0 and smote_X is not None:
-            Xpub = np.asarray(smote_X)
-            pub_cols = min(Xpub.shape[1], num_col)
-            samples.append(Xpub[:, :pub_cols])
-            effective_cols = pub_cols
-
-        if n_smote > 0:
-            smote_samples = _generate_smote_samples(n_smote, effective_cols)
-            effective_cols = smote_samples.shape[1]
-            samples.append(smote_samples)
-
+        # 4) Gaussian fill for any remaining anchors
         if n_gauss > 0:
-            gaussian_cols = effective_cols if samples else num_col
-            samples.append(rng.normal(size=(n_gauss, gaussian_cols)))
+            Xg = rng.normal(size=(n_gauss, columns))
+            yg = np.full((n_gauss,), np.nan)
+            X_parts.append(Xg)
+            y_parts.append(yg)
 
-        if not samples:
-            return rng.normal(size=(num_row, num_col))
+        anchor = np.vstack(X_parts) if X_parts else rng.normal(size=(num_row, columns))
+        anchor_labels = np.concatenate(y_parts) if y_parts else np.full((anchor.shape[0],), np.nan)
 
-        anchor = np.vstack(samples)
-        if len(samples) > 1:
-            rng.shuffle(anchor)
-        return anchor[:num_row, :anchor.shape[1]]
+        # Ensure correct count and shuffle consistently
+        if anchor.shape[0] > num_row:
+            idx = rng.choice(anchor.shape[0], size=num_row, replace=False)
+            anchor = anchor[idx]
+            anchor_labels = anchor_labels[idx]
+        elif anchor.shape[0] < num_row:
+            deficit = num_row - anchor.shape[0]
+            extra_X = rng.normal(size=(deficit, columns))
+            extra_y = np.full((deficit,), np.nan)
+            anchor = np.vstack([anchor, extra_X])
+            anchor_labels = np.concatenate([anchor_labels, extra_y])
+
+        perm = rng.permutation(num_row)
+        anchor = anchor[perm]
+        anchor_labels = anchor_labels[perm]
+
+        if return_labels:
+            return anchor, anchor_labels
+        return anchor
 
     raise ValueError(f"Unknown anchor_method: {method}")
 

@@ -83,6 +83,13 @@ class IntegratedArtifacts:
     ys_train_integ: List[np.ndarray]
     ys_test_integ: List[np.ndarray]
     Z_integ: Optional[np.ndarray] = None
+    # Aggregated / convenience views for analysis & visualization
+    # - X_integ: stacked integrated training representations across institutions
+    # - anchor_integ: one representative integrated anchor set (e.g. first institution)
+    # - anchor_integ_y: labels for anchor_integ
+    X_integ: Optional[np.ndarray] = None
+    anchor_integ: Optional[np.ndarray] = None
+    anchor_integ_y: Optional[np.ndarray] = None
     metrics: Optional[dict] = None
 
     def __post_init__(self) -> None:
@@ -94,3 +101,9 @@ class IntegratedArtifacts:
         object.__setattr__(self, "ys_test_integ", _ensure_array_list(self.ys_test_integ))
         if self.Z_integ is not None:
             object.__setattr__(self, "Z_integ", np.asarray(self.Z_integ))
+        if self.X_integ is not None:
+            object.__setattr__(self, "X_integ", np.asarray(self.X_integ))
+        if self.anchor_integ is not None:
+            object.__setattr__(self, "anchor_integ", np.asarray(self.anchor_integ))
+        if self.anchor_integ_y is not None:
+            object.__setattr__(self, "anchor_integ_y", np.asarray(self.anchor_integ_y))

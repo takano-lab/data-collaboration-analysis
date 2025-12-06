@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Callable, Dict, List, Tuple, TypeVar
+from typing import Callable, Dict, List, Optional, Tuple, TypeVar
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
 from config.config import Config
-from src.common import IntegratedArtifacts, IntermediateArtifacts
+from src.common import ArtifactStore, IntegratedArtifacts, IntermediateArtifacts
 
 from .integrate_metrics import evaluate_nonlinearity_indices, integrate_metrics
 from .runners import (
@@ -39,9 +39,10 @@ class IntegratedExpressionBuilder:
     Consumes intermediate artifacts and produces integrated (G-stage) representations.
     """
 
-    def __init__(self, *, config: Config, logger: logger) -> None:
+    def __init__(self, *, config: Config, logger: logger, store: Optional[ArtifactStore] = None) -> None:
         self.config = config
         self.logger = logger
+        self.store = store or ArtifactStore(logger=logger)
 
         # Dataset-level attributes (populated from intermediate artifacts).
         self.train_df: pd.DataFrame = pd.DataFrame()
@@ -115,6 +116,16 @@ class IntegratedExpressionBuilder:
             artifacts = replace(artifacts, metrics=metrics)
         self.artifacts = artifacts
         self._sync_from_integrated(artifacts)
+
+        # Persist integrated artifacts for downstream analysis/visualization
+        # only when explicitly requested.
+        if bool(getattr(self.config, "preserve_integrated_data", False)):
+            try:
+                self.store.save("integrate", getattr(self.config, "integrated_name", None), artifacts)
+            except Exception as exc:  # pragma: no cover - defensive logging only
+                if self.logger:
+                    self.logger.warning("Failed to save integrated artifacts: %s", exc)
+
         return artifacts
 
     # ------------------------------------------------------------------ #
@@ -150,6 +161,18 @@ class IntegratedExpressionBuilder:
 
         extras = extras or {}
         self.Z_integ = extras.get("Z_integ")
+        # Build aggregated / convenience representations for analysis.
+        X_integ = np.vstack(self.Xs_train_integ) if self.Xs_train_integ else None
+        # Take a representative integrated anchor set (first non-empty) and its labels.
+        anchor_integ = None
+        for arr in self.anchors_integ:
+            if arr is not None and arr.size > 0:
+                anchor_integ = arr
+                break
+        anchor_integ_y = None
+        if anchor_integ is not None and getattr(self, "anchor_y", None) is not None:
+            if self.anchor_y.size > 0:
+                anchor_integ_y = np.asarray(self.anchor_y)
 
         return IntegratedArtifacts(
             intermediate=self.intermediate_artifacts,
@@ -160,6 +183,9 @@ class IntegratedExpressionBuilder:
             ys_train_integ=list(self.ys_train_integ),
             ys_test_integ=list(self.ys_test_integ),
             Z_integ=self.Z_integ,
+            X_integ=X_integ,
+            anchor_integ=anchor_integ,
+            anchor_integ_y=anchor_integ_y,
         )
 
     def _build_projectors(self) -> Tuple[List, Dict[str, object]]:

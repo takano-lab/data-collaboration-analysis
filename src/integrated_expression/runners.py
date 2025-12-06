@@ -778,7 +778,8 @@ def build_nonlinear_projectors(
 
     M = sum((P - I_r).T @ (P - I_r) for P in Ps)
     Msym = (M + M.T) * 0.5
-
+    
+    print("float(graph_mu_align)", float(graph_mu_align))
     if graph_mu_align == 0.0 or L_within is None or L_between is None:
         Q = Msym
     else:
@@ -790,7 +791,9 @@ def build_nonlinear_projectors(
         n = L_between.shape[0]
         scale_Lb = n / max(tr_Lb, eps) if tr_Lb > 0 else 1.0
         Q = Msym + float(graph_mu_align) * (scale_Lw * L_within - scale_Lb * L_between)
-
+        
+        print("float(graph_mu_align)", float(graph_mu_align))
+        print("scale_Lw", scale_Lw)
 
     if zerosum:
         B = _zerosum_helmert_basis(Q.shape[0])

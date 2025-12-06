@@ -84,32 +84,59 @@ class IntermediateExpressionBuilder:
         num_features = dataset.Xs_train[0].shape[1]
         smote_X = getattr(dataset, "smote_anchor", None)
         smote_y = getattr(dataset, "smote_anchor_y", None)
-        self.anchor = produce_anchor(
-            num_row=self.config.num_anchor_data,
-            num_col=num_features,
-            seed=self.config.seed,
-            config=self.config,
-            train_df=dataset.train_df,
-            Xs_train=dataset.Xs_train,
-            Xs_test=dataset.Xs_test,
-            ys_train=dataset.ys_train,
-            ys_test=dataset.ys_test,
-            smote_X=smote_X,
-            smote_y=smote_y,
-        )
-        self.anchor_test = produce_anchor(
-            num_row=self.config.num_anchor_data,
-            num_col=num_features,
-            seed=self.config.seed + 1,
-            config=self.config,
-            train_df=dataset.train_df,
-            Xs_train=dataset.Xs_train,
-            Xs_test=dataset.Xs_test,
-            ys_train=dataset.ys_train,
-            ys_test=dataset.ys_test,
-            smote_X=smote_X,
-            smote_y=smote_y,
-        )
+
+        if getattr(self.config, "anchor_method", None) == "smote" and smote_X is not None and smote_y is not None:
+            self.anchor, self.anchor_y = produce_anchor(
+                num_row=self.config.num_anchor_data,
+                num_col=num_features,
+                seed=self.config.seed,
+                config=self.config,
+                train_df=dataset.train_df,
+                Xs_train=dataset.Xs_train,
+                Xs_test=dataset.Xs_test,
+                ys_train=dataset.ys_train,
+                ys_test=dataset.ys_test,
+                smote_X=smote_X,
+                smote_y=smote_y,
+                return_labels=True,
+            )
+            self.anchor_test, self.anchor_y_test = produce_anchor(
+                num_row=self.config.num_anchor_data,
+                num_col=num_features,
+                seed=self.config.seed + 1,
+                config=self.config,
+                train_df=dataset.train_df,
+                Xs_train=dataset.Xs_train,
+                Xs_test=dataset.Xs_test,
+                ys_train=dataset.ys_train,
+                ys_test=dataset.ys_test,
+                smote_X=smote_X,
+                smote_y=smote_y,
+                return_labels=True,
+            )
+        else:
+            self.anchor = produce_anchor(
+                num_row=self.config.num_anchor_data,
+                num_col=num_features,
+                seed=self.config.seed,
+                config=self.config,
+                train_df=dataset.train_df,
+                Xs_train=dataset.Xs_train,
+                Xs_test=dataset.Xs_test,
+                ys_train=dataset.ys_train,
+                ys_test=dataset.ys_test,
+            )
+            self.anchor_test = produce_anchor(
+                num_row=self.config.num_anchor_data,
+                num_col=num_features,
+                seed=self.config.seed + 1,
+                config=self.config,
+                train_df=dataset.train_df,
+                Xs_train=dataset.Xs_train,
+                Xs_test=dataset.Xs_test,
+                ys_train=dataset.ys_train,
+                ys_test=dataset.ys_test,
+            )
 
         projectors = self._build_projectors(dataset)
         self.Xs_train_inter = []
@@ -127,16 +154,18 @@ class IntermediateExpressionBuilder:
             self.anchors_inter.append(anchor_reduced)
             self.anchors_test_inter.append(anchor_test_reduced)
 
-        assign_k = int(getattr(self.config, "anchor_assign_k", 10) or 10)
-        max_anchor_dist = float(getattr(self.config, "anchor_label_max_dist", 0.0) or 0.0)
-        self.anchor_y, self.anchor_y_test = assign_anchor_labels(
-            anchors_inter=self.anchors_inter,
-            anchors_test_inter=self.anchors_test_inter,
-            Xs_train_inter=self.Xs_train_inter,
-            ys_train=dataset.ys_train,
-            k=assign_k,
-            max_neighbor_dist=max_anchor_dist,
-        )
+        # Assign anchor labels if not already determined (e.g., non-SMOTE methods)
+        if self.anchor_y.size == 0 or self.anchor_y_test.size == 0:
+            assign_k = int(getattr(self.config, "anchor_assign_k", 10) or 10)
+            max_anchor_dist = float(getattr(self.config, "anchor_label_max_dist", 0.0) or 0.0)
+            self.anchor_y, self.anchor_y_test = assign_anchor_labels(
+                anchors_inter=self.anchors_inter,
+                anchors_test_inter=self.anchors_test_inter,
+                Xs_train_inter=self.Xs_train_inter,
+                ys_train=dataset.ys_train,
+                k=assign_k,
+                max_neighbor_dist=max_anchor_dist,
+            )
 
         # 全機関からラベルが付かなかったアンカー（無ラベル）は、そもそもアンカーとして除外する
         if self.anchor_y.size:

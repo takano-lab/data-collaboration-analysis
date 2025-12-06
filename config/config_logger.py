@@ -23,7 +23,38 @@ def record_config(cfg: "Config", csv_path: CsvPath) -> None:
     csv_path : str | Path
         CSV ファイルの保存先（存在しなければ自動作成）
     """
-    exclude = set(["output_path", "input_path", "name", "seed", "y_name", "eigenvalues", "nl_gammas", "g_abs_sum", "nl_lambda_opt", "nl_gamma_opt", "plot_name", "lambda_gen_eigen", "lambda_pred", "lambda_offdiag", "semi_integ", "orth_ver", "f_seed_2", "jreg_gep", "g_norm_val_gep", "sum_objective_function", "g_mean_var", "g_condition_number", "集中解析", "個別解析", "now", "df_name", "intermediate_name", "V_sel", "lambdas"])
+    exclude = set([
+        "output_path",
+        "input_path",
+        "name",
+        "seed",
+        "y_name",
+        "eigenvalues",
+        "nl_gammas",
+        "g_abs_sum",
+        "nl_lambda_opt",
+        "nl_gamma_opt",
+        "plot_name",
+        "lambda_gen_eigen",
+        "lambda_pred",
+        "lambda_offdiag",
+        "semi_integ",
+        "orth_ver",
+        "f_seed_2",
+        "jreg_gep",
+        "g_norm_val_gep",
+        "sum_objective_function",
+        "g_mean_var",
+        "g_condition_number",
+        "集中解析",
+        "個別解析",
+        "now",
+        "df_name",
+        "intermediate_name",
+        "integrated_name",
+        "V_sel",
+        "lambdas",
+    ])
     row = {k: v for k, v in cfg.__dict__.items() if k not in exclude}
     _append_row(row, csv_path)
 

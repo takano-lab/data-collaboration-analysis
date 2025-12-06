@@ -77,6 +77,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "evaluate_integrate_metrics":[True],
     "load_df_data":[True],
     "load_intermediate_data":[True],
+    "preserve_integrated_data":[True],
     "umap_neighbors":[10],
     "bias_ratio":[0.1], # 0.1, 0.4, 0.6, 0.95, 0.8 
     "max_dim":[500],
@@ -407,6 +408,8 @@ def run_grid(
             cfg.seeds = seed_value
             cfg.df_name = _build_identifier(DF_COLUMNS, cfg)
             cfg.intermediate_name = _build_identifier(INTERMEDIATE_COLUMNS, cfg)
+            # identifier for integrated artifacts
+            cfg.integrated_name = _build_identifier(PARAM_COLUMNS, cfg)
             def _run_and_collect() -> float:
                 val = run_once(cfg, log)
                 vals.append(float(val))
