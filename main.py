@@ -22,9 +22,9 @@ from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 
 PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "dataset": [
-    #"fashion_mnist",
+    "fashion_mnist",
     #"mnist",
-    "mnist_1248",
+    #"mnist_1248",
     #"mice",
     #"statlog",
     #"qsar",
@@ -47,11 +47,11 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     # "vowel"
     # "coil20"
 ],# + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
-    "svd_ratio":[0], #, 0.25, 0.5, 0.75, 1
+    "svd_ratio":[0, 0.5, 1], #, 0.25, 0.5, 0.75, 1
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "F_type": ["umap"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["laplacian_nonlinear", "imakura"],#, laplacian_nonlinear"graph_nonlinear", "nonlinear" "imakura", "odc", "gep", "fl", "centralize", "individual"#,"graph_nonlinear", "nonlinear" "graph_nonlinear_maximize",  "graph_nonlinear_x", "graph_nonlinear_x_maximize", "kernel_gep", "kernel_graph_gep",  "kernel_graph_gep_maximize", 
+    "F_type": ["svd"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
+    "G_type": ["laplacian_nonlinear"],#, laplacian_nonlinear"graph_nonlinear", "nonlinear" "imakura", "odc", "gep", "fl", "centralize", "individual"#,"graph_nonlinear", "nonlinear" "graph_nonlinear_maximize",  "graph_nonlinear_x", "graph_nonlinear_x_maximize", "kernel_gep", "kernel_graph_gep",  "kernel_graph_gep_maximize", 
     "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
     "gamma_ratio_krr": [1], #, 0.1, 0.3, 3, 10 
     "graph_knn_k": [10],
@@ -63,23 +63,23 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "lw_alpha": [0],
     "metrics": ["accuracy"], #"accuracy"
     "kernel_type": ["rbf"],
-    "visualize": [True],
+    "visualize": [False],
     #"feature_num": [2],
-    "dim_intermediate": [15],#[20, 10, 5, 2], 6
-    #"dim_integrate": [20, 50, 100],#[20, 10, 5, 2], 6
+    "dim_intermediate": [10],#[20, 10, 5, 2], 6
+    #"dim_integrate": [10],#[20, 10, 5, 2], 6
     "num_institution_user": [100],
-    "num_institution": [15],
+    "num_institution": [10],
     "K_normalization":[False],
     "anchor_method":["smote"], #gaussian smote 
     "smote_ratio":[1],#, 0, 0.1, 0.25, 0.5, 1],
     "data_distribution":["bias"],# "division" "even"
     "inter_normalization":[True],
     "evaluate_integrate_metrics":[True],
-    "load_df_data":[True],
-    "load_intermediate_data":[True],
-    "preserve_integrated_data":[True],
+    "load_df_data":[False],
+    "load_intermediate_data":[False],
+    "preserve_integrated_data":[False],
     "umap_neighbors":[10],
-    "bias_ratio":[0.9], # 0.1, 0.4, 0.6, 0.95, 0.8 
+    "bias_ratio":[0.1], # 0.1, 0.4, 0.6, 0.95, 0.8 
     "max_dim":[10000],
     "zerosum":[True],
     "anchor_label_max_dist": [100000],
