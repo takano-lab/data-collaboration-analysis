@@ -631,8 +631,8 @@ def prepare_institutional_dataset(
     """前処理済み df から機関配列を構築 (even / division)"""
     ensure_institution_params(df, config)
 
-    smote_anchor = np.empty((0, 0), dtype=float)
-    smote_anchor_y = np.empty((0,), dtype=float)
+    public_anchor = np.empty((0, 0), dtype=float)
+    public_anchor_y = np.empty((0,), dtype=float)
 
     # If SMOTE anchors are requested, reserve public data for them first.
     anchor_method = getattr(config, "anchor_method", None)
@@ -642,8 +642,8 @@ def prepare_institutional_dataset(
         if not anchor_df.empty:
             label_col = getattr(config, "y_name", "target")
             if label_col in anchor_df.columns:
-                smote_anchor = anchor_df.drop(columns=[label_col]).to_numpy()
-                smote_anchor_y = anchor_df[label_col].to_numpy()
+                public_anchor = anchor_df.drop(columns=[label_col]).to_numpy()
+                public_anchor_y = anchor_df[label_col].to_numpy()
     dist = getattr(config, "data_distribution", None)
     # even / semi モードで 'label_num' 指定が来た場合はここで数値化
     if dist not in ("division", "bias") and isinstance(getattr(config, 'num_institution'), str) and str(getattr(config, 'num_institution')).lower() == 'label_num':
@@ -672,7 +672,7 @@ def prepare_institutional_dataset(
             random_state=42,  # ベースライン
         )
     Xs_train, Xs_test, ys_train, ys_test = to_institution_arrays(train_df, test_df, config)
-    return Xs_train, Xs_test, ys_train, ys_test, train_df, test_df, smote_anchor, smote_anchor_y
+    return Xs_train, Xs_test, ys_train, ys_test, train_df, test_df, public_anchor, public_anchor_y
 
 
 __all__ = [

@@ -177,7 +177,7 @@ RULES: List[Dict[str, Any]] = [
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "gep", "gep2",  "odc",]}, "lock": {"gamma_ratio_krr": DEFAULTS["gamma_ratio_krr"]}},
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "gep", "gep2",  "odc", "nonlinear"]}, "lock": {"graph_mu_align": 0, "graph_lambda_rkhs": 0, "graph_stability_eps": 0}},
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "gep", "gep2",  "odc"]}, "lock": {"graph_knn_k": None}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "gep", "gep2",  "odc"]}, "lock": {"zerosum": False}},
+    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl"]}, "lock": {"zerosum": False}},
     {"type": "LOCK", "when": {"G_type": ["graph_nonlinear"]}, "lock": {"graph_knn_k":100000}},
     #{"type": "LOCK", "when": {"G_type": ["nonlinear"]}, "lock": {"inter_normalization": False}},
     {"type": "LOCK", "when": {"G_type": ["graph_nonlinear_x_maximize"]}, "lock": {"graph_mu_align": 0.5}},
@@ -399,6 +399,7 @@ def run_grid(
         for i in seeds_list:
             seed_value = int(i)
             cfg.seed = seed_value
+            cfg.f_seed = seed_value
             cfg.dataset = dataset
             cfg.metrics = metrics_name
             cfg.plot_name = f"{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}_graph_knn_k_{combo.get('graph_knn_k','-')}_graph_mu_align_{combo.get('graph_mu_align','-')}_{combo.get('graph_lambda_rkhs','-')}_{combo.get('zerosum','-')}.png"

@@ -390,6 +390,7 @@ def run_grid(
         for i in seeds_list:
             seed_value = int(i)
             cfg.seed = seed_value
+            cfg.f_seed = seed_value
             cfg.dataset = dataset
             cfg.metrics = metrics_name
             cfg.plot_name = f"{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}_{combo.get('gamma_ratio_krr','-')}_{combo.get('graph_knn_k','-')}_{combo.get('graph_mu_align','-')}_{combo.get('graph_lambda_rkhs','-')}_{combo.get('graph_stability_eps','-')}.png"

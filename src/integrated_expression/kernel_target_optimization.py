@@ -23,6 +23,7 @@ def _nystrom_factors_single(
     gamma: float,
     rank_nystrom: int,
     kernel_type: str,
+    public_anchor_count: int = 0,
     random_state: Optional[int] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute Nyström factors U, lambda for a single institution's Gram matrix.
@@ -37,25 +38,27 @@ def _nystrom_factors_single(
     rank = min(int(rank_nystrom), r)
     kernel_type_key = (kernel_type or "rbf").lower()
 
-    # If requested rank covers all anchors, fall back to exact Gram eigendecomposition.
-    if rank >= r:
-        if kernel_type_key == "linear":
-            K = anchor_inter @ anchor_inter.T
-        else:
-            K = rbf_kernel(anchor_inter, anchor_inter, gamma=gamma)
-        vals, vecs = np.linalg.eigh(K)
-        eps = 1e-12
-        vals = np.where(vals > eps, vals, 0.0)
-        order = np.argsort(vals)[::-1]
-        vals = vals[order]
-        vecs = vecs[:, order]
-        return vecs, vals
-
-    # Proper Nyström with subsampling when rank < r.
+    # Proper Nyström with subsampling (even when rank == r we still go
+    # through the Nyström construction to study its approximation impact).
     rng = np.random.default_rng(random_state)
-    indices = np.arange(r)
-    rng.shuffle(indices)
-    landmark_idx = np.sort(indices[:rank])
+    num_public = max(0, min(int(public_anchor_count), r))
+    if rank <= num_public and num_public > 0:
+        # Landmarks fully within public anchors.
+        idx_public = np.arange(num_public)
+        rng.shuffle(idx_public)
+        landmark_idx = np.sort(idx_public[:rank])
+    else:
+        # Take all public anchors (if any), then fill remaining from non-public region.
+        landmark_idx_list = []
+        if num_public > 0:
+            landmark_idx_list.append(np.arange(num_public))
+        remaining = rank - num_public
+        if remaining > 0:
+            non_public_idx = np.arange(num_public, r)
+            if non_public_idx.size > 0:
+                rng.shuffle(non_public_idx)
+                landmark_idx_list.append(non_public_idx[:remaining])
+        landmark_idx = np.sort(np.concatenate(landmark_idx_list)) if landmark_idx_list else np.arange(rank)
 
     X_land = anchor_inter[landmark_idx]
 
@@ -66,7 +69,7 @@ def _nystrom_factors_single(
         C = rbf_kernel(anchor_inter, X_land, gamma=gamma)
         W = rbf_kernel(X_land, X_land, gamma=gamma)
 
-    # Eigen-decomposition of the small W (r' x r')
+    # Eigen-decomposition of the small W (rank x rank)
     vals, vecs = np.linalg.eigh(W)
     eps = 1e-12
     mask = vals > eps
@@ -75,7 +78,7 @@ def _nystrom_factors_single(
     vals = vals[mask]
     vecs = vecs[:, mask]
 
-    # Sort by descending eigenvalue and truncate
+    # Sort by descending eigenvalue and truncate to requested rank
     order = np.argsort(vals)[::-1]
     vals = vals[order]
     vecs = vecs[:, order]
@@ -83,9 +86,20 @@ def _nystrom_factors_single(
     vals = vals[:rank_eff]
     vecs = vecs[:, :rank_eff]
 
+    # Nyström-consistent scaling:
+    # For n = r samples and m = rank_eff landmarks,
+    # approximate K ≈ U Λ_K U^T with
+    #   Λ_K = (n / m) * Λ_W
+    #   U   = sqrt(m / n) * C U_W Λ_W^{-1/2}
+    m_eff = float(rank_eff)
+    n = float(r)
     sqrt_vals = np.sqrt(vals)
-    U = C @ vecs @ np.diag(1.0 / sqrt_vals)
-    return U, vals
+    # Columns of U: r x rank_eff
+    U_core = C @ vecs @ np.diag(1.0 / sqrt_vals)
+    scale_U = np.sqrt(m_eff / max(n, eps))
+    U = scale_U * U_core
+    lambdas_K = (n / m_eff) * vals
+    return U, lambdas_K
 
 
 def _build_multi_view_operator(
@@ -199,6 +213,7 @@ def build_nonlinear_projectors_faster(
     use_faiss_graph: bool = False,  # placeholder flag for future FAISS-based k-NN
     use_nystrom: bool = True,
     use_lobpcg: bool = True,
+    public_anchor_count: Optional[int] = None,
     random_state: Optional[int] = None,
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
     """Variant of Laplacian-regularized nonlinear projectors with optional approximations.
@@ -249,12 +264,14 @@ def build_nonlinear_projectors_faster(
     Ps: List[np.ndarray] = []
 
     if use_nystrom:
+        pub_count = int(public_anchor_count or 0)
         for k, anchor_inter_k in enumerate(anchors_inter):
             U_k, lambdas_k = _nystrom_factors_single(
                 anchor_inter_k,
                 gamma=gammas[k],
                 rank_nystrom=rank_nystrom,
                 kernel_type=kernel_type_key,
+                public_anchor_count=pub_count,
                 random_state=random_state,
             )
             if lambdas_k.size == 0:

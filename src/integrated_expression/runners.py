@@ -123,6 +123,25 @@ def _validate_anchor_rows(anchors_inter: List[np.ndarray]) -> int:
     return row_count
 
 
+def _effective_rank(K: np.ndarray, *, eps: float = 1e-12) -> float:
+    """Compute entropy-based effective rank of a positive semidefinite matrix.
+
+    r_eff = exp( - sum p_i log p_i ),  p_i = lambda_i / sum(lambda_i).
+    """
+    if K.size == 0:
+        return 0.0
+    vals = np.linalg.eigvalsh(K)
+    vals = np.maximum(vals, 0.0)
+    s = float(np.sum(vals))
+    if s <= eps:
+        return 0.0
+    p = vals / s
+    # Avoid log(0)
+    p = np.clip(p, eps, 1.0)
+    H = float(-np.sum(p * np.log(p)))
+    return float(np.exp(H))
+
+
 def _build_anchor_alignment_terms(Ks: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     if not Ks:
         return np.zeros((0, 0)), np.zeros((0, 0)), np.zeros((0, 0))
@@ -495,6 +514,92 @@ def build_gep2_projectors(
         solver=_solve_gep_regularized,
         regularize_B=True,
     )
+
+
+def build_faster_gep_projectors(
+    anchors_inter: List[np.ndarray],
+    dim_integrate: int,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], Dict[str, Any]]:
+    """
+    QR+SVD based fast GEP projector builder (Kawakami-DC style).
+
+    For each institution i, let A_i be the anchor intermediate representation
+    (rows: anchor samples, columns: local features). This routine:
+      1. Computes thin QR factorizations A_i = Q_i R_i.
+      2. Forms W_Q = [Q_1 ... Q_c] and computes its SVD W_Q = U Σ V^T.
+      3. Takes the leading `t = min(dim_integrate, d)` right singular vectors,
+         partitions them into c blocks, and obtains \hat g_{i,k}.
+      4. Sets G_i = R_i^{-1} [\hat g_{i,1}, ..., \hat g_{i,t}] and additionally
+         rescales G_i <- G_i / sqrt(c) for numerical stability (c = #institutions).
+
+    Returns (projectors_per_institution, metrics), where each projector applies
+    X -> X @ G_i.
+    """
+    if not anchors_inter:
+        return [], {"G_list": [], "R_list": [], "singular_values": np.array([])}
+
+    c = len(anchors_inter)
+    # All anchor matrices must share the same column dimension for block partitioning.
+    d = anchors_inter[0].shape[1]
+    for A in anchors_inter:
+        if A.shape[1] != d:
+            raise ValueError("faster_gep requires all anchor matrices to share the same column dimension.")
+        if A.shape[0] < d:
+            raise ValueError("faster_gep requires each anchor matrix to have rows >= columns for thin QR.")
+
+    # Step 1: thin QR factorizations A_i = Q_i R_i
+    Q_list: List[np.ndarray] = []
+    R_list: List[np.ndarray] = []
+    for A in anchors_inter:
+        Q_i, R_i = np.linalg.qr(A, mode="reduced")
+        Q_list.append(Q_i)
+        R_list.append(R_i)
+
+    # Step 2: SVD of concatenated Q blocks
+    W_Q = np.hstack(Q_list)  # shape: (r, c * d)
+    if W_Q.size == 0:
+        return [], {"G_list": [], "R_list": R_list, "singular_values": np.array([])}
+
+    U, S, Vt = np.linalg.svd(W_Q, full_matrices=False)
+    V = Vt.T  # shape: (c * d, rank)
+
+    # Number of integrated dimensions (t in the paper, capped by d)
+    t = min(dim_integrate, d, V.shape[1])
+    if t <= 0:
+        return [], {"G_list": [], "R_list": R_list, "singular_values": S}
+
+    V_t = V[:, :t]  # (c * d, t)
+
+    # Step 3: partition right singular vectors into c blocks of length d
+    try:
+        V_blocks = V_t.reshape(c, d, t)  # V_blocks[i] = \hat G_i (d x t)
+    except ValueError as exc:
+        raise ValueError(
+            f"faster_gep reshape failed; expected total columns c*d = {c*d}, "
+            f"got {V_t.shape[0]}"
+        ) from exc
+
+    # Step 4: G_i = R_i^{-1} \hat G_i with additional 1/sqrt(c) scaling
+    scale = 1.0 / np.sqrt(float(c)) if c > 0 else 1.0
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    G_list: List[np.ndarray] = []
+
+    for i in range(c):
+        R_i = R_list[i]  # (d, d), upper-triangular and invertible under assumptions
+        hat_G_i = V_blocks[i]  # (d, t)
+        # Solve R_i G_i = hat_G_i for G_i
+        G_i = np.linalg.solve(R_i, hat_G_i)
+        G_i = scale * G_i
+        G_list.append(G_i)
+        projs.append(make_linear_integrator(G_i))
+
+    metrics: Dict[str, Any] = {
+        "G_list": G_list,
+        "R_list": R_list,
+        "singular_values": S,
+        "output_dim": t,
+    }
+    return projs, metrics
 
 
 def build_kernel_gep_projectors(

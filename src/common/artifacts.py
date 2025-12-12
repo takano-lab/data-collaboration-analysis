@@ -19,8 +19,8 @@ class DatasetArtifacts:
     Xs_test: List[np.ndarray]
     ys_train: List[np.ndarray]
     ys_test: List[np.ndarray]
-    smote_anchor: Optional[np.ndarray] = None
-    smote_anchor_y: Optional[np.ndarray] = None
+    public_anchor: Optional[np.ndarray] = None
+    public_anchor_y: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "train_df", self.train_df.copy())
@@ -29,10 +29,10 @@ class DatasetArtifacts:
         object.__setattr__(self, "Xs_test", _ensure_array_list(self.Xs_test))
         object.__setattr__(self, "ys_train", _ensure_array_list(self.ys_train))
         object.__setattr__(self, "ys_test", _ensure_array_list(self.ys_test))
-        if self.smote_anchor is not None:
-            object.__setattr__(self, "smote_anchor", np.asarray(self.smote_anchor))
-        if self.smote_anchor_y is not None:
-            object.__setattr__(self, "smote_anchor_y", np.asarray(self.smote_anchor_y))
+        if self.public_anchor is not None:
+            object.__setattr__(self, "public_anchor", np.asarray(self.public_anchor))
+        if self.public_anchor_y is not None:
+            object.__setattr__(self, "public_anchor_y", np.asarray(self.public_anchor_y))
 
 
 @dataclass(frozen=True)

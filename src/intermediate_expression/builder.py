@@ -82,10 +82,26 @@ class IntermediateExpressionBuilder:
             raise RuntimeError("Dataset artifacts do not contain institutional splits.")
 
         num_features = dataset.Xs_train[0].shape[1]
-        smote_X = getattr(dataset, "smote_anchor", None)
-        smote_y = getattr(dataset, "smote_anchor_y", None)
+        public_X = getattr(dataset, "public_anchor", None)
+        public_y = getattr(dataset, "public_anchor_y", None)
 
-        if getattr(self.config, "anchor_method", None) == "smote" and smote_X is not None and smote_y is not None:
+        has_public = (
+            public_X is not None
+            and public_y is not None
+            and getattr(public_X, "size", 0) > 0
+            and getattr(public_y, "size", 0) > 0
+        )
+        # Expose the number of public anchors (clipped by num_anchor_data) via config
+        # so that downstream Nyström landmarks can prioritize them.
+        public_count = 0
+        if has_public:
+            try:
+                public_count = int(min(public_X.shape[0], int(self.config.num_anchor_data)))
+            except Exception:
+                public_count = int(public_X.shape[0])
+        setattr(self.config, "public_anchor_count", max(0, int(public_count)))
+
+        if getattr(self.config, "anchor_method", None) == "smote" and has_public:
             self.anchor, self.anchor_y = produce_anchor(
                 num_row=self.config.num_anchor_data,
                 num_col=num_features,
@@ -96,8 +112,8 @@ class IntermediateExpressionBuilder:
                 Xs_test=dataset.Xs_test,
                 ys_train=dataset.ys_train,
                 ys_test=dataset.ys_test,
-                smote_X=smote_X,
-                smote_y=smote_y,
+                smote_X=public_X,
+                smote_y=public_y,
                 return_labels=True,
             )
             self.anchor_test, self.anchor_y_test = produce_anchor(
@@ -110,8 +126,8 @@ class IntermediateExpressionBuilder:
                 Xs_test=dataset.Xs_test,
                 ys_train=dataset.ys_train,
                 ys_test=dataset.ys_test,
-                smote_X=smote_X,
-                smote_y=smote_y,
+                smote_X=public_X,
+                smote_y=public_y,
                 return_labels=True,
             )
         else:

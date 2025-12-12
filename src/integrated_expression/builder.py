@@ -5,14 +5,19 @@ from typing import Callable, Dict, List, Optional, Tuple, TypeVar
 
 import numpy as np
 import pandas as pd
+from sklearn.metrics.pairwise import rbf_kernel
 from tqdm import tqdm
 
 from config.config import Config
 from src.common import ArtifactStore, IntegratedArtifacts, IntermediateArtifacts
 
 from .integrate_metrics import evaluate_nonlinearity_indices, integrate_metrics
+from .kernel_target_optimization import build_nonlinear_projectors_faster
 from .runners import (
+    _effective_rank,
+    _zerosum_helmert_basis,
     build_gep2_projectors,
+    build_faster_gep_projectors,
     build_gep_projectors,
     build_graph_nonlinear_projectors,
     build_graph_nonlinear_X_projectors,
@@ -228,7 +233,7 @@ class IntegratedExpressionBuilder:
         self.ys_test_integ = list(artifacts.ys_test_integ)
         self.Z_integ = artifacts.Z_integ
 
-    def _build_anchor_laplacians_for_integrated(self) -> tuple[np.ndarray | None, np.ndarray | None]:
+def _build_anchor_laplacians_for_integrated(self) -> tuple[np.ndarray | None, np.ndarray | None]:
         """
         Build label-aware anchor Laplacians (L_within, L_between) at integration stage.
         Uses the same construction as intermediate_expression.builder.
@@ -254,25 +259,71 @@ class IntegratedExpressionBuilder:
 
 # ---------------------------------------------------------------------- #
 # Integration runners
+
+
+def _apply_zerosum_helmert_to_anchors(
+    anchors_inter: list[np.ndarray],
+    zerosum: bool,
+) -> list[np.ndarray]:
+    """
+    Optionally project anchor intermediate representations onto the zero-sum
+    subspace using a Helmert basis.
+
+    When `zerosum` is True and there are r >= 2 anchor samples shared across
+    institutions, each anchor matrix A_k (shape: r x d_k) is transformed to
+    B^T A_k where B is the r x (r-1) Helmert basis. This yields (r-1) x d_k
+    anchors living in the zero-sum subspace along the anchor-sample axis.
+    """
+    if not zerosum:
+        return anchors_inter
+    if not anchors_inter:
+        return []
+
+    r = anchors_inter[0].shape[0]
+    if r <= 1:
+        raise ValueError("zerosum Helmert transform requires at least 2 anchor samples.")
+
+    B = _zerosum_helmert_basis(r)
+    BT = B.T
+
+    transformed: list[np.ndarray] = []
+    for A in anchors_inter:
+        if A.shape[0] != r:
+            raise ValueError(
+                "zerosum Helmert transform requires all anchor matrices to share the same "
+                "number of rows (anchor samples)."
+            )
+        transformed.append(BT @ A)
+    return transformed
 # ---------------------------------------------------------------------- #
 def _run_imakura_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    zerosum = bool(getattr(analysis.config, "zerosum", False))
+    anchors_inter = _apply_zerosum_helmert_to_anchors(analysis.anchors_inter, zerosum)
     projs, Z_integ, g_abs_sum = build_imakura_projectors(
-        anchors_inter=analysis.anchors_inter,
+        anchors_inter=anchors_inter,
         dim_integrate=_dim_integrate(analysis.config),
     )
     analysis.config.g_abs_sum = g_abs_sum
-    extras = {"Z_integ": Z_integ}
-    analysis.Z_integ = Z_integ
+    extras: Dict[str, object] = {"Z_integ": Z_integ}
+    projs, extras = _apply_random_linear_post_transform(
+        analysis.config, projs, extras, method_tag="imakura"
+    )
+    analysis.Z_integ = extras.get("Z_integ")
     return projs, extras
 
 
 def _run_targetvec_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    zerosum = bool(getattr(analysis.config, "zerosum", False))
+    anchors_inter = _apply_zerosum_helmert_to_anchors(analysis.anchors_inter, zerosum)
     projs, Z_integ = build_targetvec_projectors(
-        anchors_inter=analysis.anchors_inter,
+        anchors_inter=anchors_inter,
         dim_integrate=_dim_integrate(analysis.config),
     )
-    extras = {"Z_integ": Z_integ}
-    analysis.Z_integ = Z_integ
+    extras: Dict[str, object] = {"Z_integ": Z_integ}
+    projs, extras = _apply_random_linear_post_transform(
+        analysis.config, projs, extras, method_tag="targetvec"
+    )
+    analysis.Z_integ = extras.get("Z_integ")
     return projs, extras
 
 
@@ -282,16 +333,21 @@ def _run_gep_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list,
         lambda_gen = float(lambda_raw)
     except (TypeError, ValueError):
         lambda_gen = 0.0
+    zerosum = bool(getattr(analysis.config, "zerosum", False))
+    anchors_inter = _apply_zerosum_helmert_to_anchors(analysis.anchors_inter, zerosum)
     projs, metrics = build_gep_projectors(
-        anchors_inter=analysis.anchors_inter,
+        anchors_inter=anchors_inter,
         dim_integrate=_dim_integrate(analysis.config),
         lambda_gen=lambda_gen,
         orth_ver=bool(getattr(analysis.config, "orth_ver", False)),
     )
     for key, value in metrics.items():
         setattr(analysis.config, key, value)
-    extras = dict(metrics)
+    extras: Dict[str, object] = dict(metrics)
     extras.setdefault("Z_integ", None)
+    projs, extras = _apply_random_linear_post_transform(
+        analysis.config, projs, extras, method_tag="gep"
+    )
     analysis.Z_integ = extras.get("Z_integ")
     return projs, extras
 
@@ -314,24 +370,53 @@ def _run_gep2_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list
         lambda_gen = float(lambda_raw)
     except (TypeError, ValueError):
         lambda_gen = 0.0
+    zerosum = bool(getattr(analysis.config, "zerosum", False))
+    anchors_inter = _apply_zerosum_helmert_to_anchors(analysis.anchors_inter, zerosum)
     projs, metrics = build_gep2_projectors(
-        anchors_inter=analysis.anchors_inter,
+        anchors_inter=anchors_inter,
         dim_integrate=_dim_integrate(analysis.config),
         lambda_gen=lambda_gen,
         orth_ver=bool(getattr(analysis.config, "orth_ver", False)),
     )
     for key, value in metrics.items():
         setattr(analysis.config, key, value)
-    extras = dict(metrics)
+    extras: Dict[str, object] = dict(metrics)
     extras.setdefault("Z_integ", None)
+    projs, extras = _apply_random_linear_post_transform(
+        analysis.config, projs, extras, method_tag="gep2"
+    )
+    analysis.Z_integ = extras.get("Z_integ")
+    return projs, extras
+
+
+def _run_faster_gep_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    """
+    Integration runner for QR+SVD based faster_gep.
+    """
+    zerosum = bool(getattr(analysis.config, "zerosum", False))
+    anchors_inter = _apply_zerosum_helmert_to_anchors(analysis.anchors_inter, zerosum)
+    projs, metrics = build_faster_gep_projectors(
+        anchors_inter=anchors_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+    )
+    extras: Dict[str, object] = dict(metrics)
+    extras.setdefault("Z_integ", None)
+    projs, extras = _apply_random_linear_post_transform(
+        analysis.config, projs, extras, method_tag="faster_gep"
+    )
     analysis.Z_integ = extras.get("Z_integ")
     return projs, extras
 
 
 def _run_odc_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
-    projs, Z_integ = build_odc_projectors(anchors_inter=analysis.anchors_inter)
-    extras = {"Z_integ": Z_integ}
-    analysis.Z_integ = Z_integ
+    zerosum = bool(getattr(analysis.config, "zerosum", False))
+    anchors_inter = _apply_zerosum_helmert_to_anchors(analysis.anchors_inter, zerosum)
+    projs, Z_integ = build_odc_projectors(anchors_inter=anchors_inter)
+    extras: Dict[str, object] = {"Z_integ": Z_integ}
+    projs, extras = _apply_random_linear_post_transform(
+        analysis.config, projs, extras, method_tag="odc"
+    )
+    analysis.Z_integ = extras.get("Z_integ")
     return projs, extras
 
 
@@ -515,18 +600,213 @@ def _run_laplacian_nonlinear_integration(analysis: "IntegratedExpressionBuilder"
     )
     gammas_mean = float(np.mean(gammas)) if gammas else None
     analysis.config.gamma_krr_means = gammas_mean
-    extras = {"Z_integ": Z_integ, "eigvals": eigvals, "gammas": gammas}
+
+    # Effective rank of the true kernel matrices (per institution).
+    kernel_type_key = str(getattr(analysis.config, "kernel_type", "rbf") or "rbf").lower()
+    eff_ranks: list[float] = []
+    for k, anchor_inter_k in enumerate(analysis.anchors_inter):
+        if kernel_type_key == "linear":
+            K = anchor_inter_k @ anchor_inter_k.T
+        else:
+            gamma_k = gammas[k] if k < len(gammas) else 1.0
+            K = rbf_kernel(anchor_inter_k, anchor_inter_k, gamma=gamma_k)
+        eff_ranks.append(_effective_rank(K))
+    eff_rank_mean = float(np.mean(eff_ranks)) if eff_ranks else 0.0
+    analysis.config.kernel_effective_rank_mean = eff_rank_mean
+
+    extras = {
+        "Z_integ": Z_integ,
+        "eigvals": eigvals,
+        "gammas": gammas,
+        "kernel_effective_ranks": eff_ranks,
+    }
     analysis.Z_integ = Z_integ
     return projs, extras
 
 
+def _run_nonlinear_faster_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 0.0)
+    graph_mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 0.0
+
+    graph_k_cfg = getattr(analysis.config, "graph_knn_k", None)
+    try:
+        graph_k = int(graph_k_cfg) if graph_k_cfg is not None else 0
+    except (TypeError, ValueError):
+        graph_k = 0
+    if graph_k <= 0:
+        graph_k = 10
+
+    rank_nystrom_cfg = getattr(analysis.config, "rank_nystrom", None)
+    print("rank_nystrom:", rank_nystrom_cfg)
+    try:
+        rank_nystrom = int(rank_nystrom_cfg) if rank_nystrom_cfg is not None else 200
+    except (TypeError, ValueError):
+        rank_nystrom = 200
+
+    lobpcg_tol_cfg = getattr(analysis.config, "lobpcg_tol", 1e-5)
+    try:
+        lobpcg_tol = float(lobpcg_tol_cfg)
+    except (TypeError, ValueError):
+        lobpcg_tol = 1e-5
+
+    lobpcg_maxiter_cfg = getattr(analysis.config, "lobpcg_maxiter", 200)
+    try:
+        lobpcg_maxiter = int(lobpcg_maxiter_cfg)
+    except (TypeError, ValueError):
+        lobpcg_maxiter = 200
+
+    use_faiss_graph = bool(getattr(analysis.config, "use_faiss_graph", False))
+    fast_use_nystrom = bool(getattr(analysis.config, "fast_use_nystrom", True))
+    fast_use_lobpcg = bool(getattr(analysis.config, "fast_use_lobpcg", True))
+    public_anchor_count = int(getattr(analysis.config, "public_anchor_count", 0) or 0)
+
+    projs, Z_integ, eigvals, gammas = build_nonlinear_projectors_faster(
+        anchors_inter=analysis.anchors_inter,
+        Xs_train_inter=analysis.Xs_train_inter,
+        anchor=analysis.anchor,
+        dim_integrate=_dim_integrate(analysis.config),
+        gamma_type=getattr(analysis.config, "gamma_type", "auto"),
+        gamma_ratio_krr=getattr(analysis.config, "gamma_ratio_krr", 1.0),
+        nl_lambda=getattr(analysis.config, "nl_lambda", 1e-2),
+        kernel_type=str(getattr(analysis.config, "kernel_type", "rbf") or "rbf"),
+        graph_mu_align=graph_mu_align,
+        laplacian_k=graph_k,
+        zerosum=bool(getattr(analysis.config, "zerosum", False)),
+        rank_nystrom=rank_nystrom,
+        lobpcg_tol=lobpcg_tol,
+        lobpcg_maxiter=lobpcg_maxiter,
+        use_faiss_graph=use_faiss_graph,
+        use_nystrom=fast_use_nystrom,
+        use_lobpcg=fast_use_lobpcg,
+        public_anchor_count=public_anchor_count,
+        random_state=getattr(analysis.config, "seed", None),
+    )
+    gammas_mean = float(np.mean(gammas)) if gammas else None
+    analysis.config.gamma_krr_means = gammas_mean
+    extras: Dict[str, object] = {"Z_integ": Z_integ, "eigvals": eigvals, "gammas": gammas}
+    analysis.Z_integ = extras.get("Z_integ")
+    return projs, extras
+
+
 def _dim_integrate(config: Config) -> int:
+    """
+    Determine and cache the integration dimension.
+
+    Preference order:
+      1) config.dim_integrate (if set)
+      2) config.dim_intermediate
+    The resolved value is written back to config.dim_integrate so that
+    downstream helpers can reliably infer the output dimension.
+    """
     dim = getattr(config, "dim_integrate", None)
     if dim is None:
         dim = getattr(config, "dim_intermediate", None)
     if dim is None:
         raise ValueError("dim_integrate is not set in the config.")
-    return int(dim)
+    dim_int = int(dim)
+    if getattr(config, "dim_integrate", None) is None:
+        config.dim_integrate = dim_int
+    return dim_int
+
+
+def _apply_random_linear_post_transform(
+    config: Config,
+    projs: list,
+    extras: Dict[str, object],
+    *,
+    method_tag: str,
+) -> tuple[list, Dict[str, object]]:
+    """
+    Apply a shared random linear transform on the right to all integrated
+    representations produced by linear projectors (X -> X @ G_i).
+
+    - Generate an orthogonal matrix Q via QR with seed (seed + Q_seed).
+    - Generate an invertible matrix R with seed (seed + R_seed).
+    - Combined transform T = Q @ R is applied as:
+        proj'_i(X) = proj_i(X) @ T
+      and, if Z_integ is present, Z'_integ = Z_integ @ T.
+
+    If seeds are not provided, or the output dimension cannot be inferred,
+    this function is a no-op.
+    """
+    # Infer output dimension: prefer Z_integ, fallback to config.dim_integrate.
+    Z = extras.get("Z_integ")
+    if isinstance(Z, np.ndarray) and Z.ndim == 2 and Z.shape[1] > 0:
+        dim_out = int(Z.shape[1])
+    else:
+        dim_cfg = getattr(config, "dim_integrate", None)
+        dim_out = int(dim_cfg) if dim_cfg is not None else None
+
+    if dim_out is None or dim_out <= 0:
+        return projs, extras
+
+    base_seed = getattr(config, "seed", None)
+    base = int(base_seed) if base_seed is not None else 0
+
+    q_offset = getattr(config, "Q_seed", None)
+    r_offset = getattr(config, "R_seed", None)
+    if q_offset is None and r_offset is None:
+        # No dedicated seeds specified -> keep behavior unchanged.
+        return projs, extras
+
+    def _as_int_offset(val: object) -> int:
+        """Safely convert possibly list/tuple/scalar to int offset."""
+        if val is None:
+            return 0
+        if isinstance(val, (list, tuple)):
+            # e.g., grid search may pass [1,2,...]; take the first
+            return _as_int_offset(val[0] if val else 0)
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return 0
+
+    q_seed = base + _as_int_offset(q_offset)
+    r_seed = base + _as_int_offset(r_offset)
+
+    rng_Q = np.random.default_rng(q_seed)
+    rng_R = np.random.default_rng(r_seed)
+
+    # Random orthogonal via QR
+    A_Q = rng_Q.normal(size=(dim_out, dim_out))
+    Q, R_qr = np.linalg.qr(A_Q)
+    diag = np.sign(np.diag(R_qr))
+    diag[diag == 0] = 1.0
+    Q = Q * diag
+
+    # Random well-conditioned invertible matrix
+    max_trials = 50
+    T_R = None
+    for _ in range(max_trials):
+        M = rng_R.normal(size=(dim_out, dim_out))
+        try:
+            cond = np.linalg.cond(M)
+        except np.linalg.LinAlgError:
+            continue
+        if np.isfinite(cond) and cond < 1e12:
+            T_R = M
+            break
+    if T_R is None:
+        T_R = np.eye(dim_out)
+
+    T = Q @ T_R
+
+    def _wrap_proj(proj):
+        def wrapped(X):
+            return proj(X) @ T
+
+        return wrapped
+
+    new_projs = [_wrap_proj(p) for p in projs]
+
+    if isinstance(Z, np.ndarray) and Z.ndim == 2 and Z.shape[1] == dim_out:
+        extras = dict(extras)
+        extras["Z_integ"] = Z @ T
+
+    # Expose the transform for downstream inspection / debugging.
+    setattr(config, f"random_transform_{method_tag}", T)
+
+    return new_projs, extras
 
 
 _INTEGRATION_RUNNERS: Dict[str, IntegrationRunner] = {
@@ -535,9 +815,11 @@ _INTEGRATION_RUNNERS: Dict[str, IntegrationRunner] = {
     "gep": _run_gep_integration,
     "gep_2": _run_gep2_integration,
     "gep2": _run_gep2_integration,
+    "faster_gep": _run_faster_gep_integration,
     "odc": _run_odc_integration,
     "nonlinear": _run_nonlinear_integration,
     "nonlinear_maximize": _run_nonlinear_max_integration,
+    "nonlinear_faster": _run_nonlinear_faster_integration,
     "laplacian_nonlinear": _run_laplacian_nonlinear_integration,
     "graph_nonlinear": _run_graph_nonlinear_integration,
     "graph_nonlinear_minimize": _run_graph_nonlinear_integration,

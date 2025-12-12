@@ -941,7 +941,16 @@ def load_data(config: Config) -> pd.DataFrame:
     le = LabelEncoder()
     df_raw["target"] = le.fit_transform(df_raw["target"])
 
-    df_proc = _one_hot_and_scale(df_raw)
+    # config.preprocess (or legacy typo config.preprossess) controls whether
+    # one-hot + scaling is applied. Default is True if not specified.
+    preprocess_flag = getattr(config, "preprocess", None)
+    if preprocess_flag is None:
+        preprocess_flag = getattr(config, "preprossess", True)
+
+    if preprocess_flag:
+        df_proc = _one_hot_and_scale(df_raw)
+    else:
+        df_proc = df_raw
     return df_proc
 
 # -------------------------------------------------- #

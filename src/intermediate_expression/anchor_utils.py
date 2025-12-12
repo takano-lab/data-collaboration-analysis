@@ -129,7 +129,7 @@ def produce_anchor(
         X_parts: list[np.ndarray] = []
         y_parts: list[np.ndarray] = []
 
-        # 1) public anchors
+        # 1) public anchors (kept as a contiguous prefix)
         X_parts.append(X0)
         y_parts.append(y0)
 
@@ -205,24 +205,36 @@ def produce_anchor(
             X_parts.append(Xg)
             y_parts.append(yg)
 
-        anchor = np.vstack(X_parts) if X_parts else rng.normal(size=(num_row, columns))
-        anchor_labels = np.concatenate(y_parts) if y_parts else np.full((anchor.shape[0],), np.nan)
+        # Separate public vs synthetic parts to keep public anchors as a prefix.
+        X_public = X_parts[0] if X_parts else np.zeros((0, columns))
+        y_public = y_parts[0] if y_parts else np.zeros((0,))
+        X_other = np.vstack(X_parts[1:]) if len(X_parts) > 1 else np.zeros((0, columns))
+        y_other = np.concatenate(y_parts[1:]) if len(y_parts) > 1 else np.zeros((0,))
 
-        # Ensure correct count and shuffle consistently
-        if anchor.shape[0] > num_row:
-            idx = rng.choice(anchor.shape[0], size=num_row, replace=False)
-            anchor = anchor[idx]
-            anchor_labels = anchor_labels[idx]
-        elif anchor.shape[0] < num_row:
-            deficit = num_row - anchor.shape[0]
-            extra_X = rng.normal(size=(deficit, columns))
-            extra_y = np.full((deficit,), np.nan)
-            anchor = np.vstack([anchor, extra_X])
-            anchor_labels = np.concatenate([anchor_labels, extra_y])
-
-        perm = rng.permutation(num_row)
-        anchor = anchor[perm]
-        anchor_labels = anchor_labels[perm]
+        n_public_eff = X_public.shape[0]
+        if num_row <= n_public_eff:
+            idx = rng.choice(n_public_eff, size=num_row, replace=False)
+            anchor = X_public[idx]
+            anchor_labels = y_public[idx]
+        else:
+            keep_public = n_public_eff
+            need_other = num_row - keep_public
+            if X_other.shape[0] >= need_other and X_other.shape[0] > 0:
+                idx_other = rng.choice(X_other.shape[0], size=need_other, replace=False)
+                X_sel = X_other[idx_other]
+                y_sel = y_other[idx_other]
+            else:
+                # Use all available synthetic anchors and fill the rest with Gaussian noise.
+                X_sel = X_other
+                y_sel = y_other
+                deficit = max(0, need_other - X_sel.shape[0])
+                if deficit > 0:
+                    extra_X = rng.normal(size=(deficit, columns))
+                    extra_y = np.full((deficit,), np.nan)
+                    X_sel = np.vstack([X_sel, extra_X]) if X_sel.size > 0 else extra_X
+                    y_sel = np.concatenate([y_sel, extra_y]) if y_sel.size > 0 else extra_y
+            anchor = np.vstack([X_public[:keep_public], X_sel])
+            anchor_labels = np.concatenate([y_public[:keep_public], y_sel])
 
         if return_labels:
             return anchor, anchor_labels

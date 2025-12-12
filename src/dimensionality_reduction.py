@@ -350,6 +350,7 @@ def _run_samespan(X, n_components, *, config=None, seed=None, **kwargs) -> Proje
     if l > m:
         raise ValueError("samespan: l(=n_components) > 特徴次元 は未対応です")
     seed_val = _resolve_seed(seed, config)
+    print("seed_val", seed_val)
     rng = np.random.default_rng(seed_val)
     A = rng.standard_normal(size=(m, l))
     Q, R = np.linalg.qr(A, mode="reduced")
