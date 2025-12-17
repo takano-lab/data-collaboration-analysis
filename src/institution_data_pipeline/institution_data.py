@@ -561,6 +561,11 @@ def to_institution_arrays(
 
     dist = getattr(config, "data_distribution", None)
 
+    if dist == "fixed":
+        # train_df / test_df には既に inst_id 等の列は含まれていない想定なので、
+        # 分割は prepare_institutional_dataset 側で完了しており、ここでは even と同様に扱う。
+        pass  # 下の even ロジックをそのまま使う
+
     if dist in ("division", "bias"):
         # --- train blocks (機関順で per_inst 件ずつ) ---
         y_train_ser = train_df[y_name]

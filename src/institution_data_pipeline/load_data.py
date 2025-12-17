@@ -221,6 +221,38 @@ def _load_3D_8_gaussian_clusters_df() -> pd.DataFrame:
 
     return df
 
+
+def _load_shared_subspace_from_csv(suffix: str) -> pd.DataFrame:
+    """
+    Load synthetic shared_subspace dataset from CSV.
+
+    Expected columns:
+        inst_id, sample_id, y, x_0, x_1, x_2, ...
+    - sample_id は削除
+    - y 列は target にリネーム
+    - inst_id はそのまま残す（後段の data_distribution='fixed' で利用）
+    """
+    path = Path(f"input/dataset_label_{suffix}.csv")
+    if not path.exists():
+        raise FileNotFoundError(f"shared_subspace CSV not found: {path}")
+
+    df = pd.read_csv(path)
+    if "y" in df.columns and "target" not in df.columns:
+        df = df.rename(columns={"y": "target"})
+    if "sample_id" in df.columns:
+        df = df.drop(columns=["sample_id"])
+    if "target" not in df.columns:
+        raise ValueError("shared_subspace CSV must contain 'y' or 'target' column.")
+    return df
+
+
+def _load_shered_subspace_N() -> pd.DataFrame:
+    return _load_shared_subspace_from_csv("N")
+
+
+def _load_shered_subspace_P() -> pd.DataFrame:
+    return _load_shared_subspace_from_csv("P")
+
 def load_tdc_dataset(name: str, **kwargs) -> pd.DataFrame:
     """
     指定した TDC データセットを DataFrame で返す。
@@ -896,6 +928,9 @@ LOADERS = {
     "fashion_mnist": _load_fashion_mnist_df,
     # Subset MNIST
     "mnist_1248": _load_mnist_df_1248,
+    # Shared-subspace synthetic datasets
+    "shered_subspace_N": _load_shered_subspace_N,
+    "shered_subspace_P": _load_shered_subspace_P,
 }
 
 def drop_rare_labels(df, ycol="target", min_count=2):

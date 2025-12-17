@@ -9,7 +9,10 @@ from tqdm import tqdm
 
 from config.config import Config
 from src.common import ArtifactStore, DatasetArtifacts, IntermediateArtifacts
-from src.dimensionality_reduction import build_dimensionality_projector
+from src.dimensionality_reduction import (
+    build_dimensionality_projector,
+    build_shared_subspace_projectors,
+)
 
 from .anchor_utils import (
     assign_anchor_labels,
@@ -264,6 +267,19 @@ class IntermediateExpressionBuilder:
             ftypes = _FTYPE_MIXTURES.get(tf, [tf])
         else:
             ftypes = [getattr(self.config, "F_type", "svd")]
+
+        # 特別扱い: 共有部分空間 F_type=shared_subspace
+        if all(str(ft).lower() == "shared_subspace" for ft in ftypes):
+            count = len(dataset.Xs_train)
+            if count == 0:
+                return []
+            num_features = dataset.Xs_train[0].shape[1]
+            projectors = build_shared_subspace_projectors(
+                num_features=num_features,
+                num_institution=count,
+                config=self.config,
+            )
+            return projectors
 
         base_seed = int(getattr(self.config, "f_seed", 0) or 0)
         projectors = []

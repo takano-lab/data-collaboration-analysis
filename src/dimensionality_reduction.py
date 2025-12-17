@@ -274,6 +274,124 @@ def _resolve_seed(seed: Optional[int], config, default: int = 0) -> int:
         return int(f_seed)
     return int(_cfg_int(config, "seed", default))
 
+
+def build_shared_subspace_projectors(
+    num_features: int,
+    num_institution: int,
+    config: Any,
+) -> list[Projector]:
+    """
+    共有部分空間 F_k を用いた線形写像を各機関分まとめて構成する。
+
+    記号:
+        m = num_features
+        c = num_institution
+        l = dim_intermediate  (最終次元, F_k の列数)
+        r = dim_integrate     (共有部分 Q の列数)
+
+    条件（スライドに対応）:
+        c(l - r) <= m - r
+    """
+    m = int(num_features)
+    c = int(num_institution)
+
+    # 記号対応
+    l = int(_cfg_int(config, "dim_intermediate", 10))
+    r = int(getattr(config, "dim_integrate", l) or l)
+
+    # l >= r を要求
+    if r > l:
+        raise ValueError(
+            f"shared_subspace: dim_intermediate(={l}) must be >= dim_integrate(={r})."
+        )
+
+    # 各 R_k の列数 p = l - r
+    p = l - r
+
+    # スライドの条件: c(l - r) <= m - r
+    if p > 0 and c * p > m - r:
+        raise ValueError(
+            f"shared_subspace: c*(l-r)={c*p} must be <= m-r={m-r}. "
+            "条件を満たすように dim_intermediate / dim_integrate / num_institution を調整してください."
+        )
+
+    # 乱数シード
+    q_seed = _cfg_int(config, "Q_seed", 0)
+    r_seed = _cfg_int(config, "R_seed", 1)
+    rng_q = np.random.default_rng(q_seed)
+    rng_r = np.random.default_rng(r_seed)
+
+    # Step B: 共有基底 Q (m × r)
+    G = rng_q.standard_normal(size=(m, r))
+    Q, R = np.linalg.qr(G, mode="reduced")
+    # 列の向きの不定性を固定
+    signs = np.sign(np.diag(R))
+    signs[signs == 0] = 1.0
+    Q *= signs
+
+    # Step C: 直交補 Q_perp (m × (m-r))
+    H = rng_q.standard_normal(size=(m, m - r))
+    H1 = (np.eye(m) - Q @ Q.T) @ H
+    Q_perp, _ = np.linalg.qr(H1, mode="reduced")
+
+    # 各機関の私有基底 R_k (m × p)
+    R_list: list[np.ndarray] = []
+    if p > 0:
+        # 単純なブロック分割
+        for k in range(c):
+            start = k * p
+            end = start + p
+            if end > Q_perp.shape[1]:
+                raise ValueError(
+                    "shared_subspace: Q_perp の列数が不足しています。"
+                    "条件 c*(l-r) <= m-r を満たすように設定してください."
+                )
+            Rk = Q_perp[:, start:end]
+            R_list.append(Rk)
+
+    # 微小回転用の角度・スケール
+    theta_ss = float(getattr(config, "theta_ss", 0.0) or 0.0)
+    gamma_ss = float(getattr(config, "gamma_ss", 1.0) or 1.0)
+
+    # Step 5: 微小回転用 U_k（θ_ss ≠ 0 のときだけ）
+    Uk_list: list[np.ndarray] = []
+    if abs(theta_ss) > 0.0:
+        # U_k は Q^T U_k = 0 を満たすように構成
+        for _ in range(c):
+            Bk = rng_r.standard_normal(size=(m, r))
+            Hk = (np.eye(m) - Q @ Q.T) @ Bk
+            Uk, _ = np.linalg.qr(Hk, mode="reduced")
+            Uk_list.append(Uk[:, :r])
+
+    projectors: list[Projector] = []
+    half_c = c // 2  # 前半・後半を分ける境目（0〜half_c-1 が前半）
+
+    for k in range(c):
+        Qk = Q
+        if abs(theta_ss) > 0.0 and Uk_list:
+            Uk = Uk_list[k]
+            Qk = Q * np.cos(theta_ss) + Uk * np.sin(theta_ss)
+
+        if p > 0:
+            Rk = R_list[k]
+            # 前半の機関だけ gamma_ss を掛ける、後半は 1.0
+            gamma_k = gamma_ss if k < half_c else 1.0
+            Fk = np.concatenate([Qk, gamma_k * Rk], axis=1)  # m × l
+        else:
+            Fk = Qk  # 私有成分なし (l == r)
+
+        def _make_projector(F: np.ndarray) -> Projector:
+            def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+                if data is None:
+                    return None
+                return np.asarray(data, dtype=float) @ F
+
+            return projector
+
+        projectors.append(_make_projector(Fk))
+
+    return projectors
+
 # ============================================================
 # 実行ラッパ（F_type ごとの実装）
 # すべて「4要素タプル (train, test, anchor, anchor_test)」を返す

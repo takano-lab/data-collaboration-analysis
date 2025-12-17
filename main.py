@@ -9,7 +9,7 @@ from collections import OrderedDict
 from itertools import product
 from logging import INFO, FileHandler, Formatter, StreamHandler, getLogger
 from typing import Any, Dict, List, Sequence
-
+import numpy  as np
 import pandas as pd
 
 from config.config import Config
@@ -47,12 +47,15 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     # "ecoli",
     # "vowel"
     # "coil20"
+    #"shered_subspace_N",
+    #"shered_subspace_P",
 ],# + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
+    "seed_values":[i for i in range(102, 103)],  # 例: [[1,2,3,4,5]
     "svd_ratio":[0], #, 0.25, 0.5, 0.75, 1
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "F_type": ["svd"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",
-    "G_type": ["faster_gep", "targetvec", "imakura", "odc"],#"faster_gep", "targetvec", "imakura", laplacian_nonlinear"graph_nonlinear", "nonlinear" "imakura", "odc", "gep", "fl", "centralize", "individual"#,"graph_nonlinear", "nonlinear" "graph_nonlinear_maximize",  "graph_nonlinear_x", "graph_nonlinear_x_maximize", "kernel_gep", "kernel_graph_gep",  "kernel_graph_gep_maximize", 
+    "F_type": ["umap"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",, "random_projection"
+    "G_type": ["laplacian_nonlinear", "imakura"],#, "targetvec_new", "imakura", "nonlinear", "nonlinear_nonridge""targetvec",, "nonlinear"  , "faster_gep", "gep_new"imakura", "imakura_new", "faster_gep", "targetvec", "imakura", laplacian_nonlinear"graph_nonlinear", "nonlinear" "imakura", "odc", "gep", "fl", "centralize", "individual"#,"graph_nonlinear", "nonlinear" "graph_nonlinear_maximize",  "graph_nonlinear_x", "graph_nonlinear_x_maximize", "kernel_gep", "kernel_graph_gep",  "kernel_graph_gep_maximize", 
     "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
     "gamma_ratio_krr": [1], #, 0.1, 0.3, 3, 10 
     "graph_knn_k": [10],
@@ -67,35 +70,38 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "visualize": [False],
     #"feature_num": [2],
     "dim_intermediate": [10],#[20, 10, 5, 2], 6
-    #"dim_integrate": [10],#[20, 10, 5, 2], 6
+    "dim_integrate": [10],#[20, 10, 5, 2], 6
     "num_institution_user": [100],
     "num_institution": [10],
     "K_normalization":[False],
     "anchor_method":["smote"], #gaussian smote 
     "smote_ratio":[1],#, 0, 0.1, 0.25, 0.5, 1],
     "data_distribution":["bias"],# "division" "even"
-    "inter_normalization":[False, True],
+    "inter_normalization":[True],
     "evaluate_integrate_metrics":[True],
     "load_df_data":[True],
     "load_intermediate_data":[True],
     "preserve_integrated_data":[False],
     "umap_neighbors":[10],
-    "bias_ratio":[0.9], # 0.1, 0.4, 0.6, 0.95, 0.8 
-    "max_dim":[10000],
+    "bias_ratio":[0.1, 0.9], # 0.1, 0.4, 0.6, 0.95, 0.8 
+    "max_dim":[100000000],
     "zerosum":[False, True],
     "anchor_label_max_dist": [100000],
     # ★ 高速版専用パラメータ
-    "rank_nystrom":[200],      # r' を r と同じにしてほぼフルランク
-    "lobpcg_tol":[1e-4],        # 収束をきつめに
-    "lobpcg_maxiter":[300],
-    "use_faiss_graph":[False],  # グラフ近似はオフ（元と同じグラフ）
-    "fast_use_nystrom": [False],
-    "fast_use_lobpcg": [False],
-    "Q_seed":[None],
-    "R_seed":[None],
+    #"rank_nystrom":[200],      # r' を r と同じにしてほぼフルランク
+    #"lobpcg_tol":[1e-4],        # 収束をきつめに
+    #"lobpcg_maxiter":[300],
+    #"use_faiss_graph":[False],  # グラフ近似はオフ（元と同じグラフ）
+    #"fast_use_nystrom": [False],
+    #"fast_use_lobpcg": [False],
+    #"Q_seed":[None],
+    #"R_seed":[None],
+    #"theta_ss":[np.deg2rad(20)], # np.deg2rad(10)
+    #"gamma_ss":[1],
+    #"alpha_ss":[0],
     "preprocess":[True],
     #"helmert":[True],
-    "seed_values":[i for i in range(11, 12)],  # 例: [[1,2,3,4,5]
+    "truncated ":[False],
     })
 
 # "gamma_ratio"
@@ -107,7 +113,7 @@ ERROR_SKIP =False
 
 # 3) DataFrameに保持したい「パラメータ列」（順序もこの通り）
 PARAM_COLUMNS: List[str] = [
-    "dataset", "h_model", "F_type", "G_type", "gamma_ratio", "gamma_type", "gamma_ratio_krr", "num_anchor_data", "nl_lambda", "lw_alpha", "metrics", "dim_intermediate", "dim_integrate", "num_institution_user", "num_institution", "anchor_method", "smote_ratio", "data_distribution", "inter_normalization", "evaluate_integrate_metrics", "umap_neighbors", "bias_ratio", "svd_ratio", "zerosum", "kernel_type"
+    "dataset", "h_model", "F_type", "G_type", "gamma_ratio", "gamma_type", "gamma_ratio_krr", "num_anchor_data", "nl_lambda", "lw_alpha", "metrics", "dim_intermediate", "dim_integrate", "num_institution_user", "num_institution", "anchor_method", "smote_ratio", "data_distribution", "inter_normalization", "evaluate_integrate_metrics", "umap_neighbors", "bias_ratio", "svd_ratio", "zerosum", "kernel_type", "truncated"
 ]
 
 # 3-2) train/test_df のDataFrameに保持する名前
@@ -149,6 +155,9 @@ DEFAULTS = {
     "graph_mu_align": 1.0,
     "graph_lambda_rkhs": 1e-2,
     "graph_stability_eps": 1e-6,
+    "theta_ss": 0.0,
+    "gamma_ss": 1.0,
+    "truncated": False,
 }
 
 DEFAULT_SMOTE = 1.0
@@ -189,16 +198,16 @@ _DATASET_DEFAULTS = {
     
 RULES: List[Dict[str, Any]] = [
     {"type": "LOCK", "when": {"G_type": ["centralize", "individual"]}, "lock": {"gamma_ratio": DEFAULTS["gamma_ratio"]}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "imakura", "gep", "gep2",  "odc",]}, "lock": {"nl_lambda": DEFAULTS["nl_lambda"]}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "gep", "gep2",  "odc",]}, "lock": {"gamma_ratio_krr": DEFAULTS["gamma_ratio_krr"]}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "gep", "gep2",  "odc"]}, "lock": {"graph_mu_align": 0, "graph_lambda_rkhs": 0, "graph_stability_eps": 0}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "gep", "gep2",  "odc"]}, "lock": {"graph_knn_k": None}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl"]}, "lock": {"zerosum": False}},
+    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "imakura", "imakura_new", "gep", "gep_new", "gep2",  "odc",]}, "lock": {"nl_lambda": DEFAULTS["nl_lambda"]}},
+    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "imakura_new", "gep", "gep_new", "gep2",  "odc",]}, "lock": {"gamma_ratio_krr": DEFAULTS["gamma_ratio_krr"]}},
+    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "imakura_new", "gep", "gep_new", "gep2",  "odc"]}, "lock": {"graph_mu_align": 0, "graph_lambda_rkhs": 0, "graph_stability_eps": 0}},
+    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "imakura_new", "gep", "gep_new", "gep2",  "odc"]}, "lock": {"graph_knn_k": None}},
+    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "faster_gep", "targetvec", "targetvec_new", "imakura", "imakura_new", "odc", "gep", "gep_new"]}, "lock": {"zerosum": False}},
     {"type": "LOCK", "when": {"G_type": ["graph_nonlinear"]}, "lock": {"graph_knn_k":100000, "graph_mu_align": 0}},
     {"type": "LOCK", "when": {"G_type": ["nonlinear"]}, "lock": {"graph_mu_align": 0}}, # グラフ使わない
     #{"type": "LOCK", "when": {"G_type": ["nonlinear"]}, "lock": {"inter_normalization": False}},
     {"type": "LOCK", "when": {"G_type": ["graph_nonlinear_x_maximize"]}, "lock": {"graph_mu_align": 0.5}},
-    {"type": "LOCK", "when": {"G_type": ["graph_nonlinear",  "kernel_graph_gep", "kernel_gep", "gep", "imakura", "odc", "individual", "centralize",  "fl"]}, "lock": {"lw_alpha":  DEFAULTS["lw_alpha"]}},
+    {"type": "LOCK", "when": {"G_type": ["graph_nonlinear",  "kernel_graph_gep", "kernel_gep", "gep", "gep_new", "imakura", "imakura_new", "odc", "individual", "centralize",  "fl"]}, "lock": {"lw_alpha":  DEFAULTS["lw_alpha"]}},
     # F_type による固定: ae のとき比率指定と gamma_type=median
     #{"type": "LOCK", "when": {"F_type": ["ae"]}, "lock": {"dim_intermediate": "*0.8", "dim_integrate": "*0.8", "gamma_type": "median"}},
     # F_type による固定: umap のとき固定次元と gamma_type=fixed

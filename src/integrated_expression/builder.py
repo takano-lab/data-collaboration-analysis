@@ -24,6 +24,7 @@ from .runners import (
     build_graph_nonlinear_X_projectors_maximize,
     build_graph_nonlinear_X_projectors_minimize,
     build_imakura_projectors,
+    build_imakura_new_projectors,
     build_kernel_gep_projectors,
     build_kernel_graph_gep_projectors,
     build_nonlinear_projectors,
@@ -32,6 +33,8 @@ from .runners import (
     build_multi_cca_projectors,
     build_odc_projectors,
     build_targetvec_projectors,
+    build_targetvec_new_projectors,
+    build_gep_new_projectors,
 )
 from src.intermediate_expression.anchor_utils import build_laplacians_from_anchor_labels
 
@@ -166,6 +169,12 @@ class IntegratedExpressionBuilder:
 
         extras = extras or {}
         self.Z_integ = extras.get("Z_integ")
+        # ここで Z_integ のランクを見る
+        if self.Z_integ is not None:
+            rank = np.linalg.matrix_rank(self.Z_integ)
+            print(f"[Z_integ] shape={self.Z_integ.shape}, rank={rank}")
+            # 必要なら config にも入れておく
+            setattr(self.config, "Z_integ_rank", float(rank))
         # Build aggregated / convenience representations for analysis.
         X_integ = np.vstack(self.Xs_train_integ) if self.Xs_train_integ else None
         # Take a representative integrated anchor set (first non-empty) and its labels.
@@ -233,7 +242,7 @@ class IntegratedExpressionBuilder:
         self.ys_test_integ = list(artifacts.ys_test_integ)
         self.Z_integ = artifacts.Z_integ
 
-def _build_anchor_laplacians_for_integrated(self) -> tuple[np.ndarray | None, np.ndarray | None]:
+    def _build_anchor_laplacians_for_integrated(self) -> tuple[np.ndarray | None, np.ndarray | None]:
         """
         Build label-aware anchor Laplacians (L_within, L_between) at integration stage.
         Uses the same construction as intermediate_expression.builder.
@@ -312,6 +321,24 @@ def _run_imakura_integration(analysis: "IntegratedExpressionBuilder") -> tuple[l
     return projs, extras
 
 
+def _run_imakura_new_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    zerosum = bool(getattr(analysis.config, "zerosum", False))
+    anchors_inter = _apply_zerosum_helmert_to_anchors(analysis.anchors_inter, zerosum)
+    truncated = bool(getattr(analysis.config, "truncated", False))
+    projs, Z_integ, g_abs_sum = build_imakura_new_projectors(
+        anchors_inter=anchors_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+        truncated=truncated,
+    )
+    analysis.config.g_abs_sum = g_abs_sum
+    extras: Dict[str, object] = {"Z_integ": Z_integ}
+    projs, extras = _apply_random_linear_post_transform(
+        analysis.config, projs, extras, method_tag="imakura_new"
+    )
+    analysis.Z_integ = extras.get("Z_integ")
+    return projs, extras
+
+
 def _run_targetvec_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
     zerosum = bool(getattr(analysis.config, "zerosum", False))
     anchors_inter = _apply_zerosum_helmert_to_anchors(analysis.anchors_inter, zerosum)
@@ -322,6 +349,23 @@ def _run_targetvec_integration(analysis: "IntegratedExpressionBuilder") -> tuple
     extras: Dict[str, object] = {"Z_integ": Z_integ}
     projs, extras = _apply_random_linear_post_transform(
         analysis.config, projs, extras, method_tag="targetvec"
+    )
+    analysis.Z_integ = extras.get("Z_integ")
+    return projs, extras
+
+
+def _run_targetvec_new_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    zerosum = bool(getattr(analysis.config, "zerosum", False))
+    anchors_inter = _apply_zerosum_helmert_to_anchors(analysis.anchors_inter, zerosum)
+    truncated = bool(getattr(analysis.config, "truncated", False))
+    projs, Z_integ = build_targetvec_new_projectors(
+        anchors_inter=anchors_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+        truncated=truncated,
+    )
+    extras: Dict[str, object] = {"Z_integ": Z_integ}
+    projs, extras = _apply_random_linear_post_transform(
+        analysis.config, projs, extras, method_tag="targetvec_new"
     )
     analysis.Z_integ = extras.get("Z_integ")
     return projs, extras
@@ -341,12 +385,33 @@ def _run_gep_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list,
         lambda_gen=lambda_gen,
         orth_ver=bool(getattr(analysis.config, "orth_ver", False)),
     )
+
     for key, value in metrics.items():
         setattr(analysis.config, key, value)
     extras: Dict[str, object] = dict(metrics)
     extras.setdefault("Z_integ", None)
     projs, extras = _apply_random_linear_post_transform(
         analysis.config, projs, extras, method_tag="gep"
+    )
+    analysis.Z_integ = extras.get("Z_integ")
+    return projs, extras
+
+
+def _run_gep_new_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    """
+    Integration runner for pairwise (QR+SVD-based) GEP_new.
+    """
+    zerosum = bool(getattr(analysis.config, "zerosum", False))
+    anchors_inter = _apply_zerosum_helmert_to_anchors(analysis.anchors_inter, zerosum)
+    truncated = bool(getattr(analysis.config, "truncated", False))
+    projs, Z_integ = build_gep_new_projectors(
+        anchors_inter=anchors_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+        truncated=truncated,
+    )
+    extras: Dict[str, object] = {"Z_integ": Z_integ}
+    projs, extras = _apply_random_linear_post_transform(
+        analysis.config, projs, extras, method_tag="gep_new"
     )
     analysis.Z_integ = extras.get("Z_integ")
     return projs, extras
@@ -423,7 +488,10 @@ def _run_odc_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list,
 def _run_nonlinear_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
     graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 0.0)
     graph_mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 0.0
-    L_within, L_between = analysis._build_anchor_laplacians_for_integrated()
+    if graph_mu_align == 0.0:
+        L_within, L_between = None, None
+    else:
+        L_within, L_between = analysis._build_anchor_laplacians_for_integrated()
     projs, Z_integ, eigvals, gammas = build_nonlinear_projectors(
         anchors_inter=analysis.anchors_inter,
         Xs_train_inter=analysis.Xs_train_inter,
@@ -602,6 +670,62 @@ def _run_laplacian_nonlinear_integration(analysis: "IntegratedExpressionBuilder"
     analysis.config.gamma_krr_means = gammas_mean
 
     # Effective rank of the true kernel matrices (per institution).
+    kernel_type_key = str(getattr(analysis.config, "kernel_type", "rbf") or "rbf").lower()
+    eff_ranks: list[float] = []
+    for k, anchor_inter_k in enumerate(analysis.anchors_inter):
+        if kernel_type_key == "linear":
+            K = anchor_inter_k @ anchor_inter_k.T
+        else:
+            gamma_k = gammas[k] if k < len(gammas) else 1.0
+            K = rbf_kernel(anchor_inter_k, anchor_inter_k, gamma=gamma_k)
+        eff_ranks.append(_effective_rank(K))
+    eff_rank_mean = float(np.mean(eff_ranks)) if eff_ranks else 0.0
+    analysis.config.kernel_effective_rank_mean = eff_rank_mean
+
+    extras = {
+        "Z_integ": Z_integ,
+        "eigvals": eigvals,
+        "gammas": gammas,
+        "kernel_effective_ranks": eff_ranks,
+    }
+    analysis.Z_integ = Z_integ
+    return projs, extras
+
+
+def _run_nonlinear_nonridge_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    # Use the same unlabeled graph as Laplacian-based nonlinear integration,
+    # but default graph_mu_align to 0 so that the graph term is disabled
+    # unless explicitly requested.
+    graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 0.0)
+    graph_mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 0.0
+
+    graph_k_cfg = getattr(analysis.config, "graph_knn_k", None)
+    try:
+        graph_k = int(graph_k_cfg) if graph_k_cfg is not None else 0
+    except (TypeError, ValueError):
+        graph_k = 0
+    if graph_k <= 0:
+        graph_k = 10
+
+    from .runners import build_laplacian_nonlinear_nonridge_projectors
+
+    projs, Z_integ, eigvals, gammas = build_laplacian_nonlinear_nonridge_projectors(
+        anchors_inter=analysis.anchors_inter,
+        Xs_train_inter=analysis.Xs_train_inter,
+        anchor=analysis.anchor,
+        dim_integrate=_dim_integrate(analysis.config),
+        gamma_type=getattr(analysis.config, "gamma_type", "auto"),
+        gamma_ratio_krr=getattr(analysis.config, "gamma_ratio_krr", 1.0),
+        nl_lambda=getattr(analysis.config, "nl_lambda", 1e-2),
+        kernel_type=str(getattr(analysis.config, "kernel_type", "rbf") or "rbf"),
+        graph_mu_align=graph_mu_align,
+        laplacian_k=graph_k,
+        zerosum=False,
+    )
+    gammas_mean = float(np.mean(gammas)) if gammas else None
+    analysis.config.gamma_krr_means = gammas_mean
+
+    # Effective rank of the true kernel matrices (per institution), for logging.
     kernel_type_key = str(getattr(analysis.config, "kernel_type", "rbf") or "rbf").lower()
     eff_ranks: list[float] = []
     for k, anchor_inter_k in enumerate(analysis.anchors_inter):
@@ -811,13 +935,17 @@ def _apply_random_linear_post_transform(
 
 _INTEGRATION_RUNNERS: Dict[str, IntegrationRunner] = {
     "imakura": _run_imakura_integration,
+    "imakura_new": _run_imakura_new_integration,
     "targetvec": _run_targetvec_integration,
+    "targetvec_new": _run_targetvec_new_integration,
     "gep": _run_gep_integration,
+    "gep_new": _run_gep_new_integration,
     "gep_2": _run_gep2_integration,
     "gep2": _run_gep2_integration,
     "faster_gep": _run_faster_gep_integration,
     "odc": _run_odc_integration,
     "nonlinear": _run_nonlinear_integration,
+    "nonlinear_nonridge": _run_nonlinear_nonridge_integration,
     "nonlinear_maximize": _run_nonlinear_max_integration,
     "nonlinear_faster": _run_nonlinear_faster_integration,
     "laplacian_nonlinear": _run_laplacian_nonlinear_integration,

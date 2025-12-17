@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 from numpy.linalg import pinv
 from scipy.linalg import block_diag, eigh
+from scipy.sparse.linalg import eigsh, svds
 from sklearn.metrics.pairwise import pairwise_distances, rbf_kernel
 
 from src.dimensionality_reduction import self_tuning_gamma
@@ -142,6 +143,73 @@ def _effective_rank(K: np.ndarray, *, eps: float = 1e-12) -> float:
     return float(np.exp(H))
 
 
+def _top_svd(
+    M: np.ndarray,
+    rank: int,
+    *,
+    truncated: bool = False,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute leading singular triplets of M.
+
+    When `truncated` is True and rank < min(m, n), use scipy.sparse.linalg.svds
+    to obtain the leading `rank` singular vectors; otherwise fall back to full
+    SVD via numpy.linalg.svd.
+    """
+    m, n = M.shape
+    k = min(rank, m, n)
+    if k <= 0 or M.size == 0:
+        return np.zeros((m, 0)), np.zeros((0,)), np.zeros((0, n))
+
+    if not truncated or k >= min(m, n):
+        U, S, Vt = np.linalg.svd(M, full_matrices=False)
+        return U[:, :k], S[:k], Vt[:k, :]
+
+    U, S, Vt = svds(M, k=k)
+    order = np.argsort(S)[::-1]
+    S = S[order]
+    U = U[:, order]
+    Vt = Vt[order, :]
+    return U, S, Vt
+
+
+def _top_eig_symmetric(
+    A: np.ndarray,
+    k: int,
+    *,
+    smallest: bool = True,
+    truncated: bool = False,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute k eigenpairs of a symmetric matrix A.
+
+    When `truncated` is True and k < n, use eigsh; otherwise fall back to full
+    eigh. Returns (eigvals, eigvecs), where eigvals are sorted ascending if
+    `smallest` is True, descending otherwise.
+    """
+    n = A.shape[0]
+    k_eff = min(max(k, 0), n)
+    if k_eff == 0:
+        return np.zeros((0,)), np.zeros((n, 0))
+
+    if not truncated or k_eff >= n:
+        eigvals, eigvecs = np.linalg.eigh(A)
+        if smallest:
+            idx = slice(0, k_eff)
+        else:
+            idx = slice(n - k_eff, n)
+        eigvals_sel = eigvals[idx]
+        eigvecs_sel = eigvecs[:, idx]
+        return eigvals_sel, eigvecs_sel
+
+    which = "SA" if smallest else "LA"
+    eigvals_sel, eigvecs_sel = eigsh(A, k=k_eff, which=which)
+    order = np.argsort(eigvals_sel)
+    if not smallest:
+        order = order[::-1]
+    eigvals_sel = eigvals_sel[order]
+    eigvecs_sel = eigvecs_sel[:, order]
+    return eigvals_sel, eigvecs_sel
+
+
 def _build_anchor_alignment_terms(Ks: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     if not Ks:
         return np.zeros((0, 0)), np.zeros((0, 0)), np.zeros((0, 0))
@@ -204,7 +272,6 @@ def build_imakura_projectors(
     centralized_anchor = np.hstack(anchors_inter)  # r �~ sum d_k
     U, _, _ = np.linalg.svd(centralized_anchor)
     U = U[:, :dim_integrate]
-
     Z_integ = U  # r �~ m_inter (retain for Z_integ)
     projs: List[Callable[[np.ndarray], np.ndarray]] = []
     g_abs_sum = 0.0
@@ -233,6 +300,62 @@ def build_targetvec_projectors(
     eigvals, eigvecs = np.linalg.eigh(C_tildeS)
     eigvals[eigvals < 0] = 0.0
     Z_integ = eigvecs[:, :dim_integrate]
+
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    for anchor_inter_k in anchors_inter:
+        proj, _Gk = compute_linear_integrator_from_Z_anchor(Z_integ, anchor_inter_k)
+        projs.append(proj)
+    return projs, Z_integ
+
+
+def build_imakura_new_projectors(
+    anchors_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    truncated: bool = False,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, float]:
+    """
+    Imakura (shared subspace maximization) with optional truncated SVD.
+    Uses SVD of W_A = [A_1, ..., A_c] to obtain Z* and then
+    G_k* = A_k^† Z* for each institution k.
+    """
+    if not anchors_inter:
+        return [], np.zeros((0, 0)), 0.0
+    centralized_anchor = np.hstack(anchors_inter)
+    U, _, _ = _top_svd(centralized_anchor, dim_integrate, truncated=truncated)
+    Z_integ = U
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    g_abs_sum = 0.0
+    for anchor_inter_k in anchors_inter:
+        proj, G_k = compute_linear_integrator_from_Z_anchor(Z_integ, anchor_inter_k)
+        g_abs_sum += float(np.sum(np.abs(G_k)))
+        projs.append(proj)
+    return projs, Z_integ, g_abs_sum
+
+
+def build_targetvec_new_projectors(
+    anchors_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    truncated: bool = False,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray]:
+    """
+    Target matrix optimization (TargetVec) based on QR+SVD formulation.
+
+    Each A_k is decomposed as A_k = Q_k R_k (thin QR), W_Q = [Q_1, ..., Q_c]
+    is formed, and Z* is given by the leading left singular vectors of W_Q.
+    """
+    if not anchors_inter:
+        return [], np.zeros((0, 0))
+
+    Q_list: List[np.ndarray] = []
+    for A in anchors_inter:
+        Q_k, _ = np.linalg.qr(A, mode="reduced")
+        Q_list.append(Q_k)
+
+    W_Q = np.hstack(Q_list)
+    U, _, _ = _top_svd(W_Q, dim_integrate, truncated=truncated)
+    Z_integ = U
 
     projs: List[Callable[[np.ndarray], np.ndarray]] = []
     for anchor_inter_k in anchors_inter:
@@ -600,6 +723,42 @@ def build_faster_gep_projectors(
         "output_dim": t,
     }
     return projs, metrics
+
+
+def build_gep_new_projectors(
+    anchors_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    truncated: bool = False,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray]:
+    """
+    Pairwise (GEP-like) method based on the QR+SVD formulation.
+
+    A_k = Q_k R_k (thin QR), W_Q = [Q_1, ..., Q_c], and the first stage
+    solution is Z* = U_Q(:, 1:p_hat) Σ_Q(1:p_hat,1:p_hat), where
+    W_Q = U_Q Σ_Q V_Q^T. Second stage uses G_k* = A_k^† Z*.
+    """
+    if not anchors_inter:
+        return [], np.zeros((0, 0))
+
+    Q_list: List[np.ndarray] = []
+    for A in anchors_inter:
+        Q_k, _ = np.linalg.qr(A, mode="reduced")
+        Q_list.append(Q_k)
+
+    W_Q = np.hstack(Q_list)
+    U, S, _ = _top_svd(W_Q, dim_integrate, truncated=truncated)
+    if U.shape[1] > 0:
+        D = np.diag(S[: U.shape[1]])
+        Z_integ = U @ D
+    else:
+        Z_integ = U
+
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    for anchor_inter_k in anchors_inter:
+        proj, _Gk = compute_linear_integrator_from_Z_anchor(Z_integ, anchor_inter_k)
+        projs.append(proj)
+    return projs, Z_integ
 
 
 def build_kernel_gep_projectors(
@@ -1167,6 +1326,106 @@ def build_laplacian_nonlinear_projectors(
     projs: List[Callable[[np.ndarray], np.ndarray]] = []
     for i, K in enumerate(Ks):
         B_k = np.linalg.inv(K + nl_lambda * I_r) @ Z_integ
+        proj = make_kernel_integrator(anchors_inter[i], B_k, gamma=gammas[i], kernel_type=kernel_type_key)
+        projs.append(proj)
+
+    return projs, Z_integ, eigvals_selected, gammas
+
+
+def build_laplacian_nonlinear_nonridge_projectors(
+    anchors_inter: List[np.ndarray],
+    Xs_train_inter: List[np.ndarray],
+    anchor: np.ndarray,
+    dim_integrate: int,
+    *,
+    gamma_type: str = "auto",
+    gamma_ratio_krr: float = 1.0,
+    nl_lambda: float = 1e-2,
+    kernel_type: str = "rbf",
+    graph_mu_align: float = 1.0,
+    laplacian_k: int = 10,
+    zerosum: bool = False,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
+    """
+    Laplacian-regularized kernel (nonlinear) projectors sharing the same
+    graph construction and scaling as build_laplacian_nonlinear_projectors,
+    but fitting per-institution mappings without ridge (K^+ Z instead of
+    (K + λI)^{-1} Z). λ is still used only for determining Z via M_λ.
+    """
+    if not anchors_inter:
+        return [], np.zeros((0, 0)), np.zeros((0,)), []
+
+    r = anchors_inter[0].shape[0]
+    if r == 0:
+        return [], np.zeros((0, 0)), np.zeros((0,)), []
+    I_r = np.eye(r)
+
+    gammas = _determine_kernel_gammas(anchors_inter, Xs_train_inter, gamma_type, gamma_ratio_krr)
+    kernel_type_key = (kernel_type or "rbf").lower()
+
+    Ks: List[np.ndarray] = []
+    Ps: List[np.ndarray] = []
+    for i, anchor_inter_k in enumerate(anchors_inter):
+        if kernel_type_key == "linear":
+            K = anchor_inter_k @ anchor_inter_k.T
+        else:
+            K = rbf_kernel(anchor_inter_k, anchor_inter_k, gamma=gammas[i])
+        Ks.append(K)
+        # For constructing M_λ we allow nl_lambda=0; use a
+        # pseudo-inverse fallback to avoid singular-matrix failures.
+        if nl_lambda == 0:
+            K_reg_inv = np.linalg.pinv(K)
+        else:
+            try:
+                K_reg_inv = np.linalg.inv(K + nl_lambda * I_r)
+            except np.linalg.LinAlgError:
+                K_reg_inv = np.linalg.pinv(K + nl_lambda * I_r)
+        Ps.append(K @ K_reg_inv)
+
+    M = sum((P - I_r).T @ (P - I_r) for P in Ps)
+    M = (M + M.T) * 0.5
+
+    L_plain = _build_unlabeled_anchor_laplacian(anchors_inter, k_neighbors=laplacian_k)
+    if L_plain.shape != M.shape:
+        A = M
+    else:
+        eps = 1e-12
+        tr_M = float(np.trace(M))
+        tr_L = float(np.trace(L_plain))
+        scale_L = tr_M / max(tr_L, eps) if tr_L > 0 else 1.0
+        A = M + float(graph_mu_align) * scale_L * L_plain
+    A = (A + A.T) * 0.5
+
+    if zerosum:
+        B_zero = _zerosum_helmert_basis(A.shape[0])
+        A_tilde = B_zero.T @ A @ B_zero
+        eigvals_raw, eigvecs_sub = eigh(A_tilde, np.eye(A_tilde.shape[0]))
+    else:
+        eigvals_raw, eigvecs_sub = eigh(A, np.eye(A.shape[0]))
+
+    order = np.argsort(eigvals_raw)
+    take = min(dim_integrate, eigvecs_sub.shape[1])
+    select = order[:take]
+    eigvals_selected = eigvals_raw[select]
+    eigvecs = eigvecs_sub[:, select]
+
+    if zerosum:
+        Z_integ = B_zero @ eigvecs
+    else:
+        Z_integ = eigvecs
+
+    for j in range(Z_integ.shape[1]):
+        nz = np.linalg.norm(Z_integ[:, j])
+        if nz > 0:
+            Z_integ[:, j] /= nz
+
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    for i, K in enumerate(Ks):
+        try:
+            K_pinv = np.linalg.pinv(K)
+        except np.linalg.LinAlgError:
+            K_pinv = np.linalg.pinv(K + 1e-8 * np.eye(K.shape[0]))
+        B_k = K_pinv @ Z_integ
         proj = make_kernel_integrator(anchors_inter[i], B_k, gamma=gammas[i], kernel_type=kernel_type_key)
         projs.append(proj)
 
