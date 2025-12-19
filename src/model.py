@@ -348,6 +348,10 @@ class ModelRunner:
         use_early_stopping = True
         if n_samples * base_val_fraction < 2:
             use_early_stopping = False
+        else:
+            _, class_counts = np.unique(y_train, return_counts=True)
+            if class_counts.size == 0 or class_counts.min() < 2:
+                use_early_stopping = False
         mlp_model = MLPClassifier(
             hidden_layer_sizes=(256,),
             activation='relu',

@@ -29,7 +29,8 @@ dim_integrate: 300 # 統合表現の次元数
 
 3. 実験を実行
 ```
-poetry run python main.py exp001
+uv run python main.py --run-name 1217_nonridge
+ 
 ```
 
 以上でoutputフォルダに使用したtrain/testテストと実験結果が保存される。

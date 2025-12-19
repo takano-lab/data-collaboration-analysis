@@ -10,6 +10,7 @@ from src.common import ArtifactStore, DatasetArtifacts
 from .institution_data import prepare_institutional_dataset
 from .load_data import load_data
 
+MAX_DATASET_ARTIFACTS = 100
 
 @dataclass
 class DatasetCache:
@@ -56,6 +57,7 @@ class InstitutionDatasetBuilder:
         artifacts = self._apply_dimension_overrides(artifacts)
         if getattr(self.config, "load_df_data", False):
             self.store.save("dataset", getattr(self.config, "df_name", None), artifacts)
+            self.store.prune("dataset", keep=MAX_DATASET_ARTIFACTS)
         self._sync_from_artifacts(artifacts)
         self.artifacts = artifacts
         return artifacts

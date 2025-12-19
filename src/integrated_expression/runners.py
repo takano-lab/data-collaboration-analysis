@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from numpy.linalg import pinv
-from scipy.linalg import block_diag, eigh
+from scipy.linalg import block_diag, eigh, solve_triangular
 from scipy.sparse.linalg import eigsh, svds
 from sklearn.metrics.pairwise import pairwise_distances, rbf_kernel
 
@@ -306,6 +307,82 @@ def build_targetvec_projectors(
         proj, _Gk = compute_linear_integrator_from_Z_anchor(Z_integ, anchor_inter_k)
         projs.append(proj)
     return projs, Z_integ
+
+
+def build_linear_nonridge_projectors(
+    anchors_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    nl_lambda: float = 1e-2,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray]:
+    """
+    Linear-kernel variant matching the provided formulation.
+    Builds M_lambda = sum_k A_k (A_k^T A_k + λ I)^{-1} A_k^T (or sum_k A_k A_k^T if λ=∞),
+    takes its leading eigenvectors for Z, then obtains G_k via least squares (no ridge).
+    """
+    if not anchors_inter:
+        return [], np.zeros((0, 0)), np.zeros((0,))
+
+    r = anchors_inter[0].shape[0]
+    if r == 0:
+        return [], np.zeros((0, 0)), np.zeros((0,))
+
+    lam_raw = nl_lambda
+    lam_is_infinite = False
+    lam_value: Optional[float] = None
+    if isinstance(lam_raw, str):
+        lam_str = lam_raw.strip()
+        if lam_str == "∞" or lam_str.lower() in {"inf", "infinity"}:
+            lam_is_infinite = True
+        else:
+            lam_value = float(lam_str)
+    else:
+        lam_value = float(lam_raw)
+        if math.isinf(lam_value):
+            lam_is_infinite = True
+            lam_value = None
+
+    M_terms: List[np.ndarray] = []
+    for A_k in anchors_inter:
+        if lam_is_infinite:
+            term = A_k @ A_k.T
+        else:
+            lam = float(lam_value if lam_value is not None else 0.0)
+            I_d = np.eye(A_k.shape[1])
+            if lam == 0:
+                try:
+                    inv_block = np.linalg.inv(A_k.T @ A_k)
+                except np.linalg.LinAlgError:
+                    inv_block = np.linalg.pinv(A_k.T @ A_k)
+            else:
+                try:
+                    inv_block = np.linalg.inv(A_k.T @ A_k + lam * I_d)
+                except np.linalg.LinAlgError:
+                    inv_block = np.linalg.pinv(A_k.T @ A_k + lam * I_d)
+            term = (1.0 + lam) * A_k @ (inv_block @ A_k.T)
+        M_terms.append(term)
+
+    M = sum(M_terms)
+    M = (M + M.T) * 0.5
+
+    eigvals_raw, eigvecs = eigh(M)
+    order = np.argsort(eigvals_raw)[::-1]
+    take = min(dim_integrate, eigvecs.shape[1])
+    select = order[:take]
+    eigvals_selected = eigvals_raw[select]
+    Z_integ = eigvecs[:, select]
+
+    for j in range(Z_integ.shape[1]):
+        nz = np.linalg.norm(Z_integ[:, j])
+        if nz > 0:
+            Z_integ[:, j] /= nz
+
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    for anchor_inter_k in anchors_inter:
+        proj, _Gk = compute_linear_integrator_from_Z_anchor(Z_integ, anchor_inter_k)
+        projs.append(proj)
+
+    return projs, Z_integ, eigvals_selected
 
 
 def build_imakura_new_projectors(
@@ -734,30 +811,66 @@ def build_gep_new_projectors(
     """
     Pairwise (GEP-like) method based on the QR+SVD formulation.
 
-    A_k = Q_k R_k (thin QR), W_Q = [Q_1, ..., Q_c], and the first stage
-    solution is Z* = U_Q(:, 1:p_hat) Σ_Q(1:p_hat,1:p_hat), where
-    W_Q = U_Q Σ_Q V_Q^T. Second stage uses G_k* = A_k^† Z*.
+    With anchor matrices A_k ∈ R^{a×p̃} (rows = anchor samples, columns =
+    intermediate features) we compute thin QR factorizations A_k = Q_k R_k,
+    stack W_Q = [Q_1, …, Q_c], and obtain the leading p̂ singular triplets
+    W_Q = U Σ V^T. The optimal values from Theorem 3.12 are
+        Z* = (1/√c) U(:,1:p̂) Σ(1:p̂,1:p̂),
+        G*_k = R_k^{-1} V_k,
+    where V_k is the block of V(:,1:p̂) corresponding to institution k.
     """
     if not anchors_inter:
         return [], np.zeros((0, 0))
 
+    c = len(anchors_inter)
+    row_dim = anchors_inter[0].shape[0]
+    col_dim = anchors_inter[0].shape[1]
+
     Q_list: List[np.ndarray] = []
-    for A in anchors_inter:
-        Q_k, _ = np.linalg.qr(A, mode="reduced")
+    R_list: List[np.ndarray] = []
+    for idx, A in enumerate(anchors_inter):
+        if A.shape[0] != row_dim:
+            raise ValueError("gep_new requires all anchor matrices to share the same number of rows (anchor samples).")
+        if A.shape[1] != col_dim:
+            raise ValueError("gep_new requires all anchor matrices to share the same number of columns (intermediate features).")
+        if A.shape[0] < A.shape[1]:
+            raise ValueError("gep_new expects each anchor matrix to satisfy (#rows >= #cols) for thin QR.")
+        Q_k, R_k = np.linalg.qr(A, mode="reduced")
         Q_list.append(Q_k)
+        R_list.append(R_k)
 
     W_Q = np.hstack(Q_list)
-    U, S, _ = _top_svd(W_Q, dim_integrate, truncated=truncated)
-    if U.shape[1] > 0:
-        D = np.diag(S[: U.shape[1]])
-        Z_integ = U @ D
+    U, S, Vt = _top_svd(W_Q, dim_integrate, truncated=truncated)
+    output_dim = U.shape[1]
+    scale = 1.0 / math.sqrt(float(c)) if c > 0 else 1.0
+    if output_dim > 0:
+        Z_integ = scale * (U @ np.diag(S[:output_dim]))
     else:
-        Z_integ = U
+        Z_integ = np.zeros((row_dim, 0))
+
+    if output_dim == 0:
+        zero_proj = make_linear_integrator(np.zeros((col_dim, 0)))
+        return [zero_proj for _ in anchors_inter], Z_integ
+
+    V = Vt.T  # shape: (c * col_dim, output_dim)
+    try:
+        V_blocks = V.reshape(c, col_dim, output_dim)
+    except ValueError as exc:
+        expected = c * col_dim
+        raise ValueError(
+            f"gep_new expected right singular vectors of length {expected}, got {V.shape[0]}."
+        ) from exc
 
     projs: List[Callable[[np.ndarray], np.ndarray]] = []
-    for anchor_inter_k in anchors_inter:
-        proj, _Gk = compute_linear_integrator_from_Z_anchor(Z_integ, anchor_inter_k)
-        projs.append(proj)
+    for idx in range(c):
+        R_k = R_list[idx]
+        hat_G_k = V_blocks[idx]
+        try:
+            G_k = solve_triangular(R_k, hat_G_k, lower=False, check_finite=False)
+        except np.linalg.LinAlgError:
+            G_k = np.linalg.pinv(R_k) @ hat_G_k
+        projs.append(make_linear_integrator(G_k))
+
     return projs, Z_integ
 
 
@@ -1259,6 +1372,7 @@ def build_laplacian_nonlinear_projectors(
     graph_mu_align: float = 1.0,
     laplacian_k: int = 10,
     zerosum: bool = False,
+    regularization: str = "graph"
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
     """
     Laplacian-regularized kernel (nonlinear) projectors with label-agnostic Laplacian.
@@ -1289,15 +1403,24 @@ def build_laplacian_nonlinear_projectors(
     M = sum((P - I_r).T @ (P - I_r) for P in Ps)
     M = (M + M.T) * 0.5
 
-    L_plain = _build_unlabeled_anchor_laplacian(anchors_inter, k_neighbors=laplacian_k)
-    if L_plain.shape != M.shape:
-        A = M
-    else:
-        eps = 1e-12
+    if regularization.lower() == "identity":
+        print("Using identity regularization.")
+        I = np.eye(M.shape[0])
         tr_M = float(np.trace(M))
-        tr_L = float(np.trace(L_plain))
-        scale_L = tr_M / max(tr_L, eps) if tr_L > 0 else 1.0
-        A = M + float(graph_mu_align) * scale_L * L_plain
+        tr_I = float(np.trace(I))
+        A = M + float(graph_mu_align) * (tr_M / max(tr_I, 1e-12)) * I
+    elif regularization.lower() == "graph":
+        L_plain = _build_unlabeled_anchor_laplacian(anchors_inter, k_neighbors=laplacian_k)
+        if L_plain.shape != M.shape:
+            A = M
+        else:
+            eps = 1e-12
+            tr_M = float(np.trace(M))
+            tr_L = float(np.trace(L_plain))
+            scale_L = tr_M / max(tr_L, eps) if tr_L > 0 else 1.0
+            A = M + float(graph_mu_align) * scale_L * L_plain
+    else:
+        A = M
     A = (A + A.T) * 0.5
 
     if zerosum:
@@ -1363,26 +1486,46 @@ def build_laplacian_nonlinear_nonridge_projectors(
     gammas = _determine_kernel_gammas(anchors_inter, Xs_train_inter, gamma_type, gamma_ratio_krr)
     kernel_type_key = (kernel_type or "rbf").lower()
 
+    lam_raw = nl_lambda
+    lam_is_infinite = False
+    lam_value: Optional[float] = None
+    if isinstance(lam_raw, str):
+        lam_str = lam_raw.strip()
+        if lam_str == "∞" or lam_str.lower() in {"inf", "infinity"}:
+            lam_is_infinite = True
+        else:
+            lam_value = float(lam_str)
+    else:
+        lam_value = float(lam_raw)
+        if math.isinf(lam_value):
+            lam_is_infinite = True
+            lam_value = None
+
     Ks: List[np.ndarray] = []
-    Ps: List[np.ndarray] = []
+    M_terms: List[np.ndarray] = []
     for i, anchor_inter_k in enumerate(anchors_inter):
         if kernel_type_key == "linear":
             K = anchor_inter_k @ anchor_inter_k.T
         else:
             K = rbf_kernel(anchor_inter_k, anchor_inter_k, gamma=gammas[i])
         Ks.append(K)
-        # For constructing M_λ we allow nl_lambda=0; use a
-        # pseudo-inverse fallback to avoid singular-matrix failures.
-        if nl_lambda == 0:
-            K_reg_inv = np.linalg.pinv(K)
+        if lam_is_infinite:
+            term = K
         else:
-            try:
-                K_reg_inv = np.linalg.inv(K + nl_lambda * I_r)
-            except np.linalg.LinAlgError:
-                K_reg_inv = np.linalg.pinv(K + nl_lambda * I_r)
-        Ps.append(K @ K_reg_inv)
+            lam = float(lam_value if lam_value is not None else 0.0)
+            if lam == 0:
+                # For constructing M_λ we allow nl_lambda=0; use a
+                # pseudo-inverse fallback to avoid singular-matrix failures.
+                K_reg_inv = np.linalg.pinv(K)
+            else:
+                try:
+                    K_reg_inv = np.linalg.inv(K + lam * I_r)
+                except np.linalg.LinAlgError:
+                    K_reg_inv = np.linalg.pinv(K + lam * I_r)
+            term = K @ K_reg_inv
+        M_terms.append(term)
 
-    M = sum((P - I_r).T @ (P - I_r) for P in Ps)
+    M = sum(M_terms)
     M = (M + M.T) * 0.5
 
     L_plain = _build_unlabeled_anchor_laplacian(anchors_inter, k_neighbors=laplacian_k)
@@ -1778,4 +1921,3 @@ def build_graph_nonlinear_projectors_minimize(
         L_between=L_between,
         g_type="graph_nonlinear_minimize",
     )
-

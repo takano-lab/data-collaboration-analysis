@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import random
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -13,6 +14,8 @@ from sklearn.random_projection import GaussianRandomProjection, SparseRandomProj
 from sklearn.metrics import pairwise_distances
 
 # torch, UMAP は遅延インポート（_run_umap 内で import）
+
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # 次元削減アルゴリズム（定義）
@@ -598,6 +601,16 @@ def _run_umap(
     except Exception as e:
         raise RuntimeError("UMAP を利用するには 'umap-learn' のインストールが必要です") from e
 
+    n_samples = X.shape[0]
+    min_required = max(3, n_components + 1)
+    if n_samples <= min_required:
+        logger.warning(
+            "[WARN] UMAP: サンプル数 %s 件 < 必要最小 %s 件のため SVD フォールバックを利用します",
+            n_samples,
+            min_required,
+        )
+        return _run_svd(X, n_components, config=config)
+
     scaler = StandardScaler()
     Xts = scaler.fit_transform(X)
 
@@ -617,7 +630,8 @@ def _run_umap(
     rng = np.random.default_rng(seed + 1337)
     # n_neighbors: 5〜11 の一様整数から選び、データ数に合わせて安全にクリップ
     nn_sample = int(rng.integers(low=2, high=8))  # high は排他的
-    n_neighbors = max(2, min(nn_sample, max(2, Xts.shape[0] - 1)))
+    max_valid_neighbors = max(2, Xts.shape[0] - 1)
+    n_neighbors = min(max_valid_neighbors, max(2, nn_sample))
     # min_dist: 0.05〜0.8 の一様連続
     min_dist = float(rng.uniform(0.0, 0.8))
     
@@ -1046,4 +1060,3 @@ def build_dimensionality_projector(
         param=param,
         config=config,
     )
-

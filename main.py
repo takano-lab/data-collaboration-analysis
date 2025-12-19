@@ -24,19 +24,19 @@ from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "dataset": [
     "fashion_mnist",
-    #"mnist",
+    "mnist",
     #"mnist_1248",
-    #"mice",
+    "mice",
+    "har",
     #"statlog",
     #"qsar",
     #"digits",
-    #"breast_cancer",
+    "breast_cancer",
     #"adult",
     # "glass", 
     # "seeds", 
     # "letter_recognition",
     # "wine_quality",
-    #"har",
     #"cifar10",
     # "diabetes130",
     # "bank_marketing",
@@ -50,18 +50,17 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"shered_subspace_N",
     #"shered_subspace_P",
 ],# + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
-    "seed_values":[i for i in range(102, 103)],  # 例: [[1,2,3,4,5]
-    "svd_ratio":[0], #, 0.25, 0.5, 0.75, 1
+    "seed_values":[i for i in range(1, 11)],  # 例: [[1,2,3,4,5]
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
     "F_type": ["umap"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",, "random_projection"
-    "G_type": ["laplacian_nonlinear", "imakura"],#, "targetvec_new", "imakura", "nonlinear", "nonlinear_nonridge""targetvec",, "nonlinear"  , "faster_gep", "gep_new"imakura", "imakura_new", "faster_gep", "targetvec", "imakura", laplacian_nonlinear"graph_nonlinear", "nonlinear" "imakura", "odc", "gep", "fl", "centralize", "individual"#,"graph_nonlinear", "nonlinear" "graph_nonlinear_maximize",  "graph_nonlinear_x", "graph_nonlinear_x_maximize", "kernel_gep", "kernel_graph_gep",  "kernel_graph_gep_maximize", 
     "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
-    "gamma_ratio_krr": [1], #, 0.1, 0.3, 3, 10 
+    "gamma_ratio_krr": [1], #, 0.1, 0.3, 3, 10
     "graph_knn_k": [10],
     "graph_mu_align": [1], # 0.5, 1, 3, 10, 30
     "graph_lambda_rkhs": [1],
-    "graph_stability_eps": [1],
+    "graph_stability_eps": [0],
+    "regularization":["graph"], # "graph", "identity"
     "num_anchor_data": [1000],
     "nl_lambda": [1], # LOCKで止められる, 0.00001
     #"lw_alpha": [0],
@@ -72,18 +71,20 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "dim_intermediate": [10],#[20, 10, 5, 2], 6
     "dim_integrate": [10],#[20, 10, 5, 2], 6
     "num_institution_user": [100],
-    "num_institution": [10],
+    "num_institution": [20],
     "K_normalization":[False],
-    "anchor_method":["smote"], #gaussian smote 
+    "anchor_method":["smote"], #gaussian smote
     "smote_ratio":[1],#, 0, 0.1, 0.25, 0.5, 1],
-    "data_distribution":["bias"],# "division" "even"
+    "data_distribution":["dirichlet"],# "division" "even" "dirichlet"
     "inter_normalization":[True],
     "evaluate_integrate_metrics":[True],
     "load_df_data":[True],
     "load_intermediate_data":[True],
     "preserve_integrated_data":[False],
     "umap_neighbors":[10],
-    "bias_ratio":[0.1, 0.9], # 0.1, 0.4, 0.6, 0.95, 0.8 
+    "bias_ratio":[0.1], # 0.1, 0.4, 0.6, 0.95, 0.8
+    "non_iid_beta":[0.01, 0.1, 1, 10, 100], #  , 0.01, 0.1, 1, 10, 100
+    "svd_ratio":[0, 0.25, 0.5, 0.75, 1], #, 0.25, 0.5, 0.75, 1
     "max_dim":[100000000],
     "zerosum":[False, True],
     "anchor_label_max_dist": [100000],
@@ -102,6 +103,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "preprocess":[True],
     #"helmert":[True],
     "truncated ":[False],
+    "G_type": ["gep", "targetvec"],#"nonlinear", "laplacian_nonlinear","individual", "fl", "centralize","odc", "imakura", "targetvec_new", "faster_gep", "individual", "fl", "centralize","odc", "imakura", "targetvec_new", nonlinear", "laplacian_nonlinear
     })
 
 # "gamma_ratio"
@@ -109,21 +111,21 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
 # "bias_ratio":[0.9],
 
 # 2-1) 実行失敗時の挙動（True でスキップ、False で例外をそのまま投げる）
-ERROR_SKIP =False
+ERROR_SKIP =True
 
 # 3) DataFrameに保持したい「パラメータ列」（順序もこの通り）
 PARAM_COLUMNS: List[str] = [
-    "dataset", "h_model", "F_type", "G_type", "gamma_ratio", "gamma_type", "gamma_ratio_krr", "num_anchor_data", "nl_lambda", "lw_alpha", "metrics", "dim_intermediate", "dim_integrate", "num_institution_user", "num_institution", "anchor_method", "smote_ratio", "data_distribution", "inter_normalization", "evaluate_integrate_metrics", "umap_neighbors", "bias_ratio", "svd_ratio", "zerosum", "kernel_type", "truncated"
+    "dataset", "h_model", "F_type", "G_type", "gamma_ratio", "gamma_type", "gamma_ratio_krr", "num_anchor_data", "nl_lambda", "lw_alpha", "metrics", "dim_intermediate", "dim_integrate", "num_institution_user", "num_institution", "anchor_method", "smote_ratio", "data_distribution", "inter_normalization", "evaluate_integrate_metrics", "umap_neighbors", "bias_ratio", "non_iid_beta", "svd_ratio", "zerosum", "kernel_type", "truncated", "regularization"
 ]
 
 # 3-2) train/test_df のDataFrameに保持する名前
 DF_COLUMNS: List[str] = [
-    "dataset", "data_distribution", "num_institution_user", "num_institution", "seed_values", "bias_ratio"
+    "dataset", "data_distribution", "num_institution_user", "num_institution", "seed_values", "bias_ratio", "non_iid_beta"
 ]
 
 # 3-3) 中間表現のDataFrameに保持する名前
 INTERMEDIATE_COLUMNS: List[str] = [
-    "dataset", "F_type", "gamma_ratio", "data_distribution", "dim_intermediate", "num_institution_user", "num_institution", "seed_values", "umap_neighbors", "bias_ratio", "anchor_method", "smote_ratio", "num_anchor_data","max_dim", "svd_ratio", "anchor_label_max_dist"
+    "dataset", "F_type", "gamma_ratio", "data_distribution", "dim_intermediate", "num_institution_user", "num_institution", "seed_values", "umap_neighbors", "bias_ratio", "non_iid_beta", "anchor_method", "smote_ratio", "num_anchor_data","max_dim", "svd_ratio", "anchor_label_max_dist"
 ]
 
 # 平均を取る対象のパラメータ
@@ -149,7 +151,9 @@ DEFAULTS = {
     "K_normalization":True,
     "inter_normalization":True,
     "lw_alpha":False,
+    "bias_ratio":0.1,
     "smote_ratio":1.0,
+    "svd_ratio":0,
     "umap_metric":"random", # euclidean correlation cosine
     "graph_knn_k": None,
     "graph_mu_align": 1.0,
@@ -158,13 +162,18 @@ DEFAULTS = {
     "theta_ss": 0.0,
     "gamma_ss": 1.0,
     "truncated": False,
+    "non_iid_beta": 1,
 }
 
-DEFAULT_SMOTE = 1.0
-DEFAULT_BIAS = 0.8
-NON_DEFAULT_SMOTE = [0, 0.1, 0.25, 0.5]          # 1.0 以外
-NON_DEFAULT_BIAS = [0.8, 0.4, 0.6, 0.95]         # 0.8 以外
-NON_DEFAULT_GAMMA_KRR = [0.1, 0.3, 3, 10]        # 1 以外
+OR_GROUPS: List[List[str]] = [["svd_ratio", "non_iid_beta"]]
+
+OR_GROUP_KEY_SET = {key for group in OR_GROUPS for key in group}
+
+#DEFAULT_SMOTE = 1.0
+#DEFAULT_BIAS = 0.8
+#NON_DEFAULT_SMOTE = [0, 0.1, 0.25, 0.5]          # 1.0 以外
+#NON_DEFAULT_BIAS = [0.8, 0.4, 0.6, 0.95]         # 0.8 以外
+#NON_DEFAULT_GAMMA_KRR = [0.1, 0.3, 3, 10]        # 1 以外
 # --- 追加: dataset ごとのデフォルト適用（定数のみ。動的は未設定）---
 _DATASET_DEFAULTS = {
     #"qsar":                 {"feature_num": 41},#, "dim_intermediate": 37, "dim_integrate": 37, "num_institution_user": 25, "num_institution": 20},
@@ -202,7 +211,7 @@ RULES: List[Dict[str, Any]] = [
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "imakura_new", "gep", "gep_new", "gep2",  "odc",]}, "lock": {"gamma_ratio_krr": DEFAULTS["gamma_ratio_krr"]}},
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "imakura_new", "gep", "gep_new", "gep2",  "odc"]}, "lock": {"graph_mu_align": 0, "graph_lambda_rkhs": 0, "graph_stability_eps": 0}},
     {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "imakura_new", "gep", "gep_new", "gep2",  "odc"]}, "lock": {"graph_knn_k": None}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "faster_gep", "targetvec", "targetvec_new", "imakura", "imakura_new", "odc", "gep", "gep_new"]}, "lock": {"zerosum": False}},
+    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "faster_gep", "targetvec", "targetvec_new", "imakura", "imakura_new", "odc", "gep", "gep_new"]}, "lock": {"zerosum": False, "kernel_type": "linear"}}, # "fl", "centralize", "individual", "odc", "imakura", "targetvec_new", "faster_gep"
     {"type": "LOCK", "when": {"G_type": ["graph_nonlinear"]}, "lock": {"graph_knn_k":100000, "graph_mu_align": 0}},
     {"type": "LOCK", "when": {"G_type": ["nonlinear"]}, "lock": {"graph_mu_align": 0}}, # グラフ使わない
     #{"type": "LOCK", "when": {"G_type": ["nonlinear"]}, "lock": {"inter_normalization": False}},
@@ -259,6 +268,25 @@ def _apply_lock_rules(combo: Dict[str, Any]) -> Dict[str, Any]:
         if r.get("type") == "LOCK" and _match(r.get("when", {}), out):
             out.update(r.get("lock", {}))
     return out
+
+
+def _violates_or_groups(combo: Dict[str, Any]) -> bool:
+    if not OR_GROUPS:
+        return False
+    for group in OR_GROUPS:
+        if not group:
+            continue
+        count = 0
+        for key in group:
+            default = DEFAULTS.get(key, None)
+            if default is None:
+                continue
+            val = combo.get(key, default)
+            if val != default:
+                count += 1
+        if count > 1:
+            return True
+    return False
 
 def _skip_by_rules(combo: Dict[str, Any]) -> bool:
     for r in RULES:
@@ -363,6 +391,11 @@ def _generate_unique_combos(grid: Dict[str, List[Any]]):
     value_lists: List[List[Any]] = []
     for k in keys:
         vals = grid.get(k, [])
+        vals = list(vals)
+        if k in OR_GROUP_KEY_SET:
+            default_val = DEFAULTS.get(k, None)
+            if default_val is not None and all(v != default_val for v in vals):
+                vals = vals + [default_val]
         if k == MEAN_PARAM and isinstance(vals, list):
             value_lists.append([vals])
         else:
@@ -371,6 +404,8 @@ def _generate_unique_combos(grid: Dict[str, List[Any]]):
     for tup in product(*value_lists):
         base = {k: v for k, v in zip(keys, tup)}
         after = _apply_lock_rules(base)
+        if _violates_or_groups(after):
+            continue
         if _skip_by_rules(after):
             continue
         norm = tuple((k, _make_hashable(after.get(k))) for k in keys)

@@ -22,6 +22,7 @@ from .anchor_utils import (
     _valid_label_mask,
 )
 
+MAX_INTERMEDIATE_ARTIFACTS = 100
 
 class IntermediateExpressionBuilder:
     """
@@ -69,6 +70,7 @@ class IntermediateExpressionBuilder:
 
         if getattr(self.config, "load_intermediate_data", False):
             self.store.save("intermediate", getattr(self.config, "intermediate_name", None), raw_artifacts)
+            self.store.prune("intermediate", keep=MAX_INTERMEDIATE_ARTIFACTS)
 
         artifacts = self._maybe_normalize_artifacts(raw_artifacts)
         artifacts = self._maybe_attach_anchor_laplacians(artifacts)

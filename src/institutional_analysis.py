@@ -163,6 +163,20 @@ def individual_analysis_with_dimension_reduction(
     for inst_offset, (X_tr, X_te, y_tr, y_te) in enumerate(zip(Xs_train, Xs_test, ys_train, ys_test)):
         institution_index = base_institution_index + inst_offset
 
+        unique_labels, label_counts = np.unique(y_tr, return_counts=True)
+        if unique_labels.size <= 1:
+            logger.warning(
+                f"individual_analysis: institution {inst_offset} has only {unique_labels.size} label(s); accuracy=0.0"
+            )
+            losses.append(0.0)
+            continue
+        if label_counts.min() < 2:
+            logger.warning(
+                f"individual_analysis: institution {inst_offset} has rare class count < 2; accuracy=0.0"
+            )
+            losses.append(0.0)
+            continue
+
         if mixed:
             projector_F_type = "kernel_pca_self_tuning" if institution_index % 2 == 0 else "svd"
         else:
@@ -201,8 +215,15 @@ def fl_analysis(
     """Federated learning baseline evaluated per institution."""
 
     le = LabelEncoder()
-    all_y_train = np.concatenate(ys_train)
-    le.fit(all_y_train)
+    concat_parts: list[np.ndarray] = []
+    if ys_train:
+        concat_parts.append(np.concatenate(ys_train))
+    if ys_test:
+        concat_parts.append(np.concatenate(ys_test))
+    if concat_parts:
+        le.fit(np.concatenate(concat_parts))
+    else:
+        le.fit(np.array([], dtype=float))
     n_classes = len(le.classes_)
 
     clients_y_train_encoded = [le.transform(y) for y in ys_train]
@@ -325,4 +346,3 @@ def dca_analysis(
     logger.info(f"提案手法の評価値: {metrics:.4f}")
     
     return metrics
-

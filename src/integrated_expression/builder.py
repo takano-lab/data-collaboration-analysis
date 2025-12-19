@@ -25,6 +25,7 @@ from .runners import (
     build_graph_nonlinear_X_projectors_minimize,
     build_imakura_projectors,
     build_imakura_new_projectors,
+    build_linear_nonridge_projectors,
     build_kernel_gep_projectors,
     build_kernel_graph_gep_projectors,
     build_nonlinear_projectors,
@@ -643,6 +644,7 @@ def _run_graph_nonlinear_X_integration(analysis: "IntegratedExpressionBuilder") 
 
 
 def _run_laplacian_nonlinear_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    regularization = getattr(analysis.config, "regularization", "graph")
     graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 1.0)
     graph_mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 1.0
     # Use graph_knn_k for unlabeled Laplacian k
@@ -665,6 +667,7 @@ def _run_laplacian_nonlinear_integration(analysis: "IntegratedExpressionBuilder"
         graph_mu_align=graph_mu_align,
         laplacian_k=graph_k,
         zerosum=bool(getattr(analysis.config, "zerosum", False)),
+        regularization=regularization,
     )
     gammas_mean = float(np.mean(gammas)) if gammas else None
     analysis.config.gamma_krr_means = gammas_mean
@@ -688,6 +691,17 @@ def _run_laplacian_nonlinear_integration(analysis: "IntegratedExpressionBuilder"
         "gammas": gammas,
         "kernel_effective_ranks": eff_ranks,
     }
+    analysis.Z_integ = Z_integ
+    return projs, extras
+
+
+def _run_nonridge_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    projs, Z_integ, eigvals = build_linear_nonridge_projectors(
+        anchors_inter=analysis.anchors_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+        nl_lambda=getattr(analysis.config, "nl_lambda", 1e-2),
+    )
+    extras = {"Z_integ": Z_integ, "eigvals": eigvals}
     analysis.Z_integ = Z_integ
     return projs, extras
 
@@ -944,6 +958,7 @@ _INTEGRATION_RUNNERS: Dict[str, IntegrationRunner] = {
     "gep2": _run_gep2_integration,
     "faster_gep": _run_faster_gep_integration,
     "odc": _run_odc_integration,
+    "nonridge": _run_nonridge_integration,
     "nonlinear": _run_nonlinear_integration,
     "nonlinear_nonridge": _run_nonlinear_nonridge_integration,
     "nonlinear_maximize": _run_nonlinear_max_integration,

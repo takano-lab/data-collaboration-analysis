@@ -40,6 +40,34 @@ class ArtifactStore:
         if self.logger:
             self.logger.info("Saved %s artifact to %s", category, path)
 
+    def prune(self, category: str, *, keep: int = 30) -> None:
+        """
+        Keep only the latest `keep` artifacts within a category directory, dropping
+        older files based on modification time.
+        """
+        if keep <= 0:
+            keep = 0
+        directory = self.base_dir / self._safe_name(category)
+        if not directory.exists():
+            return
+        try:
+            candidates = [p for p in directory.iterdir() if p.is_file()]
+        except FileNotFoundError:
+            return
+        if len(candidates) <= keep:
+            return
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for old_path in candidates[keep:]:
+            try:
+                old_path.unlink()
+                if self.logger:
+                    self.logger.info("Pruned %s artifact: %s", category, old_path.name)
+            except FileNotFoundError:
+                continue
+            except Exception as exc:  # pragma: no cover - defensive logging
+                if self.logger:
+                    self.logger.warning("Failed to prune %s artifact %s: %s", category, old_path, exc)
+
     # ------------------------------------------------------------------ #
     def _path(self, category: str, name: Optional[str]) -> Path:
         safe_category = self._safe_name(category)
