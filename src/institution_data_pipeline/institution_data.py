@@ -59,10 +59,11 @@ def _reserve_smote_anchor_data(
         total_anchor = 0
     if total_anchor <= 0:
         return df.iloc[0:0].copy(), df
-
-    total_anchor = min(total_anchor, len(df))
-    if total_anchor <= 0:
+    # If reservation would exhaust the dataset, skip reserving to keep training data intact.
+    if total_anchor >= len(df):
+        print("[_reserve_smote_anchor_data] Requested public_anchor_num >= dataset size; skipping public reserve.")
         return df.iloc[0:0].copy(), df
+    total_anchor = min(total_anchor, len(df))
 
     rng = np.random.default_rng(getattr(config, "seed", 42))
     y = df[label_col].to_numpy()
@@ -360,7 +361,18 @@ def even_joint_split(
     n_classes = classes.size
     n_per_side = num_institution * num_institution_user
     if 2 * n_per_side > len(df):
-        raise ValueError(f"rows={len(df)} < needed(total)={2*n_per_side}")
+        # データが足りない場合は num_institution_user を自動的に縮小して続行
+        import warnings
+        max_per_inst = max(1, len(df) // (2 * max(1, num_institution)))
+        warnings.warn(
+            f"rows={len(df)} < needed(total)={2*n_per_side}; "
+            f"num_institution_user を {num_institution_user}->{max_per_inst} に縮小します",
+            RuntimeWarning,
+        )
+        num_institution_user = max_per_inst
+        n_per_side = num_institution * num_institution_user
+        if n_per_side <= 0:
+            raise ValueError(f"rows={len(df)} が少なすぎます (num_institution={num_institution})")
     if num_institution_user < n_classes:
         raise ValueError(
             f"num_institution_user({num_institution_user}) < n_classes({n_classes}) -> 不可"

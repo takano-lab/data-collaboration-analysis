@@ -103,6 +103,8 @@ def run_once(config, logger):
         if config.visualize:
             viz = DataCollabVisualizer(config=config, artifacts=integrated_artifacts, logger=logger)
             viz.visualize_representations()
+            if getattr(config, "visualize_for_presenations", False):
+                viz.visualize_anchors_for_presenations()
 
         actual_inst = len(getattr(data_collaboration, "Xs_test_integ", []) or [])
         if actual_inst == 0:

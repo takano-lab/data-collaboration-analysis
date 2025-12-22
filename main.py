@@ -23,15 +23,15 @@ from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
 
 PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "dataset": [
-    "fashion_mnist",
-    "mnist",
+    #"fashion_mnist",
+    #"mnist",
     #"mnist_1248",
-    "mice",
-    "har",
+    #"mice",
+    #"har",
     #"statlog",
     #"qsar",
     #"digits",
-    "breast_cancer",
+    #"breast_cancer",
     #"adult",
     # "glass", 
     # "seeds", 
@@ -41,7 +41,7 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     # "diabetes130",
     # "bank_marketing",
     # "cifar10_800",
-    #'3D_gaussian_clusters',
+    '3D_gaussian_clusters',
     #"concentric_three_circles",
     #"iris",
     # "ecoli",
@@ -50,32 +50,38 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     #"shered_subspace_N",
     #"shered_subspace_P",
 ],# + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
-    "seed_values":[i for i in range(1, 11)],  # 例: [[1,2,3,4,5]
+    "seed_values":[i for i in range(1, 2)],  # 例: [[1,2,3,4,5]
     #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
     "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "F_type": ["umap"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",, "random_projection"
+    "F_type": ["svd"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",, "random_projection"
     "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
     "gamma_ratio_krr": [1], #, 0.1, 0.3, 3, 10
+    "gamma_ratio": [10], #, 0.1, 0.3, 3, 10
     "graph_knn_k": [10],
-    "graph_mu_align": [1], # 0.5, 1, 3, 10, 30
+    "graph_mu_align": [10], # 0.5, 1, 3, 10, 30
     "graph_lambda_rkhs": [1],
     "graph_stability_eps": [0],
     "regularization":["graph"], # "graph", "identity"
-    "num_anchor_data": [1000],
+    "num_anchor_data": [100],
+    "public_anchor_num": [10], #############
+    "use_public_anchor":[False],
     "nl_lambda": [1], # LOCKで止められる, 0.00001
     #"lw_alpha": [0],
     "metrics": ["accuracy"], #"accuracy"
     "kernel_type": ["rbf"],
-    "visualize": [False],
-    #"feature_num": [2],
-    "dim_intermediate": [10],#[20, 10, 5, 2], 6
-    "dim_integrate": [10],#[20, 10, 5, 2], 6
-    "num_institution_user": [100],
-    "num_institution": [20],
+    "visualize": [True],
+    "visualize_anchors_3d": [True],
+    "visualize_for_presenations": [True],
+    "visual_knn_graph": [True],
+    "feature_num": [3],
+    "dim_intermediate": [2],#[20, 10, 5, 2], 6
+    "dim_integrate": [2],#[20, 10, 5, 2], 6
+    "num_institution_user": [500],
+    "num_institution": [2],
     "K_normalization":[False],
-    "anchor_method":["smote"], #gaussian smote
+    "anchor_method":["gaussian"], #gaussian smote
     "smote_ratio":[1],#, 0, 0.1, 0.25, 0.5, 1],
-    "data_distribution":["dirichlet"],# "division" "even" "dirichlet"
+    "data_distribution":["even"],# "division" "even" "dirichlet"
     "inter_normalization":[True],
     "evaluate_integrate_metrics":[True],
     "load_df_data":[True],
@@ -83,10 +89,10 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "preserve_integrated_data":[False],
     "umap_neighbors":[10],
     "bias_ratio":[0.1], # 0.1, 0.4, 0.6, 0.95, 0.8
-    "non_iid_beta":[0.01, 0.1, 1, 10, 100], #  , 0.01, 0.1, 1, 10, 100
-    "svd_ratio":[0, 0.25, 0.5, 0.75, 1], #, 0.25, 0.5, 0.75, 1
+    "non_iid_beta":[1], #  , 0.01, 0.1, 1, 10, 100
+    "svd_ratio":[1], #, 0.25, 0.5, 0.75, 1
     "max_dim":[100000000],
-    "zerosum":[False, True],
+    "zerosum":[False], #, True
     "anchor_label_max_dist": [100000],
     # ★ 高速版専用パラメータ
     #"rank_nystrom":[200],      # r' を r と同じにしてほぼフルランク
@@ -103,19 +109,15 @@ PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
     "preprocess":[True],
     #"helmert":[True],
     "truncated ":[False],
-    "G_type": ["gep", "targetvec"],#"nonlinear", "laplacian_nonlinear","individual", "fl", "centralize","odc", "imakura", "targetvec_new", "faster_gep", "individual", "fl", "centralize","odc", "imakura", "targetvec_new", nonlinear", "laplacian_nonlinear
+    "G_type": ["laplacian_nonlinear"],#"odc", "imakura", "gep", "targetvec", "nonlinear", "laplacian_nonlinear","individual", "fl", "centralize","odc", "imakura", "targetvec_new", "faster_gep", "individual", "fl", "centralize","odc", "imakura", "targetvec_new", nonlinear", "laplacian_nonlinear
     })
-
-# "gamma_ratio"
-# "smote_ratio"
-# "bias_ratio":[0.9],
 
 # 2-1) 実行失敗時の挙動（True でスキップ、False で例外をそのまま投げる）
 ERROR_SKIP =True
 
 # 3) DataFrameに保持したい「パラメータ列」（順序もこの通り）
 PARAM_COLUMNS: List[str] = [
-    "dataset", "h_model", "F_type", "G_type", "gamma_ratio", "gamma_type", "gamma_ratio_krr", "num_anchor_data", "nl_lambda", "lw_alpha", "metrics", "dim_intermediate", "dim_integrate", "num_institution_user", "num_institution", "anchor_method", "smote_ratio", "data_distribution", "inter_normalization", "evaluate_integrate_metrics", "umap_neighbors", "bias_ratio", "non_iid_beta", "svd_ratio", "zerosum", "kernel_type", "truncated", "regularization"
+    "dataset", "h_model", "F_type", "G_type", "gamma_ratio", "gamma_type", "gamma_ratio_krr", "num_anchor_data", "nl_lambda", "lw_alpha", "metrics", "dim_intermediate", "dim_integrate", "num_institution_user", "num_institution", "anchor_method", "smote_ratio", "data_distribution", "inter_normalization", "evaluate_integrate_metrics", "umap_neighbors", "bias_ratio", "non_iid_beta", "svd_ratio", "zerosum", "kernel_type", "truncated", "regularization", "public_anchor_num", "use_public_anchor"
 ]
 
 # 3-2) train/test_df のDataFrameに保持する名前
@@ -125,7 +127,7 @@ DF_COLUMNS: List[str] = [
 
 # 3-3) 中間表現のDataFrameに保持する名前
 INTERMEDIATE_COLUMNS: List[str] = [
-    "dataset", "F_type", "gamma_ratio", "data_distribution", "dim_intermediate", "num_institution_user", "num_institution", "seed_values", "umap_neighbors", "bias_ratio", "non_iid_beta", "anchor_method", "smote_ratio", "num_anchor_data","max_dim", "svd_ratio", "anchor_label_max_dist"
+    "dataset", "F_type", "gamma_ratio", "data_distribution", "dim_intermediate", "num_institution_user", "num_institution", "seed_values", "umap_neighbors", "bias_ratio", "non_iid_beta", "anchor_method", "smote_ratio", "num_anchor_data","max_dim", "svd_ratio", "anchor_label_max_dist", "use_public_anchor", "public_anchor_num"
 ]
 
 # 平均を取る対象のパラメータ
@@ -179,8 +181,8 @@ _DATASET_DEFAULTS = {
     #"qsar":                 {"feature_num": 41},#, "dim_intermediate": 37, "dim_integrate": 37, "num_institution_user": 25, "num_institution": 20},
     #"adult":                {"feature_num": 51},#, "dim_intermediate": 50, "dim_integrate": 50, "num_institution_user": 150, "num_institution": 10},
     #"diabetes130":          {"feature_num": 200},#, "dim_intermediate": 100, "dim_integrate": 100, "num_institution_user": 500, "num_institution": 10},
-    #"mice":                 {"feature_num": 77},#, "dim_intermediate": 46, "dim_integrate": 46, "num_institution_user": 50, "num_institution": 5},
-    #"breast_cancer":        {"feature_num": 15},#, "num_institution_user": 60},
+    "mice":                 {"num_institution_user": 50, "num_institution": 8},#, "dim_intermediate": 46, "dim_integrate": 46, "num_institution_user": 50, "num_institution": 5},
+    "breast_cancer":        {"num_institution_user": 50, "num_institution": 5},
     #"digits":               {"dim_intermediate": 15, "dim_integrate": 15, "num_institution_user": 100, "num_institution": 10},
     # "mnist":                {"dim_intermediate": 10, "dim_integrate": 10, "num_institution_user": 50, "num_institution": 10},
     #"mnist":                {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "data_distribution": "division", "gamma_ratio":1, "gamma_ratio_krr":1, "umap_metric":"correlation"},

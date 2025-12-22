@@ -258,7 +258,9 @@ def fl_analysis(
         "hidden_size": 256,
         "rounds": 10,
         "local_epochs": 5,
-        "lr": 0.01,
+        "lr": 0.001,
+        "l2": 1e-4,
+        "batch_size": 64,
         "seed": config.seed,
         "metrics": config.metrics,
     }

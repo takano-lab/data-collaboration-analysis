@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import copy
 from typing import List, Optional
 
 import numpy as np
@@ -89,29 +90,44 @@ class IntermediateExpressionBuilder:
         num_features = dataset.Xs_train[0].shape[1]
         public_X = getattr(dataset, "public_anchor", None)
         public_y = getattr(dataset, "public_anchor_y", None)
+        # Config.__getattr__ always returns None for missing keys, so treat None as "use it".
+        raw_use_public_anchor = getattr(self.config, "use_public_anchor", None)
+        use_public_anchor = True if raw_use_public_anchor is None else bool(raw_use_public_anchor)
 
-        has_public = (
+        has_public_data = (
             public_X is not None
             and public_y is not None
             and getattr(public_X, "size", 0) > 0
             and getattr(public_y, "size", 0) > 0
         )
+        include_public_in_anchor = use_public_anchor and has_public_data
+
         # Expose the number of public anchors (clipped by num_anchor_data) via config
         # so that downstream Nyström landmarks can prioritize them.
         public_count = 0
-        if has_public:
+        if include_public_in_anchor:
             try:
                 public_count = int(min(public_X.shape[0], int(self.config.num_anchor_data)))
             except Exception:
                 public_count = int(public_X.shape[0])
-        setattr(self.config, "public_anchor_count", max(0, int(public_count)))
+        setattr(self.config, "public_anchor_count", max(0, int(public_count if include_public_in_anchor else 0)))
 
-        if getattr(self.config, "anchor_method", None) == "smote" and has_public:
+        # If SMOTE is requested but public anchors are absent, fall back to Gaussian anchors.
+        anchor_cfg = self.config
+        anchor_method = getattr(self.config, "anchor_method", "gaussian")
+        anchor_method_lower = str(anchor_method).lower()
+        if anchor_method_lower == "smote" and not has_public_data:
+            if self.logger:
+                self.logger.info("SMOTE requested but public anchors unavailable; using gaussian anchors instead.")
+            anchor_cfg = copy.copy(self.config)
+            anchor_cfg.anchor_method = "gaussian"
+
+        if anchor_method_lower == "smote" and has_public_data:
             self.anchor, self.anchor_y = produce_anchor(
                 num_row=self.config.num_anchor_data,
                 num_col=num_features,
                 seed=self.config.seed,
-                config=self.config,
+                config=anchor_cfg,
                 train_df=dataset.train_df,
                 Xs_train=dataset.Xs_train,
                 Xs_test=dataset.Xs_test,
@@ -119,13 +135,14 @@ class IntermediateExpressionBuilder:
                 ys_test=dataset.ys_test,
                 smote_X=public_X,
                 smote_y=public_y,
+                include_public_anchor=include_public_in_anchor,
                 return_labels=True,
             )
             self.anchor_test, self.anchor_y_test = produce_anchor(
                 num_row=self.config.num_anchor_data,
                 num_col=num_features,
                 seed=self.config.seed + 1,
-                config=self.config,
+                config=anchor_cfg,
                 train_df=dataset.train_df,
                 Xs_train=dataset.Xs_train,
                 Xs_test=dataset.Xs_test,
@@ -133,6 +150,7 @@ class IntermediateExpressionBuilder:
                 ys_test=dataset.ys_test,
                 smote_X=public_X,
                 smote_y=public_y,
+                include_public_anchor=include_public_in_anchor,
                 return_labels=True,
             )
         else:
@@ -140,7 +158,7 @@ class IntermediateExpressionBuilder:
                 num_row=self.config.num_anchor_data,
                 num_col=num_features,
                 seed=self.config.seed,
-                config=self.config,
+                config=anchor_cfg,
                 train_df=dataset.train_df,
                 Xs_train=dataset.Xs_train,
                 Xs_test=dataset.Xs_test,
@@ -151,7 +169,7 @@ class IntermediateExpressionBuilder:
                 num_row=self.config.num_anchor_data,
                 num_col=num_features,
                 seed=self.config.seed + 1,
-                config=self.config,
+                config=anchor_cfg,
                 train_df=dataset.train_df,
                 Xs_train=dataset.Xs_train,
                 Xs_test=dataset.Xs_test,

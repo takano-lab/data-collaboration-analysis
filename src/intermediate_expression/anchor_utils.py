@@ -24,6 +24,7 @@ def produce_anchor(
     smote_X: Optional[np.ndarray] = None,
     smote_y: Optional[np.ndarray] = None,
     return_labels: bool = False,
+    include_public_anchor: bool = True,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """
     Build anchor samples according to config.anchor_method.
@@ -66,7 +67,7 @@ def produce_anchor(
             smote_ratio = 1.0
         smote_ratio = min(max(smote_ratio, 0.0), 1.0)
 
-        # Public anchor data used as part of anchors, with the remainder filled by SMOTE/Gaussian.
+        # Public anchor data used as SMOTE source; optionally included in output anchors.
         n_public = int(smote_X.shape[0]) if smote_X is not None else 0
         y_public = np.asarray(smote_y).ravel() if smote_y is not None else None
         if n_public <= 0 or y_public is None or y_public.size != n_public:
@@ -77,16 +78,17 @@ def produce_anchor(
         X0 = X0_full[:, :columns]
         y0 = y_public
 
-        # If public data already exceeds required anchors, sample a subset.
-        if n_public >= num_row:
-            idx = rng.choice(n_public, size=num_row, replace=False)
-            anchor = X0[idx]
-            anchor_labels = y0[idx]
-            if return_labels:
-                return anchor, anchor_labels
-            return anchor
+        # Decide how many public anchors to include in output.
+        n_public_keep = min(n_public, num_row) if include_public_anchor else 0
+        if n_public_keep > 0:
+            idx_pub = rng.choice(n_public, size=n_public_keep, replace=False)
+            X_public_keep = X0[idx_pub]
+            y_public_keep = y0[idx_pub]
+        else:
+            X_public_keep = np.zeros((0, columns))
+            y_public_keep = np.zeros((0,))
 
-        remaining = max(0, num_row - n_public)
+        remaining = max(0, num_row - n_public_keep)
         n_smote = int(round(remaining * smote_ratio))
         n_smote = min(max(n_smote, 0), remaining)
         n_gauss = max(0, remaining - n_smote)
@@ -129,9 +131,9 @@ def produce_anchor(
         X_parts: list[np.ndarray] = []
         y_parts: list[np.ndarray] = []
 
-        # 1) public anchors (kept as a contiguous prefix)
-        X_parts.append(X0)
-        y_parts.append(y0)
+        # 1) public anchors kept as a contiguous prefix if requested
+        X_parts.append(X_public_keep)
+        y_parts.append(y_public_keep)
 
         # 2) same-label SMOTE
         if n_same > 0:
@@ -201,7 +203,11 @@ def produce_anchor(
         # 4) Gaussian fill for any remaining anchors
         if n_gauss > 0:
             Xg = rng.normal(size=(n_gauss, columns))
-            yg = np.full((n_gauss,), np.nan)
+            if classes.size > 0 and N_total > 0:
+                probs = counts / float(N_total)
+                yg = rng.choice(classes, size=n_gauss, p=probs)
+            else:
+                yg = np.full((n_gauss,), np.nan)
             X_parts.append(Xg)
             y_parts.append(yg)
 
@@ -211,30 +217,19 @@ def produce_anchor(
         X_other = np.vstack(X_parts[1:]) if len(X_parts) > 1 else np.zeros((0, columns))
         y_other = np.concatenate(y_parts[1:]) if len(y_parts) > 1 else np.zeros((0,))
 
-        n_public_eff = X_public.shape[0]
-        if num_row <= n_public_eff:
-            idx = rng.choice(n_public_eff, size=num_row, replace=False)
-            anchor = X_public[idx]
-            anchor_labels = y_public[idx]
-        else:
-            keep_public = n_public_eff
-            need_other = num_row - keep_public
-            if X_other.shape[0] >= need_other and X_other.shape[0] > 0:
-                idx_other = rng.choice(X_other.shape[0], size=need_other, replace=False)
-                X_sel = X_other[idx_other]
-                y_sel = y_other[idx_other]
-            else:
-                # Use all available synthetic anchors and fill the rest with Gaussian noise.
-                X_sel = X_other
-                y_sel = y_other
-                deficit = max(0, need_other - X_sel.shape[0])
-                if deficit > 0:
-                    extra_X = rng.normal(size=(deficit, columns))
-                    extra_y = np.full((deficit,), np.nan)
-                    X_sel = np.vstack([X_sel, extra_X]) if X_sel.size > 0 else extra_X
-                    y_sel = np.concatenate([y_sel, extra_y]) if y_sel.size > 0 else extra_y
-            anchor = np.vstack([X_public[:keep_public], X_sel])
-            anchor_labels = np.concatenate([y_public[:keep_public], y_sel])
+        anchor = np.vstack([X_public, X_other])
+        anchor_labels = np.concatenate([y_public, y_other])
+
+        # Ensure exact num_row length (defensive)
+        if anchor.shape[0] > num_row:
+            anchor = anchor[:num_row]
+            anchor_labels = anchor_labels[:num_row]
+        elif anchor.shape[0] < num_row:
+            deficit = num_row - anchor.shape[0]
+            extra_X = rng.normal(size=(deficit, columns))
+            extra_y = np.full((deficit,), np.nan)
+            anchor = np.vstack([anchor, extra_X])
+            anchor_labels = np.concatenate([anchor_labels, extra_y])
 
         if return_labels:
             return anchor, anchor_labels

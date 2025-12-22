@@ -528,35 +528,42 @@ def _load_medmnist_12() -> pd.DataFrame:  # organamnist_sagittal
 
 def _load_mice_df() -> pd.DataFrame:
     """
-    Mice Protein Expression (n=1080, 77 特徴量)  
-    - UCI ML Repo: https://archive.ics.uci.edu/ml/datasets/Mice+Protein+Expression
-    CSV をあらかじめ `input/mice_protein_expression.csv` に配置して読み込む想定。
+    Mice Protein Expression (n=1080, 77 特徴量)
     """
-    path = Path(r"input\mice+protein+expression\Data_Cortex_Nuclear.xls")
+    path = Path(r"input/mice+protein+expression/Data_Cortex_Nuclear.xls")
     df = pd.read_excel(path)
+
+    # クラス名を target に変更（注意：Class は大文字）
     df = df.rename(columns={"class": "target"})
-    
-    # 'MouseID' は代入に不要なため一時的に除外
-    mouse_ids = df['MouseID']
-    df_features = df.drop(columns=['MouseID'])
-    
-    # 数値データのみを対象にK近傍法を適用
-    numeric_cols = df_features.select_dtypes(include=np.number).columns
-    
-    # KNNImputerのインスタンスを作成 (n_neighbors=5がデフォルト)
+
+    # y（目的変数）を分離
+    y = df["target"]
+
+    # MouseID を保持
+    mouse_ids = df["MouseID"]
+
+    # X（説明変数）だけ残す
+    X = df.drop(
+        columns=["MouseID", "Genotype", "Treatment", "Behavior", "target"]
+    )
+
+    # 数値特徴量のみ
+    numeric_cols = X.select_dtypes(include=np.number).columns
+
+    # 欠損補完（X のみ）
     imputer = KNNImputer(n_neighbors=5)
-    
-    # 代入を実行し、結果をDataFrameに戻す
-    imputed_data = imputer.fit_transform(df_features[numeric_cols])
-    df_imputed = pd.DataFrame(imputed_data, columns=numeric_cols, index=df_features.index)
-    
-    # 元のDataFrameに代入された値を反映
-    df_features[numeric_cols] = df_imputed
-    
-    # 除外していた 'MouseID' を元に戻す
-    df_final = pd.concat([mouse_ids, df_features], axis=1)
+    X[numeric_cols] = pd.DataFrame(
+        imputer.fit_transform(X[numeric_cols]),
+        columns=numeric_cols,
+        index=X.index
+    )
+
+    # 最終 DataFrame（ID + X + y）
+    df_final = pd.concat([mouse_ids, X, y], axis=1)
 
     return df_final
+
+
 
 def _load_har() -> pd.DataFrame:
     # HAR データセットのルートパス

@@ -39,31 +39,19 @@ class DataCollabVisualizer:
         save_dir = Path(save_dir or (config.output_path / "visualizations"))
 
         has_train_data = bool(inter.anchor.size and inter.anchors_inter)
-        has_test_data = bool(inter.anchor_test.size and inter.anchors_test_inter)
-
-        if not has_train_data and not has_test_data:
+        if not has_train_data:
             self._log("Anchor visualization skipped: no anchor data available.")
             return
-
-        if has_train_data:
-            num_institutions = len(inter.anchors_inter)
-        else:
-            num_institutions = len(inter.anchors_test_inter)
+        num_institutions = len(inter.anchors_inter)
         if num_institutions == 0:
             return
 
         anchor_labels_train = inter.anchor_y if inter.anchor_y.size else np.zeros(inter.anchor.shape[0])
-        anchor_labels_test = inter.anchor_y_test if inter.anchor_y_test.size else np.zeros(inter.anchor_test.shape[0])
-        legend_status = "full" if anchor_labels_train.size and np.unique(anchor_labels_train).size > 1 else False
 
-        Z_train_plot = integ.Z_integ
-        if Z_train_plot is not None and Z_train_plot.ndim == 2 and Z_train_plot.shape[0] == config.dim_integrate:
-            Z_train_plot = Z_train_plot.T
-
-        col1_data = ([inter.anchor] if has_train_data else []) + ([inter.anchor_test] if has_test_data else [])
-        col2_data = (inter.anchors_inter if has_train_data else []) + (inter.anchors_test_inter if has_test_data else [])
-        col3_data = (integ.anchors_integ if has_train_data else []) + (integ.anchors_test_integ if has_test_data else [])
-        col4_data = [Z_train_plot] if has_train_data and Z_train_plot is not None else []
+        col1_data = inter.anchor
+        col2_data = inter.anchors_inter
+        col3_data = integ.anchors_integ
+        use_graph = bool(getattr(config, "visual_knn_graph", False) or getattr(config, "visualize_for_presenations", False))
 
         def ensure_2d(data_list: Sequence[np.ndarray]):
             if not data_list:
@@ -90,16 +78,16 @@ class DataCollabVisualizer:
                 limits = ((xmin - xpad, xmax + xpad), (ymin - ypad, ymax + ypad))
             return prepared, limits
 
-        col1_2d, (xlim1, ylim1) = ensure_2d(col1_data)
+        col1_2d, (xlim1, ylim1) = ensure_2d([col1_data])
         col2_2d, (xlim2, ylim2) = ensure_2d(col2_data)
         col3_2d, (xlim3, ylim3) = ensure_2d(col3_data)
-        col4_2d, (xlim4, ylim4) = ensure_2d(col4_data)
 
-        fig, axes = plt.subplots(num_institutions * 2, 4, figsize=(24, 6 * num_institutions * 2), squeeze=False)
-        fig.suptitle("Anchor Data Transformation Flow (Top: Train, Bottom: Test)", fontsize=16, y=0.995)
+        fig, axes = plt.subplots(num_institutions, 3, figsize=(18, 5 * num_institutions), squeeze=False)
 
         def project_3d(data_list: Sequence[np.ndarray]):
-            valid = [d for d in data_list if d is not None and d.ndim == 2 and d.shape[1] > 3]
+            # 3 次元以上のデータを 3D 表示用に準備。
+            # 3 次元そのまま / 4 次元以上は PCA で 3 次元に射影。
+            valid = [d for d in data_list if d is not None and d.ndim == 2 and d.shape[1] >= 3]
             if not valid:
                 return [None for _ in data_list], None
             pca = PCA(n_components=3).fit(np.vstack(valid))
@@ -126,116 +114,295 @@ class DataCollabVisualizer:
 
         enable_3d = bool(getattr(self.config, "visualize_anchors_3d", False))
         if enable_3d:
-            col3_train_3d, train3d_limits = project_3d(integ.anchors_integ if has_train_data else [])
-            col3_test_3d, test3d_limits = project_3d(integ.anchors_test_integ if has_test_data else [])
-            Z_train_3d, Z_limits = project_3d([Z_train_plot] if Z_train_plot is not None else [])
+            col1_train_3d, col1_train_limits = project_3d([inter.anchor])
+            col3_train_3d, train3d_limits = project_3d(integ.anchors_integ)
 
             def to_3d(ax):
                 fig_ = ax.figure
                 spec = ax.get_subplotspec()
                 ax.remove()
                 return fig_.add_subplot(spec, projection="3d")
+        else:
+            col1_train_3d = col3_train_3d = None
+            col1_train_limits = train3d_limits = None
+
+        mst_edges = self._compute_mst_edges(np.asarray(col1_data)) if use_graph else []
+
+        def draw_edges_2d(ax, data2d, edges):
+            if data2d is None or not edges:
+                return
+            for u, v in edges:
+                if u >= data2d.shape[0] or v >= data2d.shape[0]:
+                    continue
+                ax.plot([data2d[u, 0], data2d[v, 0]], [data2d[u, 1], data2d[v, 1]], color="gray", alpha=0.6, linewidth=1.0)
+
+        def draw_edges_3d(ax, data3d, edges):
+            if data3d is None or not edges:
+                return
+            for u, v in edges:
+                if u >= data3d.shape[0] or v >= data3d.shape[0]:
+                    continue
+                ax.plot(
+                    [data3d[u, 0], data3d[v, 0]],
+                    [data3d[u, 1], data3d[v, 1]],
+                    [data3d[u, 2], data3d[v, 2]],
+                    color="gray", alpha=0.6, linewidth=1.0,
+                )
+
+        # フォント（日本語）を試しに検出
+        def get_jp_font():
+            from matplotlib import font_manager
+            preferred = [
+                "IPAexGothic", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+                "Noto Sans CJK JP", "Noto Sans JP", "TakaoPGothic",
+                "Yu Gothic", "MS Gothic",
+            ]
+            for name in preferred:
+                try:
+                    path = font_manager.findfont(name, fallback_to_default=False)
+                    if path:
+                        return font_manager.FontProperties(fname=path)
+                except Exception:
+                    continue
+            return None
+
+        jp_font = self._get_jp_font() if callable(getattr(self, "_get_jp_font", None)) else get_jp_font()
+
+        def add_row_label(ax, text: str):
+            if getattr(ax, "name", "") == "3d":
+                ax.text2D(-0.12, 0.5, text, transform=ax.transAxes, ha="right", va="center", fontsize=20, fontweight="bold", rotation=90, fontproperties=jp_font)
+            else:
+                ax.text(-0.12, 0.5, text, transform=ax.transAxes, ha="right", va="center", fontsize=20, fontweight="bold", rotation=90, fontproperties=jp_font)
+
+        col_titles = ["アンカーデータ", "中間表現", "統合表現"]
+        for ci, title in enumerate(col_titles):
+            xpos = (ci + 0.5) / 3.0
+            fig.text(xpos, 0.98, title, ha="center", va="top", fontsize=20, fontweight="bold", fontproperties=jp_font)
 
         for i in range(num_institutions):
             train_row = i
-            if has_train_data:
+            ax_orig = axes[train_row, 0]
+            if enable_3d and col1_train_3d and col1_train_3d[0] is not None:
+                ax_orig = to_3d(ax_orig)
+                axes[train_row, 0] = ax_orig
+                d3o = col1_train_3d[0]
+                ax_orig.scatter(d3o[:, 0], d3o[:, 1], d3o[:, 2], c=anchor_labels_train, cmap="coolwarm", s=14, depthshade=True)
+                if col1_train_limits:
+                    ax_orig.set_xlim(col1_train_limits[0]); ax_orig.set_ylim(col1_train_limits[1]); ax_orig.set_zlim(col1_train_limits[2])
+                if use_graph:
+                    draw_edges_3d(ax_orig, d3o, mst_edges)
+            else:
                 sns.scatterplot(
                     x=col1_2d[0][:, 0], y=col1_2d[0][:, 1],
                     hue=anchor_labels_train, palette="coolwarm",
-                    ax=axes[train_row, 0], legend=(i == 0 and legend_status),
+                    ax=ax_orig, legend=False,
                 )
-                axes[train_row, 0].set_title("1. Original Anchor (Train)" if i == 0 else "")
-                axes[train_row, 0].set_xlim(xlim1); axes[train_row, 0].set_ylim(ylim1)
-                axes[train_row, 0].set_ylabel(f"Inst {i+1}")
+                ax_orig.set_xlim(xlim1); ax_orig.set_ylim(ylim1)
+                if use_graph:
+                    draw_edges_2d(ax_orig, col1_2d[0], mst_edges)
+            add_row_label(ax_orig, f"機関 {i+1}")
 
+            sns.scatterplot(
+                x=col2_2d[i][:, 0], y=col2_2d[i][:, 1],
+                hue=anchor_labels_train, palette="coolwarm",
+                ax=axes[train_row, 1], legend=False,
+            )
+            axes[train_row, 1].set_xlim(xlim2); axes[train_row, 1].set_ylim(ylim2)
+            if use_graph:
+                draw_edges_2d(axes[train_row, 1], col2_2d[i], mst_edges)
+
+            if enable_3d and col3_train_3d and col3_train_3d[i] is not None:
+                ax3d = to_3d(axes[train_row, 2])
+                d3 = col3_train_3d[i]
+                ax3d.scatter(d3[:, 0], d3[:, 1], d3[:, 2], c=anchor_labels_train, cmap="coolwarm", s=14, depthshade=True)
+                if train3d_limits:
+                    ax3d.set_xlim(train3d_limits[0]); ax3d.set_ylim(train3d_limits[1]); ax3d.set_zlim(train3d_limits[2])
+                if use_graph:
+                    draw_edges_3d(ax3d, d3, mst_edges)
+            else:
                 sns.scatterplot(
-                    x=col2_2d[i][:, 0], y=col2_2d[i][:, 1],
+                    x=col3_2d[i][:, 0], y=col3_2d[i][:, 1],
                     hue=anchor_labels_train, palette="coolwarm",
-                    ax=axes[train_row, 1], legend=False,
+                    ax=axes[train_row, 2], legend=False,
                 )
-                axes[train_row, 1].set_title("2. Intermediate (Train)" if i == 0 else "")
-                axes[train_row, 1].set_xlim(xlim2); axes[train_row, 1].set_ylim(ylim2)
+                axes[train_row, 2].set_xlim(xlim3); axes[train_row, 2].set_ylim(ylim3)
+                if use_graph:
+                    draw_edges_2d(axes[train_row, 2], col3_2d[i], mst_edges)
 
-                if enable_3d and col3_train_3d and col3_train_3d[i] is not None:
-                    ax3d = to_3d(axes[train_row, 2])
-                    d3 = col3_train_3d[i]
-                    ax3d.scatter(d3[:, 0], d3[:, 1], d3[:, 2], c=anchor_labels_train, cmap="coolwarm", s=14, depthshade=True)
-                    if train3d_limits:
-                        ax3d.set_xlim(train3d_limits[0]); ax3d.set_ylim(train3d_limits[1]); ax3d.set_zlim(train3d_limits[2])
-                else:
-                    sns.scatterplot(
-                        x=col3_2d[i][:, 0], y=col3_2d[i][:, 1],
-                        hue=anchor_labels_train, palette="coolwarm",
-                        ax=axes[train_row, 2], legend=False,
-                    )
-                    axes[train_row, 2].set_xlim(xlim3); axes[train_row, 2].set_ylim(ylim3)
-                axes[train_row, 2].set_title("3. Projection S_hat (Train)" if i == 0 else "")
-
-                if enable_3d and Z_train_3d and Z_train_3d[0] is not None:
-                    ax3dz = to_3d(axes[train_row, 3])
-                    d3z = Z_train_3d[0]
-                    ax3dz.scatter(d3z[:, 0], d3z[:, 1], d3z[:, 2], c=anchor_labels_train, cmap="coolwarm", s=14, depthshade=True)
-                    if Z_limits:
-                        ax3dz.set_xlim(Z_limits[0]); ax3dz.set_ylim(Z_limits[1]); ax3dz.set_zlim(Z_limits[2])
-                elif col4_2d:
-                    sns.scatterplot(
-                        x=col4_2d[0][:, 0], y=col4_2d[0][:, 1],
-                        hue=anchor_labels_train, palette="coolwarm",
-                        ax=axes[train_row, 3], legend=False,
-                    )
-                    axes[train_row, 3].set_xlim(xlim4); axes[train_row, 3].set_ylim(ylim4)
-                else:
-                    axes[train_row, 3].set_visible(False)
-                axes[train_row, 3].set_title("4. Integrated Z (Train)" if i == 0 else "")
-
-            if has_test_data:
-                test_row = i + num_institutions
-                test_idx = (0 if not has_train_data else 1) * num_institutions + i
-                sns.scatterplot(
-                    x=col1_2d[-1][:, 0], y=col1_2d[-1][:, 1],
-                    hue=anchor_labels_test, palette="viridis",
-                    ax=axes[test_row, 0], legend=(i == 0 and legend_status),
-                )
-                axes[test_row, 0].set_title("1. Original Anchor (Test)" if i == 0 else "")
-                axes[test_row, 0].set_xlim(xlim1); axes[test_row, 0].set_ylim(ylim1)
-                axes[test_row, 0].set_ylabel(f"Inst {i+1}")
-
-                sns.scatterplot(
-                    x=col2_2d[test_idx][:, 0], y=col2_2d[test_idx][:, 1],
-                    hue=anchor_labels_test, palette="viridis",
-                    ax=axes[test_row, 1], legend=False,
-                )
-                axes[test_row, 1].set_title("2. Intermediate (Test)" if i == 0 else "")
-                axes[test_row, 1].set_xlim(xlim2); axes[test_row, 1].set_ylim(ylim2)
-
-                if enable_3d and col3_test_3d and col3_test_3d[i] is not None:
-                    ax3dt = to_3d(axes[test_row, 2])
-                    d3t = col3_test_3d[i]
-                    ax3dt.scatter(d3t[:, 0], d3t[:, 1], d3t[:, 2], c=anchor_labels_test, cmap="viridis", s=14, depthshade=True)
-                    if test3d_limits:
-                        ax3dt.set_xlim(test3d_limits[0]); ax3dt.set_ylim(test3d_limits[1]); ax3dt.set_zlim(test3d_limits[2])
-                else:
-                    sns.scatterplot(
-                        x=col3_2d[test_idx][:, 0], y=col3_2d[test_idx][:, 1],
-                        hue=anchor_labels_test, palette="viridis",
-                        ax=axes[test_row, 2], legend=False,
-                    )
-                    axes[test_row, 2].set_xlim(xlim3); axes[test_row, 2].set_ylim(ylim3)
-                axes[test_row, 2].set_title("3. Projection S_hat (Test)" if i == 0 else "")
-
-                if enable_3d and Z_train_3d and Z_train_3d[0] is not None:
-                    ax3dzt = to_3d(axes[test_row, 3])
-                    d3zt = Z_train_3d[0]
-                    ax3dzt.scatter(d3zt[:, 0], d3zt[:, 1], d3zt[:, 2], c=anchor_labels_test, cmap="viridis", s=14, depthshade=True)
-                    if Z_limits:
-                        ax3dzt.set_xlim(Z_limits[0]); ax3dzt.set_ylim(Z_limits[1]); ax3dzt.set_zlim(Z_limits[2])
-                else:
-                    axes[test_row, 3].set_visible(False)
-                axes[test_row, 3].set_title("4. Integrated Z (Test)" if i == 0 else "")
-
-        plt.tight_layout(rect=[0, 0.03, 1, 0.98])
+        plt.tight_layout(rect=[0.03, 0.03, 1, 0.94])
         save_dir.mkdir(parents=True, exist_ok=True)
         plt.savefig(save_dir / self._plot_filename("anchor_visualization"))
+
+    # ------------------------------------------------------------------ #
+    def visualize_anchors_for_presenations(self, save_dir: Optional[str] = None) -> None:
+        """
+        Presentation用のアンカー簡易可視化。
+        少数（デフォルト10点）だけ抜き出し、マーカー形状・色を大きく変えて強調表示する。
+        """
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        from sklearn.decomposition import PCA
+
+        inter = self.intermediate
+        integ = self.artifacts
+        config = self.config
+
+        if not getattr(config, "visualize_for_presenations", False):
+            return
+
+        if inter.anchor.size == 0 or not inter.anchors_inter:
+            self._log("Presentation anchors skipped: no anchor data available.")
+            return
+
+        num_institutions = len(inter.anchors_inter)
+        if num_institutions == 0:
+            return
+
+        anchor_labels = inter.anchor_y if inter.anchor_y.size else np.zeros(inter.anchor.shape[0])
+        anchor = inter.anchor
+        n_pick = min(10, anchor.shape[0])
+        idx = np.linspace(0, anchor.shape[0] - 1, n_pick, dtype=int)
+
+        def _subset(arr):
+            if arr is None or arr.shape[0] == 0:
+                return None
+            if arr.shape[0] <= idx.max():
+                return None
+            return arr[idx]
+
+        col1_sub = _subset(anchor)
+        col2_sub = [_subset(a) for a in inter.anchors_inter]
+        col3_sub = [_subset(a) for a in integ.anchors_integ]
+        use_graph = bool(getattr(config, "visual_knn_graph", False) or getattr(config, "visualize_for_presenations", False))
+
+        def project_3d_list(arr_list):
+            valid = [a for a in arr_list if a is not None and a.ndim == 2 and a.shape[1] >= 3]
+            if not valid:
+                return [None for _ in arr_list], None
+            pca = PCA(n_components=3).fit(np.vstack(valid))
+            projected = []
+            for a in arr_list:
+                if a is None:
+                    projected.append(None)
+                elif a.shape[1] == 3:
+                    projected.append(a)
+                elif a.shape[1] > 3:
+                    projected.append(pca.transform(a))
+                else:
+                    projected.append(None)
+            stacked = [a for a in projected if a is not None]
+            if stacked:
+                arr = np.vstack(stacked)
+                limits = tuple(
+                    (arr[:, idx].min() - 0.05 * (arr[:, idx].ptp() or 1.0), arr[:, idx].max() + 0.05 * (arr[:, idx].ptp() or 1.0))
+                    for idx in range(3)
+                )
+            else:
+                limits = ((0, 1), (0, 1), (0, 1))
+            return projected, limits
+
+        enable_3d = bool(getattr(config, "visualize_anchors_3d", False))
+        col1_3d = col2_3d = col3_3d = None
+        limits1 = limits2 = limits3 = None
+        if enable_3d:
+            col1_3d, limits1 = project_3d_list([col1_sub] if col1_sub is not None else [])
+            col2_3d, limits2 = project_3d_list(col2_sub)
+            col3_3d, limits3 = project_3d_list(col3_sub)
+        mst_edges = []
+        if use_graph and col1_sub is not None:
+            mst_edges = self._compute_mst_edges(np.asarray(col1_sub))
+
+        jp_font = self._get_jp_font()
+        markers = ["o", "s", "^", "D", "P", "X", "*", "v", "<", ">", "H", "+"]
+        colors = sns.color_palette("tab10", n_pick)
+
+        def draw_edges_2d(ax, data2d, edges):
+            if data2d is None or not edges:
+                return
+            data2d = np.asarray(data2d)
+            for u, v in edges:
+                if u >= data2d.shape[0] or v >= data2d.shape[0]:
+                    continue
+                ax.plot([data2d[u, 0], data2d[v, 0]], [data2d[u, 1], data2d[v, 1]], color="gray", alpha=0.6, linewidth=1.0)
+
+        def draw_edges_3d(ax, data3d, edges):
+            if data3d is None or not edges:
+                return
+            data3d = np.asarray(data3d)
+            for u, v in edges:
+                if u >= data3d.shape[0] or v >= data3d.shape[0]:
+                    continue
+                ax.plot(
+                    [data3d[u, 0], data3d[v, 0]],
+                    [data3d[u, 1], data3d[v, 1]],
+                    [data3d[u, 2], data3d[v, 2]],
+                    color="gray", alpha=0.6, linewidth=1.0,
+                )
+
+        def scatter_with_markers(ax, arr2d, labels):
+            if arr2d is None:
+                return
+            arr2d = np.asarray(arr2d)
+            if arr2d.ndim != 2:
+                return
+            for j, (x, y) in enumerate(arr2d):
+                mk = markers[j % len(markers)]
+                ax.scatter(x, y, s=300, marker=mk, color=colors[j % len(colors)], edgecolor="k", linewidth=1.5)
+            if use_graph:
+                draw_edges_2d(ax, arr2d, mst_edges)
+
+        def scatter_with_markers_3d(ax, arr3d, labels, limits=None):
+            if arr3d is None:
+                return
+            arr3d = np.asarray(arr3d)
+            if arr3d.ndim != 2 or arr3d.shape[1] < 3:
+                return
+            for j, (x, y, z) in enumerate(arr3d):
+                mk = markers[j % len(markers)]
+                ax.scatter(x, y, z, s=300, marker=mk, color=colors[j % len(colors)], edgecolor="k", linewidth=1.5, depthshade=True)
+            if limits:
+                ax.set_xlim(limits[0]); ax.set_ylim(limits[1]); ax.set_zlim(limits[2])
+            if use_graph:
+                draw_edges_3d(ax, arr3d, mst_edges)
+
+        fig, axes = plt.subplots(num_institutions, 3, figsize=(18, 5 * num_institutions), squeeze=False)
+        col_titles = ["アンカーデータ", "中間表現", "統合表現"]
+        for ci, title in enumerate(col_titles):
+            xpos = (ci + 0.5) / 3.0
+            fig.text(xpos, 0.98, title, ha="center", va="top", fontsize=20, fontweight="bold", fontproperties=jp_font)
+
+        for i in range(num_institutions):
+            # Original anchor (shared)
+            ax0 = axes[i, 0]
+            if enable_3d and col1_3d and col1_3d[0] is not None:
+                ax0 = fig.add_subplot(ax0.get_subplotspec(), projection="3d")
+                axes[i, 0] = ax0
+                scatter_with_markers_3d(ax0, col1_3d[0], anchor_labels[idx], limits1)
+            else:
+                scatter_with_markers(ax0, col1_sub, anchor_labels[idx])
+
+            # Intermediate per institution
+            ax1 = axes[i, 1]
+            if enable_3d and col2_3d and col2_3d[i] is not None:
+                ax1 = fig.add_subplot(ax1.get_subplotspec(), projection="3d")
+                axes[i, 1] = ax1
+                scatter_with_markers_3d(ax1, col2_3d[i], anchor_labels[idx], limits2)
+            else:
+                scatter_with_markers(ax1, col2_sub[i], anchor_labels[idx])
+
+            # Integrated per institution
+            ax2 = axes[i, 2]
+            if enable_3d and col3_3d and col3_3d[i] is not None:
+                ax2 = fig.add_subplot(ax2.get_subplotspec(), projection="3d")
+                axes[i, 2] = ax2
+                scatter_with_markers_3d(ax2, col3_3d[i], anchor_labels[idx], limits3)
+            else:
+                scatter_with_markers(ax2, col3_sub[i], anchor_labels[idx])
+
+        plt.tight_layout(rect=[0.03, 0.03, 1, 0.94])
+        save_dir = Path(save_dir or (config.output_path / "visualizations"))
+        save_dir.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_dir / self._plot_filename("anchor_presentation"))
 
     # ------------------------------------------------------------------ #
     def visualize_representations(self, save_dir: Optional[str] = None) -> None:
@@ -244,6 +411,7 @@ class DataCollabVisualizer:
         """
         import matplotlib.pyplot as plt
         import seaborn as sns
+        from sklearn.decomposition import PCA
 
         dataset = self.dataset
         inter = self.intermediate
@@ -268,35 +436,227 @@ class DataCollabVisualizer:
         else:
             xlim_test = ylim_test = None
 
-        fig_train, axes_train = plt.subplots(num_institutions, 4, figsize=(24, 5 * num_institutions), squeeze=False)
-        fig_train.suptitle("Representations (Train Data)", fontsize=16)
+        # Integrated 表現用に全機関で共有する 3D 範囲を計算
+        integ_train_3d_limits = None
+        integ_test_3d_limits = None
+
+        def project_3d_list(arr_list):
+            valid = [a for a in arr_list if a is not None and a.ndim == 2 and a.shape[1] >= 3]
+            if not valid:
+                return [None for _ in arr_list], None
+            pca = PCA(n_components=3).fit(np.vstack(valid))
+            projected = []
+            for a in arr_list:
+                if a is None:
+                    projected.append(None)
+                elif a.shape[1] == 3:
+                    projected.append(a)
+                elif a.shape[1] > 3:
+                    projected.append(pca.transform(a))
+                else:
+                    projected.append(None)
+            stacked = [a for a in projected if a is not None]
+            if stacked:
+                arr = np.vstack(stacked)
+                limits = tuple(
+                    (arr[:, idx].min() - 0.05 * (arr[:, idx].ptp() or 1.0), arr[:, idx].max() + 0.05 * (arr[:, idx].ptp() or 1.0))
+                    for idx in range(3)
+                )
+            else:
+                limits = ((0, 1), (0, 1), (0, 1))
+            return projected, limits
+
+        use_graph = bool(getattr(self.config, "visual_knn_graph", False) or getattr(self.config, "visualize_for_presenations", False))
+
+        enable_3d = bool(getattr(self.config, "visualize_anchors_3d", False))
+        if enable_3d:
+            orig_train_3d, orig_train_limits = project_3d_list(dataset.Xs_train)
+            inter_train_3d, inter_train_limits = project_3d_list(inter.Xs_train_inter)
+            integ_train_3d, integ_train_limits = project_3d_list(integ.Xs_train_integ)
+            orig_test_3d = inter_test_3d = integ_test_3d = None
+            orig_test_limits = inter_test_limits = integ_test_limits = None
+            if dataset.Xs_test and inter.Xs_test_inter and integ.Xs_test_integ:
+                orig_test_3d, orig_test_limits = project_3d_list(dataset.Xs_test)
+                inter_test_3d, inter_test_limits = project_3d_list(inter.Xs_test_inter)
+                integ_test_3d, integ_test_limits = project_3d_list(integ.Xs_test_integ)
+
+            # Integrated だけは全機関で共有するスケールに合わせる
+            def compute_shared_limits(arr_list_3d):
+                valid = [a for a in arr_list_3d if a is not None]
+                if not valid:
+                    return None
+                stacked = np.vstack(valid)
+                limits = tuple(
+                    (stacked[:, idx].min() - 0.05 * (stacked[:, idx].ptp() or 1.0),
+                     stacked[:, idx].max() + 0.05 * (stacked[:, idx].ptp() or 1.0))
+                    for idx in range(3)
+                )
+                return limits
+
+            integ_train_3d_limits = compute_shared_limits(integ_train_3d) or integ_train_limits
+            integ_test_3d_limits = compute_shared_limits(integ_test_3d) or integ_test_limits
+
+            def to_3d(ax):
+                fig_ = ax.figure
+                spec = ax.get_subplotspec()
+                ax.remove()
+                return fig_.add_subplot(spec, projection="3d")
+        else:
+            orig_train_3d = inter_train_3d = integ_train_3d = None
+            orig_test_3d = inter_test_3d = integ_test_3d = None
+            orig_train_limits = inter_train_limits = integ_train_limits = None
+            orig_test_limits = inter_test_limits = integ_test_limits = None
+
+        def add_row_label(ax, text: str):
+            if getattr(ax, "name", "") == "3d":
+                ax.text2D(-0.12, 0.5, text, transform=ax.transAxes, ha="right", va="center", fontsize=20, fontweight="bold", rotation=90, fontproperties=jp_font)
+            else:
+                ax.text(-0.12, 0.5, text, transform=ax.transAxes, ha="right", va="center", fontsize=20, fontweight="bold", rotation=90, fontproperties=jp_font)
+
+        def get_jp_font():
+            from matplotlib import font_manager
+            preferred = [
+                "IPAexGothic", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+                "Noto Sans CJK JP", "Noto Sans JP", "TakaoPGothic",
+                "Yu Gothic", "MS Gothic",
+            ]
+            for name in preferred:
+                try:
+                    path = font_manager.findfont(name, fallback_to_default=False)
+                    if path:
+                        return font_manager.FontProperties(fname=path)
+                except Exception:
+                    continue
+            return None
+
+        jp_font = get_jp_font()
+        def draw_edges_2d(ax, data2d, edges):
+            if data2d is None or not edges:
+                return
+            data2d = np.asarray(data2d)
+            for u, v in edges:
+                if u >= data2d.shape[0] or v >= data2d.shape[0]:
+                    continue
+                ax.plot([data2d[u, 0], data2d[v, 0]], [data2d[u, 1], data2d[v, 1]], color="gray", alpha=0.6, linewidth=1.0)
+
+        def draw_edges_3d(ax, data3d, edges):
+            if data3d is None or not edges:
+                return
+            data3d = np.asarray(data3d)
+            for u, v in edges:
+                if u >= data3d.shape[0] or v >= data3d.shape[0]:
+                    continue
+                ax.plot(
+                    [data3d[u, 0], data3d[v, 0]],
+                    [data3d[u, 1], data3d[v, 1]],
+                    [data3d[u, 2], data3d[v, 2]],
+                    color="gray", alpha=0.6, linewidth=1.0,
+                )
+
+        mst_edges_train = []
+        mst_edges_test = []
+        if use_graph:
+            mst_edges_train = [self._compute_mst_edges(np.asarray(arr)) for arr in dataset.Xs_train]
+            if dataset.Xs_test:
+                mst_edges_test = [self._compute_mst_edges(np.asarray(arr)) for arr in dataset.Xs_test]
+            else:
+                mst_edges_test = [[] for _ in range(num_institutions)]
+        def draw_edges_2d(ax, data2d, edges):
+            if data2d is None or not edges:
+                return
+            data2d = np.asarray(data2d)
+            for u, v in edges:
+                if u >= data2d.shape[0] or v >= data2d.shape[0]:
+                    continue
+                ax.plot([data2d[u, 0], data2d[v, 0]], [data2d[u, 1], data2d[v, 1]], color="gray", alpha=0.6, linewidth=1.0)
+
+        def draw_edges_3d(ax, data3d, edges):
+            if data3d is None or not edges:
+                return
+            data3d = np.asarray(data3d)
+            for u, v in edges:
+                if u >= data3d.shape[0] or v >= data3d.shape[0]:
+                    continue
+                ax.plot(
+                    [data3d[u, 0], data3d[v, 0]],
+                    [data3d[u, 1], data3d[v, 1]],
+                    [data3d[u, 2], data3d[v, 2]],
+                    color="gray", alpha=0.6, linewidth=1.0,
+                )
+
+        mst_edges_train = []
+        mst_edges_test = []
+        if use_graph:
+            mst_edges_train = [self._compute_mst_edges(np.asarray(arr)) for arr in dataset.Xs_train]
+            if dataset.Xs_test:
+                mst_edges_test = [self._compute_mst_edges(np.asarray(arr)) for arr in dataset.Xs_test]
+            else:
+                mst_edges_test = [[] for _ in range(num_institutions)]
+
+        fig_train, axes_train = plt.subplots(num_institutions, 3, figsize=(18, 5 * num_institutions), squeeze=False)
+        col_titles = ["アンカーデータ", "中間表現", "統合表現"]
+        for ci, title in enumerate(col_titles):
+            xpos = (ci + 0.5) / 3.0
+            fig_train.text(xpos, 0.98, title, ha="center", va="top", fontsize=20, fontweight="bold", fontproperties=jp_font)
 
         for idx in range(num_institutions):
             orig = self._ensure_2d(dataset.Xs_train[idx])
-            sns.scatterplot(x=orig[:, 0], y=orig[:, 1], hue=dataset.ys_train[idx], palette="viridis", ax=axes_train[idx, 0], legend="full")
-            axes_train[idx, 0].set_title(f"Institution {idx+1} - Original Data")
+            ax_orig = axes_train[idx, 0]
+            if enable_3d and orig_train_3d and orig_train_3d[idx] is not None:
+                ax_orig = to_3d(ax_orig)
+                axes_train[idx, 0] = ax_orig
+                d3o = orig_train_3d[idx]
+                ax_orig.scatter(d3o[:, 0], d3o[:, 1], d3o[:, 2], c=dataset.ys_train[idx], cmap="viridis", s=14, depthshade=True)
+                if orig_train_limits:
+                    ax_orig.set_xlim(orig_train_limits[0]); ax_orig.set_ylim(orig_train_limits[1]); ax_orig.set_zlim(orig_train_limits[2])
+                if use_graph:
+                    draw_edges_3d(ax_orig, d3o, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
+            else:
+                sns.scatterplot(x=orig[:, 0], y=orig[:, 1], hue=dataset.ys_train[idx], palette="viridis", ax=ax_orig, legend=False)
+                if use_graph:
+                    draw_edges_2d(ax_orig, orig, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
+            add_row_label(ax_orig, f"機関 {idx+1}")
 
             inter_data = self._ensure_2d(inter.Xs_train_inter[idx])
-            sns.scatterplot(x=inter_data[:, 0], y=inter_data[:, 1], hue=dataset.ys_train[idx], palette="viridis", ax=axes_train[idx, 1], legend="full")
-            axes_train[idx, 1].set_title(f"Institution {idx+1} - Intermediate Expression")
+            ax_inter = axes_train[idx, 1]
+            if enable_3d and inter_train_3d and inter_train_3d[idx] is not None:
+                ax_inter = to_3d(ax_inter)
+                axes_train[idx, 1] = ax_inter
+                d3i = inter_train_3d[idx]
+                ax_inter.scatter(d3i[:, 0], d3i[:, 1], d3i[:, 2], c=dataset.ys_train[idx], cmap="viridis", s=14, depthshade=True)
+                if inter_train_limits:
+                    ax_inter.set_xlim(inter_train_limits[0]); ax_inter.set_ylim(inter_train_limits[1]); ax_inter.set_zlim(inter_train_limits[2])
+                if use_graph:
+                    draw_edges_3d(ax_inter, d3i, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
+            else:
+                sns.scatterplot(x=inter_data[:, 0], y=inter_data[:, 1], hue=dataset.ys_train[idx], palette="viridis", ax=ax_inter, legend=False)
+                if use_graph:
+                    draw_edges_2d(ax_inter, inter_data, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
 
             integ_data = self._ensure_2d(integ.Xs_train_integ[idx])
-            sns.scatterplot(x=integ_data[:, 0], y=integ_data[:, 1], hue=integ.ys_train_integ[idx], palette="viridis", ax=axes_train[idx, 2], legend="full")
-            axes_train[idx, 2].set_title(f"Institution {idx+1} - Integrated Expression")
-            axes_train[idx, 2].set_xlim(xlim_train); axes_train[idx, 2].set_ylim(ylim_train)
+            ax_integ = axes_train[idx, 2]
+            if enable_3d and integ_train_3d and integ_train_3d[idx] is not None:
+                ax_integ = to_3d(ax_integ)
+                axes_train[idx, 2] = ax_integ
+                d3t = integ_train_3d[idx]
+                ax_integ.scatter(d3t[:, 0], d3t[:, 1], d3t[:, 2], c=integ.ys_train_integ[idx], cmap="viridis", s=14, depthshade=True)
+                limits_use = integ_train_3d_limits or integ_train_limits
+                if limits_use:
+                    ax_integ.set_xlim(limits_use[0]); ax_integ.set_ylim(limits_use[1]); ax_integ.set_zlim(limits_use[2])
+                if use_graph:
+                    draw_edges_3d(ax_integ, d3t, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
+            else:
+                sns.scatterplot(x=integ_data[:, 0], y=integ_data[:, 1], hue=integ.ys_train_integ[idx], palette="viridis", ax=ax_integ, legend=False)
+                ax_integ.set_xlim(xlim_train); ax_integ.set_ylim(ylim_train)
+                if use_graph:
+                    draw_edges_2d(ax_integ, integ_data, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
 
             other_indices = [j for j in range(num_institutions) if j != idx]
+            plotted_3d_all = False
             if other_indices:
                 X_other = self._stack_arrays([integ.Xs_train_integ[j] for j in other_indices])
                 y_other = np.hstack([integ.ys_train_integ[j] for j in other_indices])
                 other_plot = self._ensure_2d(X_other)
-                sns.scatterplot(x=other_plot[:, 0], y=other_plot[:, 1], hue=y_other, palette="viridis", ax=axes_train[idx, 3], legend=False)
-            sns.scatterplot(
-                x=integ_data[:, 0], y=integ_data[:, 1], hue=integ.ys_train_integ[idx],
-                palette="viridis", ax=axes_train[idx, 3], legend="full",
-            )
-            axes_train[idx, 3].set_title(f"All Institutions (Inst {idx+1} Highlighted)")
-            axes_train[idx, 3].set_xlim(xlim_train); axes_train[idx, 3].set_ylim(ylim_train)
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.97])
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -304,26 +664,69 @@ class DataCollabVisualizer:
 
         if dataset.Xs_test and inter.Xs_test_inter and integ.Xs_test_integ and xlim_test:
             fig_test, axes_test = plt.subplots(num_institutions, 3, figsize=(18, 5 * num_institutions), squeeze=False)
-            fig_test.suptitle("Representations (Test Data)", fontsize=16)
             for idx in range(num_institutions):
                 orig = self._ensure_2d(dataset.Xs_test[idx])
-                sns.scatterplot(x=orig[:, 0], y=orig[:, 1], hue=dataset.ys_test[idx], palette="viridis", ax=axes_test[idx, 0], legend="full")
-                axes_test[idx, 0].set_title(f"Institution {idx+1} - Original Test Data")
+                ax_orig_t = axes_test[idx, 0]
+                if enable_3d and orig_test_3d and orig_test_3d[idx] is not None:
+                    ax_orig_t = to_3d(ax_orig_t)
+                    axes_test[idx, 0] = ax_orig_t
+                    d3ot = orig_test_3d[idx]
+                    ax_orig_t.scatter(d3ot[:, 0], d3ot[:, 1], d3ot[:, 2], c=dataset.ys_test[idx], cmap="viridis", s=14, depthshade=True)
+                    if orig_test_limits:
+                        ax_orig_t.set_xlim(orig_test_limits[0]); ax_orig_t.set_ylim(orig_test_limits[1]); ax_orig_t.set_zlim(orig_test_limits[2])
+                    if use_graph:
+                        draw_edges_3d(ax_orig_t, d3ot, mst_edges_test[idx] if idx < len(mst_edges_test) else [])
+                else:
+                    sns.scatterplot(x=orig[:, 0], y=orig[:, 1], hue=dataset.ys_test[idx], palette="viridis", ax=ax_orig_t, legend=False)
+                    if use_graph:
+                        draw_edges_2d(ax_orig_t, orig, mst_edges_test[idx] if idx < len(mst_edges_test) else [])
+                add_row_label(ax_orig_t, f"機関 {idx+1}")
 
                 inter_data = self._ensure_2d(inter.Xs_test_inter[idx])
-                sns.scatterplot(x=inter_data[:, 0], y=inter_data[:, 1], hue=dataset.ys_test[idx], palette="viridis", ax=axes_test[idx, 1], legend="full")
-                axes_test[idx, 1].set_title(f"Institution {idx+1} - Intermediate Test")
+                ax_inter_t = axes_test[idx, 1]
+                if enable_3d and inter_test_3d and inter_test_3d[idx] is not None:
+                    ax_inter_t = to_3d(ax_inter_t)
+                    axes_test[idx, 1] = ax_inter_t
+                    d3it = inter_test_3d[idx]
+                    ax_inter_t.scatter(d3it[:, 0], d3it[:, 1], d3it[:, 2], c=dataset.ys_test[idx], cmap="viridis", s=14, depthshade=True)
+                    if inter_test_limits:
+                        ax_inter_t.set_xlim(inter_test_limits[0]); ax_inter_t.set_ylim(inter_test_limits[1]); ax_inter_t.set_zlim(inter_test_limits[2])
+                    if use_graph:
+                        draw_edges_3d(ax_inter_t, d3it, mst_edges_test[idx] if idx < len(mst_edges_test) else [])
+                else:
+                    sns.scatterplot(x=inter_data[:, 0], y=inter_data[:, 1], hue=dataset.ys_test[idx], palette="viridis", ax=ax_inter_t, legend=False)
+                    if use_graph:
+                        draw_edges_2d(ax_inter_t, inter_data, mst_edges_test[idx] if idx < len(mst_edges_test) else [])
 
                 integ_data = self._ensure_2d(integ.Xs_test_integ[idx])
-                sns.scatterplot(x=integ_data[:, 0], y=integ_data[:, 1], hue=integ.ys_test_integ[idx], palette="viridis", ax=axes_test[idx, 2], legend="full")
-                axes_test[idx, 2].set_title(f"Institution {idx+1} - Integrated Test")
-                axes_test[idx, 2].set_xlim(xlim_test); axes_test[idx, 2].set_ylim(ylim_test)
+                ax_integ_t = axes_test[idx, 2]
+                if enable_3d and integ_test_3d and integ_test_3d[idx] is not None:
+                    ax_integ_t = to_3d(ax_integ_t)
+                    axes_test[idx, 2] = ax_integ_t
+                    d3tt = integ_test_3d[idx]
+                    ax_integ_t.scatter(d3tt[:, 0], d3tt[:, 1], d3tt[:, 2], c=integ.ys_test_integ[idx], cmap="viridis", s=14, depthshade=True)
+                    limits_use = integ_test_3d_limits or integ_test_limits
+                    if limits_use:
+                        ax_integ_t.set_xlim(limits_use[0]); ax_integ_t.set_ylim(limits_use[1]); ax_integ_t.set_zlim(limits_use[2])
+                    if use_graph:
+                        draw_edges_3d(ax_integ_t, d3tt, mst_edges_test[idx] if idx < len(mst_edges_test) else [])
+                else:
+                    sns.scatterplot(x=integ_data[:, 0], y=integ_data[:, 1], hue=integ.ys_test_integ[idx], palette="viridis", ax=ax_integ_t, legend=False)
+                    ax_integ_t.set_xlim(xlim_test); ax_integ_t.set_ylim(ylim_test)
+                    if use_graph:
+                        draw_edges_2d(ax_integ_t, integ_data, mst_edges_test[idx] if idx < len(mst_edges_test) else [])
 
-            plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+            for ci, title in enumerate(col_titles):
+                xpos = (ci + 0.5) / 3.0
+                fig_test.text(xpos, 0.98, title, ha="center", va="top", fontsize=20, fontweight="bold", fontproperties=jp_font)
+
+            plt.tight_layout(rect=[0.03, 0.03, 1, 0.94])
             plt.savefig(save_dir / self._plot_filename("test_representations"))
 
         # Optionally chain anchor visualization for convenience.
         self.visualize_anchors(save_dir=save_dir)
+        if getattr(self.config, "visualize_for_presenations", False):
+            self.visualize_anchors_for_presenations(save_dir=save_dir)
 
     # ------------------------------------------------------------------ #
     def _stack_arrays(self, arrays: Sequence[np.ndarray]) -> np.ndarray | None:
@@ -357,6 +760,40 @@ class DataCollabVisualizer:
             base = f"{self.config.name or 'data_collab'}_plot.png"
         stem = Path(str(base)).stem
         return f"{stem}_{suffix}.png"
+
+    def _get_jp_font(self):
+        try:
+            from matplotlib import font_manager
+        except Exception:
+            return None
+        preferred = [
+            "IPAexGothic", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+            "Noto Sans CJK JP", "Noto Sans JP", "TakaoPGothic",
+            "Yu Gothic", "MS Gothic",
+        ]
+        for name in preferred:
+            try:
+                path = font_manager.findfont(name, fallback_to_default=False)
+                if path:
+                    return font_manager.FontProperties(fname=path)
+            except Exception:
+                continue
+        return None
+
+    def _compute_mst_edges(self, X: np.ndarray) -> list[tuple[int, int]]:
+        if X is None or X.size == 0:
+            return []
+        try:
+            from scipy.sparse.csgraph import minimum_spanning_tree
+            from scipy.spatial.distance import pdist, squareform
+        except Exception:
+            return []
+        if X.shape[0] <= 1:
+            return []
+        dist = squareform(pdist(X, metric="euclidean"))
+        mst = minimum_spanning_tree(dist)
+        coo = mst.tocoo()
+        return list(zip(coo.row.tolist(), coo.col.tolist()))
 
     def _log(self, msg: str) -> None:
         if self.logger is not None:
