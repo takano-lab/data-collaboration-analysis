@@ -3,232 +3,34 @@
 import argparse
 import hashlib
 import statistics
-from collections import OrderedDict
 
 # runners/runner_grid.py
 from itertools import product
 from logging import INFO, FileHandler, Formatter, StreamHandler, getLogger
 from typing import Any, Dict, List, Sequence
-import numpy  as np
 import pandas as pd
 
 from config.config import Config
+from pathlib import Path
+
+from config.experiment_settings import (
+    PARAM_GRID,
+    ERROR_SKIP,
+    PARAM_COLUMNS,
+    DF_COLUMNS,
+    INTERMEDIATE_COLUMNS,
+    PLOT_COLUMNS,
+    MEAN_PARAM,
+    DEFAULTS,
+    OR_GROUPS,
+    OR_GROUP_KEY_SET,
+    _DATASET_DEFAULTS,
+    RULES,
+    load_settings,
+)
 from config.config_logger import record_config_to_cfg, record_value_to_cfg
 from experiments.experiment import run_once  # ←元main改名
 from src.paths import CONFIG_DIR, INPUT_DIR, OUTPUT_DIR
-
-# ====== ユーザーが編集するのはここだけ ======
-
-# 1) 全探索したいパラメータ（config.◯◯に代入）
-
-PARAM_GRID: Dict[str, List[Any]] = OrderedDict({
-    "dataset": [
-    #"fashion_mnist",
-    #"mnist",
-    #"mnist_1248",
-    #"mice",
-    #"har",
-    #"statlog",
-    #"qsar",
-    #"digits",
-    #"breast_cancer",
-    #"adult",
-    # "glass", 
-    # "seeds", 
-    # "letter_recognition",
-    # "wine_quality",
-    #"cifar10",
-    # "diabetes130",
-    # "bank_marketing",
-    # "cifar10_800",
-    '3D_gaussian_clusters',
-    #"concentric_three_circles",
-    #"iris",
-    # "ecoli",
-    # "vowel"
-    # "coil20"
-    #"shered_subspace_N",
-    #"shered_subspace_P",
-],# + ["medmnist_{}".format(i) for i in [3, 5, 6, 7]],
-    "seed_values":[i for i in range(1, 2)],  # 例: [[1,2,3,4,5]
-    #"wine_quality", "glass", "seeds", "letter_recognition"],#"wine_quality", #"qsar","mice", "statlog", "breast_cancer", "adult", "digits",],     # 例: ["qsar","mice"]
-    "h_model": ["mlp"],             # 例: ["mlp","random_forest"] svm_linear_classifier
-    "F_type": ["svd"], # "svd", "kernel_pca_self_tuning", "kernel_pca_svd_mixed" "kernel_pca", "lpp" # "kernel_pca_self_tuning" "kernel_pca_svd_mixed",, "random_projection"
-    "gamma_type": ["fixed"], # "X_tuning", "y_tuning", "fixed"  # 例: ["X_tuning","y_tuning"] # "individual",
-    "gamma_ratio_krr": [1], #, 0.1, 0.3, 3, 10
-    "gamma_ratio": [10], #, 0.1, 0.3, 3, 10
-    "graph_knn_k": [10],
-    "graph_mu_align": [10], # 0.5, 1, 3, 10, 30
-    "graph_lambda_rkhs": [1],
-    "graph_stability_eps": [0],
-    "regularization":["graph"], # "graph", "identity"
-    "num_anchor_data": [100],
-    "public_anchor_num": [10], #############
-    "use_public_anchor":[False],
-    "nl_lambda": [1], # LOCKで止められる, 0.00001
-    #"lw_alpha": [0],
-    "metrics": ["accuracy"], #"accuracy"
-    "kernel_type": ["rbf"],
-    "visualize": [True],
-    "visualize_anchors_3d": [True],
-    "visualize_for_presenations": [True],
-    "visual_knn_graph": [True],
-    "feature_num": [3],
-    "dim_intermediate": [2],#[20, 10, 5, 2], 6
-    "dim_integrate": [2],#[20, 10, 5, 2], 6
-    "num_institution_user": [500],
-    "num_institution": [2],
-    "K_normalization":[False],
-    "anchor_method":["gaussian"], #gaussian smote
-    "smote_ratio":[1],#, 0, 0.1, 0.25, 0.5, 1],
-    "data_distribution":["even"],# "division" "even" "dirichlet"
-    "inter_normalization":[True],
-    "evaluate_integrate_metrics":[True],
-    "load_df_data":[True],
-    "load_intermediate_data":[True],
-    "preserve_integrated_data":[False],
-    "umap_neighbors":[10],
-    "bias_ratio":[0.1], # 0.1, 0.4, 0.6, 0.95, 0.8
-    "non_iid_beta":[1], #  , 0.01, 0.1, 1, 10, 100
-    "svd_ratio":[1], #, 0.25, 0.5, 0.75, 1
-    "max_dim":[100000000],
-    "zerosum":[False], #, True
-    "anchor_label_max_dist": [100000],
-    # ★ 高速版専用パラメータ
-    #"rank_nystrom":[200],      # r' を r と同じにしてほぼフルランク
-    #"lobpcg_tol":[1e-4],        # 収束をきつめに
-    #"lobpcg_maxiter":[300],
-    #"use_faiss_graph":[False],  # グラフ近似はオフ（元と同じグラフ）
-    #"fast_use_nystrom": [False],
-    #"fast_use_lobpcg": [False],
-    #"Q_seed":[None],
-    #"R_seed":[None],
-    #"theta_ss":[np.deg2rad(20)], # np.deg2rad(10)
-    #"gamma_ss":[1],
-    #"alpha_ss":[0],
-    "preprocess":[True],
-    #"helmert":[True],
-    "truncated ":[False],
-    "G_type": ["laplacian_nonlinear"],#"odc", "imakura", "gep", "targetvec", "nonlinear", "laplacian_nonlinear","individual", "fl", "centralize","odc", "imakura", "targetvec_new", "faster_gep", "individual", "fl", "centralize","odc", "imakura", "targetvec_new", nonlinear", "laplacian_nonlinear
-    })
-
-# 2-1) 実行失敗時の挙動（True でスキップ、False で例外をそのまま投げる）
-ERROR_SKIP =True
-
-# 3) DataFrameに保持したい「パラメータ列」（順序もこの通り）
-PARAM_COLUMNS: List[str] = [
-    "dataset", "h_model", "F_type", "G_type", "gamma_ratio", "gamma_type", "gamma_ratio_krr", "num_anchor_data", "nl_lambda", "lw_alpha", "metrics", "dim_intermediate", "dim_integrate", "num_institution_user", "num_institution", "anchor_method", "smote_ratio", "data_distribution", "inter_normalization", "evaluate_integrate_metrics", "umap_neighbors", "bias_ratio", "non_iid_beta", "svd_ratio", "zerosum", "kernel_type", "truncated", "regularization", "public_anchor_num", "use_public_anchor"
-]
-
-# 3-2) train/test_df のDataFrameに保持する名前
-DF_COLUMNS: List[str] = [
-    "dataset", "data_distribution", "num_institution_user", "num_institution", "seed_values", "bias_ratio", "non_iid_beta"
-]
-
-# 3-3) 中間表現のDataFrameに保持する名前
-INTERMEDIATE_COLUMNS: List[str] = [
-    "dataset", "F_type", "gamma_ratio", "data_distribution", "dim_intermediate", "num_institution_user", "num_institution", "seed_values", "umap_neighbors", "bias_ratio", "non_iid_beta", "anchor_method", "smote_ratio", "num_anchor_data","max_dim", "svd_ratio", "anchor_label_max_dist", "use_public_anchor", "public_anchor_num"
-]
-
-# 平均を取る対象のパラメータ
-#  デフォルトは seed_values（データ分割 seed）
-MEAN_PARAM = "seed_values"
-
-# 4) 条件ルール
-#    - LOCK: 条件一致時に指定パラメータを固定（そのキーは“ループしない”）
-#    - SKIP: 条件一致の組合せを丸ごとスキップ
-DEFAULTS = {
-    "y_name": "target",
-    "nl_lambda": 0.1,
-    "gamma_ratio": 1,
-    "gamma_ratio_krr": 1,
-    #"num_institution_user": 50,
-    "visualize": True,
-    "feature_num": None,
-    "dim_intermediate": None,
-    #"dim_integrate": 3, ######
-    "num_institution": None,
-    "lambda_gen_eigen": 0,
-    "orth_ver": False,
-    "K_normalization":True,
-    "inter_normalization":True,
-    "lw_alpha":False,
-    "bias_ratio":0.1,
-    "smote_ratio":1.0,
-    "svd_ratio":0,
-    "umap_metric":"random", # euclidean correlation cosine
-    "graph_knn_k": None,
-    "graph_mu_align": 1.0,
-    "graph_lambda_rkhs": 1e-2,
-    "graph_stability_eps": 1e-6,
-    "theta_ss": 0.0,
-    "gamma_ss": 1.0,
-    "truncated": False,
-    "non_iid_beta": 1,
-}
-
-OR_GROUPS: List[List[str]] = [["svd_ratio", "non_iid_beta"]]
-
-OR_GROUP_KEY_SET = {key for group in OR_GROUPS for key in group}
-
-#DEFAULT_SMOTE = 1.0
-#DEFAULT_BIAS = 0.8
-#NON_DEFAULT_SMOTE = [0, 0.1, 0.25, 0.5]          # 1.0 以外
-#NON_DEFAULT_BIAS = [0.8, 0.4, 0.6, 0.95]         # 0.8 以外
-#NON_DEFAULT_GAMMA_KRR = [0.1, 0.3, 3, 10]        # 1 以外
-# --- 追加: dataset ごとのデフォルト適用（定数のみ。動的は未設定）---
-_DATASET_DEFAULTS = {
-    #"qsar":                 {"feature_num": 41},#, "dim_intermediate": 37, "dim_integrate": 37, "num_institution_user": 25, "num_institution": 20},
-    #"adult":                {"feature_num": 51},#, "dim_intermediate": 50, "dim_integrate": 50, "num_institution_user": 150, "num_institution": 10},
-    #"diabetes130":          {"feature_num": 200},#, "dim_intermediate": 100, "dim_integrate": 100, "num_institution_user": 500, "num_institution": 10},
-    "mice":                 {"num_institution_user": 50, "num_institution": 8},#, "dim_intermediate": 46, "dim_integrate": 46, "num_institution_user": 50, "num_institution": 5},
-    "breast_cancer":        {"num_institution_user": 50, "num_institution": 5},
-    #"digits":               {"dim_intermediate": 15, "dim_integrate": 15, "num_institution_user": 100, "num_institution": 10},
-    # "mnist":                {"dim_intermediate": 10, "dim_integrate": 10, "num_institution_user": 50, "num_institution": 10},
-    #"mnist":                {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "data_distribution": "division", "gamma_ratio":1, "gamma_ratio_krr":1, "umap_metric":"correlation"},
-    #"mnist_1248":           {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "data_distribution": "division", "gamma_ratio":1, "gamma_ratio_krr":1, "umap_metric":"correlation"},
-    #"fashion_mnist":        {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user": 100, "num_institution": 10, "umap_metric":"correlation"},
-    #"concentric_circles":   {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
-    #"concentric_three_circles": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 500, "num_institution": 2},
-    #"two_gaussian_distributions": {"feature_num": 2, "dim_intermediate": 2, "dim_integrate": 2, "num_institution_user": 50, "num_institution": 5},
-    #"3D_gaussian_clusters": {"feature_num": 3, "dim_intermediate": 2, "dim_integrate": 2, "num_institution": 2},
-    #"3D_8_gaussian_clusters": {"feature_num": 3, "dim_intermediate": 2, "dim_integrate": 2, "num_institution": 2},
-    #"digits_":             {"dim_intermediate": 4, "dim_integrate": 4, "num_institution": 10, "num_institution_user": 100},
-    #"digits_v2":           {"dim_intermediate": 30, "dim_integrate": 30, "num_institution": 29, "num_institution_user": 30},
-    #"housing":             {"num_institution": 10, "num_institution_user": 10},
-    #"statlog":             {"num_institution_user": 200},
-    #"wine_quality":       {"feature_num": 11},#, "dim_intermediate": 8},
-    #"glass":              {"feature_num": 9},#,  "dim_intermediate": 6},
-    #"seeds":              {"feature_num": 7},#,  "dim_intermediate": 5},
-    #"letter_recognition": {"feature_num": 16, "num_institution_user": 20},#, "dim_intermediate": 12},
-    #"iris":               {"dim_intermediate": 3},
-    #"ecoli":              {"dim_intermediate": 5},
-    #"vowel":              {"dim_intermediate": 4},
-    #"cifar10":              {"dim_intermediate": 20, "dim_integrate": 20, "num_institution_user":100, "data_distribution": "division", "gamma_ratio":0.0001, "gamma_ratio_krr":1, "F_type": "kernel_pca_gamma_fixed"},
-}
-    
-RULES: List[Dict[str, Any]] = [
-    {"type": "LOCK", "when": {"G_type": ["centralize", "individual"]}, "lock": {"gamma_ratio": DEFAULTS["gamma_ratio"]}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "imakura", "imakura_new", "gep", "gep_new", "gep2",  "odc",]}, "lock": {"nl_lambda": DEFAULTS["nl_lambda"]}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "imakura_new", "gep", "gep_new", "gep2",  "odc",]}, "lock": {"gamma_ratio_krr": DEFAULTS["gamma_ratio_krr"]}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "imakura_new", "gep", "gep_new", "gep2",  "odc"]}, "lock": {"graph_mu_align": 0, "graph_lambda_rkhs": 0, "graph_stability_eps": 0}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "imakura", "imakura_new", "gep", "gep_new", "gep2",  "odc"]}, "lock": {"graph_knn_k": None}},
-    {"type": "LOCK", "when": {"G_type": ['centralize', "individual", "fl", "faster_gep", "targetvec", "targetvec_new", "imakura", "imakura_new", "odc", "gep", "gep_new"]}, "lock": {"zerosum": False, "kernel_type": "linear"}}, # "fl", "centralize", "individual", "odc", "imakura", "targetvec_new", "faster_gep"
-    {"type": "LOCK", "when": {"G_type": ["graph_nonlinear"]}, "lock": {"graph_knn_k":100000, "graph_mu_align": 0}},
-    {"type": "LOCK", "when": {"G_type": ["nonlinear"]}, "lock": {"graph_mu_align": 0}}, # グラフ使わない
-    #{"type": "LOCK", "when": {"G_type": ["nonlinear"]}, "lock": {"inter_normalization": False}},
-    {"type": "LOCK", "when": {"G_type": ["graph_nonlinear_x_maximize"]}, "lock": {"graph_mu_align": 0.5}},
-    {"type": "LOCK", "when": {"G_type": ["graph_nonlinear",  "kernel_graph_gep", "kernel_gep", "gep", "gep_new", "imakura", "imakura_new", "odc", "individual", "centralize",  "fl"]}, "lock": {"lw_alpha":  DEFAULTS["lw_alpha"]}},
-    # F_type による固定: ae のとき比率指定と gamma_type=median
-    #{"type": "LOCK", "when": {"F_type": ["ae"]}, "lock": {"dim_intermediate": "*0.8", "dim_integrate": "*0.8", "gamma_type": "median"}},
-    # F_type による固定: umap のとき固定次元と gamma_type=fixed
-    #{"type": "LOCK", "when": {"F_type": ["umap"]}, "lock": {"dim_intermediate": 6, "dim_integrate": 6, "gamma_type": "fixed"}},
-    #{"type": "SKIP", "when": {"F_type": ["kernel_pca"], "G_type": ["GEP_weighted"]}},
-    #{"type": "SKIP", "when": {"gamma_ratio_krr": NON_DEFAULT_GAMMA_KRR, "smote_ratio": NON_DEFAULT_SMOTE}},
-    #{"type": "SKIP", "when": {"gamma_ratio_krr": NON_DEFAULT_GAMMA_KRR, "bias_ratio": NON_DEFAULT_BIAS}},
-    #{"type": "SKIP", "when": {"smote_ratio": NON_DEFAULT_SMOTE, "bias_ratio": NON_DEFAULT_BIAS}},
-]
-# ============================================
 
 
 def _generate_unique_combos(grid: Dict[str, List[Any]]):
@@ -260,7 +62,7 @@ def _generate_unique_combos(grid: Dict[str, List[Any]]):
             continue
         seen.add(norm)
         yield after
-            
+
 def _match(cond: Dict[str, List[Any]], combo: Dict[str, Any]) -> bool:
     return all(k in combo and combo[k] in vals for k, vals in cond.items())
 
@@ -384,6 +186,23 @@ def _build_identifier(columns: Sequence[str], cfg: Config) -> str:
         parts.append(f"{col}_{_sanitize_for_identifier(val)}")
     return "_".join(parts)
 
+def _build_plot_name(columns: Sequence[str], cfg: Config) -> str:
+    def _shorten(token: str) -> str:
+        if not token:
+            return "none"
+        return str(token).split("_")[0]
+
+    if not columns:
+        return "plot.png"
+    parts: list[str] = []
+    for col in columns:
+        val = getattr(cfg, col, None)
+        key_short = _shorten(col)
+        val_sanitized = _sanitize_for_identifier(val)
+        val_short = _shorten(val_sanitized)
+        parts.append(f"{key_short}_{val_short}")
+    return "_".join(parts) + ".png"
+
 def _generate_unique_combos(grid: Dict[str, List[Any]]):
     keys = list(grid.keys())
     seen = set()
@@ -486,9 +305,9 @@ def run_grid(
             cfg.f_seed = seed_value
             cfg.dataset = dataset
             cfg.metrics = metrics_name
-            cfg.plot_name = f"{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}_graph_knn_k_{combo.get('graph_knn_k','-')}_graph_mu_align_{combo.get('graph_mu_align','-')}_{combo.get('graph_lambda_rkhs','-')}_{combo.get('zerosum','-')}.png"
             _set_config_from_combo(cfg, combo)
             _apply_defaults(cfg, dataset, combo)
+            cfg.plot_name = _build_plot_name(PLOT_COLUMNS, cfg)
             cfg.seed_values = seed_value
             cfg.seeds = seed_value
             cfg.df_name = _build_identifier(DF_COLUMNS, cfg)
@@ -647,16 +466,12 @@ def run_grid(
             cfg.f_seed = seed_value
             cfg.dataset = dataset
             cfg.metrics = metrics_name
-            cfg.plot_name = (
-                f"{dataset}_{combo.get('F_type','-')}_{combo.get('G_type','-')}"
-                f"_graph_knn_k_{combo.get('graph_knn_k','-')}"
-                f"_graph_mu_align_{combo.get('graph_mu_align','-')}"
-                f"_{combo.get('graph_lambda_rkhs','-')}_{combo.get('zerosum','-')}.png"
-            )
 
             # combo から config へコピーしてデフォルト埋め
             _set_config_from_combo(cfg, combo)
             _apply_defaults(cfg, dataset, combo)
+
+            cfg.plot_name = _build_plot_name(PLOT_COLUMNS, cfg)
 
             # 平均対象パラメータだけ、このループの値で上書き
             setattr(cfg, mean_param, mean_val)
@@ -761,7 +576,35 @@ if __name__ == "__main__":
     # 引数処理はここだけ（デフォルトは 0912）
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-name", type=str, default="11095_gep_umap")
+    parser.add_argument(
+        "--yaml",
+        type=str,
+        default=None,
+        help="実験設定YAMLのパス。拡張子省略可。config配下なら名前だけでOK。",
+    )
     args = parser.parse_args()
+
+    # 設定YAMLを動的にロード
+    if args.yaml:
+        yaml_path = Path(args.yaml)
+        if not yaml_path.is_absolute():
+            yaml_path = CONFIG_DIR / yaml_path
+        if yaml_path.suffix == "":
+            yaml_path = yaml_path.with_suffix(".yaml")
+        settings = load_settings(yaml_path)
+
+        PARAM_GRID = settings["PARAM_GRID"]
+        ERROR_SKIP = settings["ERROR_SKIP"]
+        PARAM_COLUMNS = settings["PARAM_COLUMNS"]
+        DF_COLUMNS = settings["DF_COLUMNS"]
+        INTERMEDIATE_COLUMNS = settings["INTERMEDIATE_COLUMNS"]
+        PLOT_COLUMNS = settings["PLOT_COLUMNS"]
+        MEAN_PARAM = settings["MEAN_PARAM"]
+        DEFAULTS = settings["DEFAULTS"]
+        OR_GROUPS = settings["OR_GROUPS"]
+        OR_GROUP_KEY_SET = settings["OR_GROUP_KEY_SET"]
+        _DATASET_DEFAULTS = settings["_DATASET_DEFAULTS"]
+        RULES = settings["RULES"]
 
     # 出力先を決定
     output_path = OUTPUT_DIR / args.run_name

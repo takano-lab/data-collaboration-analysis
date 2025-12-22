@@ -100,10 +100,15 @@ def run_once(config, logger):
         data_collaboration = IntegratedExpressionBuilder(config=config, logger=logger)
         integrated_artifacts = data_collaboration.run(intermediate_artifacts)
 
-        if config.visualize:
+        do_viz_train = bool(getattr(config, "visualize_for_train", False))
+        do_viz_test = bool(getattr(config, "visualize_for_test", False))
+        do_viz_anchor = bool(getattr(config, "visualize_for_anchor", False))
+        do_viz_presentation = bool(getattr(config, "visualize_for_presenations", False))
+
+        if any([do_viz_train, do_viz_test, do_viz_anchor, do_viz_presentation]):
             viz = DataCollabVisualizer(config=config, artifacts=integrated_artifacts, logger=logger)
             viz.visualize_representations()
-            if getattr(config, "visualize_for_presenations", False):
+            if do_viz_presentation:
                 viz.visualize_anchors_for_presenations()
 
         actual_inst = len(getattr(data_collaboration, "Xs_test_integ", []) or [])

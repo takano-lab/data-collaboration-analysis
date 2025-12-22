@@ -27,6 +27,9 @@ class DataCollabVisualizer:
         """
         Draw anchor transformation flow (original → intermediate → integrated).
         """
+        config = self.config
+        if not getattr(config, "visualize_for_anchor", False):
+            return
         import matplotlib.pyplot as plt
         import seaborn as sns
         from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
@@ -34,7 +37,6 @@ class DataCollabVisualizer:
 
         inter = self.intermediate
         integ = self.artifacts
-        config = self.config
 
         save_dir = Path(save_dir or (config.output_path / "visualizations"))
 
@@ -51,7 +53,7 @@ class DataCollabVisualizer:
         col1_data = inter.anchor
         col2_data = inter.anchors_inter
         col3_data = integ.anchors_integ
-        use_graph = bool(getattr(config, "visual_knn_graph", False) or getattr(config, "visualize_for_presenations", False))
+        use_graph = bool(getattr(config, "visual_knn_graph", False))
 
         def ensure_2d(data_list: Sequence[np.ndarray]):
             if not data_list:
@@ -273,7 +275,7 @@ class DataCollabVisualizer:
         col1_sub = _subset(anchor)
         col2_sub = [_subset(a) for a in inter.anchors_inter]
         col3_sub = [_subset(a) for a in integ.anchors_integ]
-        use_graph = bool(getattr(config, "visual_knn_graph", False) or getattr(config, "visualize_for_presenations", False))
+        use_graph = bool(getattr(config, "visual_knn_graph", False))
 
         def project_3d_list(arr_list):
             valid = [a for a in arr_list if a is not None and a.ndim == 2 and a.shape[1] >= 3]
@@ -416,22 +418,36 @@ class DataCollabVisualizer:
         dataset = self.dataset
         inter = self.intermediate
         integ = self.artifacts
+        cfg = self.config
 
-        if not dataset.Xs_train or not inter.Xs_train_inter or not integ.Xs_train_integ:
-            self._log("Representation visualization skipped: insufficient training data.")
+        do_train = bool(getattr(cfg, "visualize_for_train", False))
+        do_test = bool(getattr(cfg, "visualize_for_test", False))
+        do_anchor = bool(getattr(cfg, "visualize_for_anchor", False) or getattr(cfg, "visualize_for_presenations", False))
+
+        if do_train and (not dataset.Xs_train or not inter.Xs_train_inter or not integ.Xs_train_integ):
+            self._log("Train visualization skipped: insufficient training data.")
+            do_train = False
+
+        if do_test and (not dataset.Xs_test or not inter.Xs_test_inter or not integ.Xs_test_integ):
+            self._log("Test visualization skipped: insufficient test data.")
+            do_test = False
+
+        if not any([do_train, do_test, do_anchor]):
             return
 
-        save_dir = Path(save_dir or (self.config.output_path / "visualizations"))
+        save_dir = Path(save_dir or (cfg.output_path / "visualizations"))
 
-        num_institutions = len(dataset.Xs_train)
-        train_concat = self._stack_arrays(integ.Xs_train_integ)
-        if train_concat is None:
-            self._log("Representation visualization skipped: integrated train embeddings are empty.")
-            return
-        xlim_train, ylim_train = self._compute_limits(train_concat)
+        num_institutions = len(dataset.Xs_train) if dataset.Xs_train else 0
+        train_concat = self._stack_arrays(integ.Xs_train_integ) if do_train else None
+        if do_train and train_concat is None:
+            self._log("Train visualization skipped: integrated train embeddings are empty.")
+            do_train = False
+        xlim_train = ylim_train = None
+        if do_train and train_concat is not None:
+            xlim_train, ylim_train = self._compute_limits(train_concat)
 
-        test_concat = self._stack_arrays(integ.Xs_test_integ)
-        if test_concat is not None:
+        test_concat = self._stack_arrays(integ.Xs_test_integ) if do_test else None
+        if do_test and test_concat is not None:
             xlim_test, ylim_test = self._compute_limits(test_concat)
         else:
             xlim_test = ylim_test = None
@@ -466,16 +482,19 @@ class DataCollabVisualizer:
                 limits = ((0, 1), (0, 1), (0, 1))
             return projected, limits
 
-        use_graph = bool(getattr(self.config, "visual_knn_graph", False) or getattr(self.config, "visualize_for_presenations", False))
+        use_graph = bool(getattr(cfg, "visual_knn_graph", False))
 
-        enable_3d = bool(getattr(self.config, "visualize_anchors_3d", False))
-        if enable_3d:
-            orig_train_3d, orig_train_limits = project_3d_list(dataset.Xs_train)
-            inter_train_3d, inter_train_limits = project_3d_list(inter.Xs_train_inter)
-            integ_train_3d, integ_train_limits = project_3d_list(integ.Xs_train_integ)
-            orig_test_3d = inter_test_3d = integ_test_3d = None
-            orig_test_limits = inter_test_limits = integ_test_limits = None
-            if dataset.Xs_test and inter.Xs_test_inter and integ.Xs_test_integ:
+        enable_3d = bool(getattr(cfg, "visualize_anchors_3d", False))
+        orig_train_3d = inter_train_3d = integ_train_3d = None
+        orig_test_3d = inter_test_3d = integ_test_3d = None
+        orig_train_limits = inter_train_limits = integ_train_limits = None
+        orig_test_limits = inter_test_limits = integ_test_limits = None
+        if enable_3d and (do_train or do_test):
+            if do_train:
+                orig_train_3d, orig_train_limits = project_3d_list(dataset.Xs_train)
+                inter_train_3d, inter_train_limits = project_3d_list(inter.Xs_train_inter)
+                integ_train_3d, integ_train_limits = project_3d_list(integ.Xs_train_integ)
+            if do_test and dataset.Xs_test and inter.Xs_test_inter and integ.Xs_test_integ:
                 orig_test_3d, orig_test_limits = project_3d_list(dataset.Xs_test)
                 inter_test_3d, inter_test_limits = project_3d_list(inter.Xs_test_inter)
                 integ_test_3d, integ_test_limits = project_3d_list(integ.Xs_test_integ)
@@ -493,19 +512,19 @@ class DataCollabVisualizer:
                 )
                 return limits
 
-            integ_train_3d_limits = compute_shared_limits(integ_train_3d) or integ_train_limits
-            integ_test_3d_limits = compute_shared_limits(integ_test_3d) or integ_test_limits
+            integ_train_3d_limits = compute_shared_limits(integ_train_3d) if integ_train_3d is not None else None
+            if integ_train_3d_limits is None:
+                integ_train_3d_limits = integ_train_limits
+
+            integ_test_3d_limits = compute_shared_limits(integ_test_3d) if integ_test_3d is not None else None
+            if integ_test_3d_limits is None:
+                integ_test_3d_limits = integ_test_limits
 
             def to_3d(ax):
                 fig_ = ax.figure
                 spec = ax.get_subplotspec()
                 ax.remove()
                 return fig_.add_subplot(spec, projection="3d")
-        else:
-            orig_train_3d = inter_train_3d = integ_train_3d = None
-            orig_test_3d = inter_test_3d = integ_test_3d = None
-            orig_train_limits = inter_train_limits = integ_train_limits = None
-            orig_test_limits = inter_test_limits = integ_test_limits = None
 
         def add_row_label(ax, text: str):
             if getattr(ax, "name", "") == "3d":
@@ -555,7 +574,7 @@ class DataCollabVisualizer:
 
         mst_edges_train = []
         mst_edges_test = []
-        if use_graph:
+        if use_graph and do_train:
             mst_edges_train = [self._compute_mst_edges(np.asarray(arr)) for arr in dataset.Xs_train]
             if dataset.Xs_test:
                 mst_edges_test = [self._compute_mst_edges(np.asarray(arr)) for arr in dataset.Xs_test]
@@ -584,86 +603,77 @@ class DataCollabVisualizer:
                     color="gray", alpha=0.6, linewidth=1.0,
                 )
 
-        mst_edges_train = []
-        mst_edges_test = []
-        if use_graph:
-            mst_edges_train = [self._compute_mst_edges(np.asarray(arr)) for arr in dataset.Xs_train]
-            if dataset.Xs_test:
-                mst_edges_test = [self._compute_mst_edges(np.asarray(arr)) for arr in dataset.Xs_test]
-            else:
-                mst_edges_test = [[] for _ in range(num_institutions)]
+        if do_train:
+            fig_train, axes_train = plt.subplots(num_institutions, 3, figsize=(18, 5 * num_institutions), squeeze=False)
+            col_titles = ["アンカーデータ", "中間表現", "統合表現"]
+            for ci, title in enumerate(col_titles):
+                xpos = (ci + 0.5) / 3.0
+                fig_train.text(xpos, 0.98, title, ha="center", va="top", fontsize=20, fontweight="bold", fontproperties=jp_font)
 
-        fig_train, axes_train = plt.subplots(num_institutions, 3, figsize=(18, 5 * num_institutions), squeeze=False)
-        col_titles = ["アンカーデータ", "中間表現", "統合表現"]
-        for ci, title in enumerate(col_titles):
-            xpos = (ci + 0.5) / 3.0
-            fig_train.text(xpos, 0.98, title, ha="center", va="top", fontsize=20, fontweight="bold", fontproperties=jp_font)
+            for idx in range(num_institutions):
+                orig = self._ensure_2d(dataset.Xs_train[idx])
+                ax_orig = axes_train[idx, 0]
+                if enable_3d and orig_train_3d and orig_train_3d[idx] is not None:
+                    ax_orig = to_3d(ax_orig)
+                    axes_train[idx, 0] = ax_orig
+                    d3o = orig_train_3d[idx]
+                    ax_orig.scatter(d3o[:, 0], d3o[:, 1], d3o[:, 2], c=dataset.ys_train[idx], cmap="viridis", s=14, depthshade=True)
+                    if orig_train_limits:
+                        ax_orig.set_xlim(orig_train_limits[0]); ax_orig.set_ylim(orig_train_limits[1]); ax_orig.set_zlim(orig_train_limits[2])
+                    if use_graph:
+                        draw_edges_3d(ax_orig, d3o, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
+                else:
+                    sns.scatterplot(x=orig[:, 0], y=orig[:, 1], hue=dataset.ys_train[idx], palette="viridis", ax=ax_orig, legend=False)
+                    if use_graph:
+                        draw_edges_2d(ax_orig, orig, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
+                add_row_label(ax_orig, f"機関 {idx+1}")
 
-        for idx in range(num_institutions):
-            orig = self._ensure_2d(dataset.Xs_train[idx])
-            ax_orig = axes_train[idx, 0]
-            if enable_3d and orig_train_3d and orig_train_3d[idx] is not None:
-                ax_orig = to_3d(ax_orig)
-                axes_train[idx, 0] = ax_orig
-                d3o = orig_train_3d[idx]
-                ax_orig.scatter(d3o[:, 0], d3o[:, 1], d3o[:, 2], c=dataset.ys_train[idx], cmap="viridis", s=14, depthshade=True)
-                if orig_train_limits:
-                    ax_orig.set_xlim(orig_train_limits[0]); ax_orig.set_ylim(orig_train_limits[1]); ax_orig.set_zlim(orig_train_limits[2])
-                if use_graph:
-                    draw_edges_3d(ax_orig, d3o, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
-            else:
-                sns.scatterplot(x=orig[:, 0], y=orig[:, 1], hue=dataset.ys_train[idx], palette="viridis", ax=ax_orig, legend=False)
-                if use_graph:
-                    draw_edges_2d(ax_orig, orig, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
-            add_row_label(ax_orig, f"機関 {idx+1}")
+                inter_data = self._ensure_2d(inter.Xs_train_inter[idx])
+                ax_inter = axes_train[idx, 1]
+                if enable_3d and inter_train_3d and inter_train_3d[idx] is not None:
+                    ax_inter = to_3d(ax_inter)
+                    axes_train[idx, 1] = ax_inter
+                    d3i = inter_train_3d[idx]
+                    ax_inter.scatter(d3i[:, 0], d3i[:, 1], d3i[:, 2], c=dataset.ys_train[idx], cmap="viridis", s=14, depthshade=True)
+                    if inter_train_limits:
+                        ax_inter.set_xlim(inter_train_limits[0]); ax_inter.set_ylim(inter_train_limits[1]); ax_inter.set_zlim(inter_train_limits[2])
+                    if use_graph:
+                        draw_edges_3d(ax_inter, d3i, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
+                else:
+                    sns.scatterplot(x=inter_data[:, 0], y=inter_data[:, 1], hue=dataset.ys_train[idx], palette="viridis", ax=ax_inter, legend=False)
+                    if use_graph:
+                        draw_edges_2d(ax_inter, inter_data, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
 
-            inter_data = self._ensure_2d(inter.Xs_train_inter[idx])
-            ax_inter = axes_train[idx, 1]
-            if enable_3d and inter_train_3d and inter_train_3d[idx] is not None:
-                ax_inter = to_3d(ax_inter)
-                axes_train[idx, 1] = ax_inter
-                d3i = inter_train_3d[idx]
-                ax_inter.scatter(d3i[:, 0], d3i[:, 1], d3i[:, 2], c=dataset.ys_train[idx], cmap="viridis", s=14, depthshade=True)
-                if inter_train_limits:
-                    ax_inter.set_xlim(inter_train_limits[0]); ax_inter.set_ylim(inter_train_limits[1]); ax_inter.set_zlim(inter_train_limits[2])
-                if use_graph:
-                    draw_edges_3d(ax_inter, d3i, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
-            else:
-                sns.scatterplot(x=inter_data[:, 0], y=inter_data[:, 1], hue=dataset.ys_train[idx], palette="viridis", ax=ax_inter, legend=False)
-                if use_graph:
-                    draw_edges_2d(ax_inter, inter_data, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
+                integ_data = self._ensure_2d(integ.Xs_train_integ[idx])
+                ax_integ = axes_train[idx, 2]
+                if enable_3d and integ_train_3d and integ_train_3d[idx] is not None:
+                    ax_integ = to_3d(ax_integ)
+                    axes_train[idx, 2] = ax_integ
+                    d3t = integ_train_3d[idx]
+                    ax_integ.scatter(d3t[:, 0], d3t[:, 1], d3t[:, 2], c=integ.ys_train_integ[idx], cmap="viridis", s=14, depthshade=True)
+                    limits_use = integ_train_3d_limits or integ_train_limits
+                    if limits_use:
+                        ax_integ.set_xlim(limits_use[0]); ax_integ.set_ylim(limits_use[1]); ax_integ.set_zlim(limits_use[2])
+                    if use_graph:
+                        draw_edges_3d(ax_integ, d3t, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
+                else:
+                    sns.scatterplot(x=integ_data[:, 0], y=integ_data[:, 1], hue=integ.ys_train_integ[idx], palette="viridis", ax=ax_integ, legend=False)
+                    if xlim_train is not None and ylim_train is not None:
+                        ax_integ.set_xlim(xlim_train); ax_integ.set_ylim(ylim_train)
+                    if use_graph:
+                        draw_edges_2d(ax_integ, integ_data, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
 
-            integ_data = self._ensure_2d(integ.Xs_train_integ[idx])
-            ax_integ = axes_train[idx, 2]
-            if enable_3d and integ_train_3d and integ_train_3d[idx] is not None:
-                ax_integ = to_3d(ax_integ)
-                axes_train[idx, 2] = ax_integ
-                d3t = integ_train_3d[idx]
-                ax_integ.scatter(d3t[:, 0], d3t[:, 1], d3t[:, 2], c=integ.ys_train_integ[idx], cmap="viridis", s=14, depthshade=True)
-                limits_use = integ_train_3d_limits or integ_train_limits
-                if limits_use:
-                    ax_integ.set_xlim(limits_use[0]); ax_integ.set_ylim(limits_use[1]); ax_integ.set_zlim(limits_use[2])
-                if use_graph:
-                    draw_edges_3d(ax_integ, d3t, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
-            else:
-                sns.scatterplot(x=integ_data[:, 0], y=integ_data[:, 1], hue=integ.ys_train_integ[idx], palette="viridis", ax=ax_integ, legend=False)
-                ax_integ.set_xlim(xlim_train); ax_integ.set_ylim(ylim_train)
-                if use_graph:
-                    draw_edges_2d(ax_integ, integ_data, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
+            plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+            save_dir.mkdir(parents=True, exist_ok=True)
+            plt.savefig(save_dir / self._plot_filename("train_representations"))
 
-            other_indices = [j for j in range(num_institutions) if j != idx]
-            plotted_3d_all = False
-            if other_indices:
-                X_other = self._stack_arrays([integ.Xs_train_integ[j] for j in other_indices])
-                y_other = np.hstack([integ.ys_train_integ[j] for j in other_indices])
-                other_plot = self._ensure_2d(X_other)
-
-        plt.tight_layout(rect=[0, 0.03, 1, 0.97])
-        save_dir.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_dir / self._plot_filename("train_representations"))
-
-        if dataset.Xs_test and inter.Xs_test_inter and integ.Xs_test_integ and xlim_test:
+        if do_test and dataset.Xs_test and inter.Xs_test_inter and integ.Xs_test_integ and xlim_test:
             fig_test, axes_test = plt.subplots(num_institutions, 3, figsize=(18, 5 * num_institutions), squeeze=False)
+            col_titles = ["アンカーデータ", "中間表現", "統合表現"]
+            for ci, title in enumerate(col_titles):
+                xpos = (ci + 0.5) / 3.0
+                fig_test.text(xpos, 0.98, title, ha="center", va="top", fontsize=20, fontweight="bold", fontproperties=jp_font)
+
             for idx in range(num_institutions):
                 orig = self._ensure_2d(dataset.Xs_test[idx])
                 ax_orig_t = axes_test[idx, 0]
@@ -716,17 +726,13 @@ class DataCollabVisualizer:
                     if use_graph:
                         draw_edges_2d(ax_integ_t, integ_data, mst_edges_test[idx] if idx < len(mst_edges_test) else [])
 
-            for ci, title in enumerate(col_titles):
-                xpos = (ci + 0.5) / 3.0
-                fig_test.text(xpos, 0.98, title, ha="center", va="top", fontsize=20, fontweight="bold", fontproperties=jp_font)
-
             plt.tight_layout(rect=[0.03, 0.03, 1, 0.94])
             plt.savefig(save_dir / self._plot_filename("test_representations"))
 
-        # Optionally chain anchor visualization for convenience.
-        self.visualize_anchors(save_dir=save_dir)
-        if getattr(self.config, "visualize_for_presenations", False):
-            self.visualize_anchors_for_presenations(save_dir=save_dir)
+        if do_anchor:
+            self.visualize_anchors(save_dir=save_dir)
+            if getattr(cfg, "visualize_for_presenations", False):
+                self.visualize_anchors_for_presenations(save_dir=save_dir)
 
     # ------------------------------------------------------------------ #
     def _stack_arrays(self, arrays: Sequence[np.ndarray]) -> np.ndarray | None:
