@@ -413,8 +413,10 @@ def _run_svd(X, n_components, **kwargs) -> Projector:
 
 
 def _run_diffspan(X, n_components, *, config=None, seed=None, **kwargs) -> Projector:
-    svd = SVDScratch(n_components=n_components, center=True)
+    # データ駆動の基底（ノートブックと同様に上位特異ベクトルを利用）
+    svd = SVDScratch(n_components=n_components, center=False)
     svd.fit(X)
+    basis = svd.components_.T  # m × l
     seed_val = _resolve_seed(seed, config)
     rng = np.random.default_rng(seed_val)
     E = rng.uniform(low=-1.0, high=1.0, size=(n_components, n_components))
@@ -422,7 +424,7 @@ def _run_diffspan(X, n_components, *, config=None, seed=None, **kwargs) -> Proje
     def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
         if data is None:
             return None
-        return svd.transform(data) @ E
+        return np.asarray(data, dtype=float) @ basis @ E
 
     return projector
 
@@ -431,13 +433,19 @@ def _run_diffspan_orth(X, n_components, *, config=None, seed=None, **kwargs) -> 
     """
     diffspan_orth: ほぼ SVD と同じ振る舞い（直交基底）
     """
-    model = SVDScratch(n_components=n_components, center=True)
+    model = SVDScratch(n_components=n_components, center=False)
     model.fit(X)
+    base = model.components_.T  # m × l
+    seed_val = _resolve_seed(seed, config)
+    rng = np.random.default_rng(seed_val)
+    Rmat = rng.standard_normal(size=(n_components, n_components))
+    Qrot, _ = np.linalg.qr(Rmat)
+    F = base @ Qrot  # 同じスパン内で直交回転
 
     def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
         if data is None:
             return None
-        return model.transform(data)
+        return np.asarray(data, dtype=float) @ F
 
     return projector
 
@@ -449,14 +457,25 @@ def _run_samespan_orth(X, n_components, *, config=None, seed=None, **kwargs) -> 
         raise ValueError("samespan_orth: l(=n_components) > 特徴次元 は未対応です")
     seed_val = _resolve_seed(seed, config)
     rng = np.random.default_rng(seed_val)
-    A = rng.standard_normal(size=(m, l))
-    Q, R = np.linalg.qr(A, mode="reduced")
-    signs = np.sign(np.diag(R))
-    Q *= signs
-    F_prime = Q
+
+    shared = None
+    if config is not None:
+        shared = getattr(config, "_shared_F_basis", None)
+
+    if shared is not None:
+        base = np.asarray(shared, dtype=float)
+        if base.shape[0] != m:
+            raise ValueError(f"samespan_orth: shared basis shape mismatch {base.shape} vs {m}")
+        base = base[:, :l]
+    else:
+        # フォールバック: ローカルデータで SVD 基底を作る
+        svd = SVDScratch(n_components=l, center=False)
+        svd.fit(X)
+        base = svd.components_.T
+
     Rmat = rng.standard_normal(size=(l, l))
     QE, _ = np.linalg.qr(Rmat)
-    F = F_prime @ QE
+    F = base @ QE
 
     def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
         if data is None:
@@ -471,15 +490,24 @@ def _run_samespan(X, n_components, *, config=None, seed=None, **kwargs) -> Proje
     if l > m:
         raise ValueError("samespan: l(=n_components) > 特徴次元 は未対応です")
     seed_val = _resolve_seed(seed, config)
-    print("seed_val", seed_val)
     rng = np.random.default_rng(seed_val)
-    A = rng.standard_normal(size=(m, l))
-    Q, R = np.linalg.qr(A, mode="reduced")
-    signs = np.sign(np.diag(R))
-    Q *= signs
-    F_prime = Q
+
+    shared = None
+    if config is not None:
+        shared = getattr(config, "_shared_F_basis", None)
+
+    if shared is not None:
+        base = np.asarray(shared, dtype=float)
+        if base.shape[0] != m:
+            raise ValueError(f"samespan: shared basis shape mismatch {base.shape} vs {m}")
+        base = base[:, :l]
+    else:
+        svd = SVDScratch(n_components=l, center=False)
+        svd.fit(X)
+        base = svd.components_.T
+
     E = rng.standard_normal(size=(l, l))
-    F = F_prime @ E
+    F = base @ E
 
     def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
         if data is None:

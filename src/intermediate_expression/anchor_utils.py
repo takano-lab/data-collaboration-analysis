@@ -34,6 +34,15 @@ def produce_anchor(
         np.random.seed(seed=seed)
         return np.random.randn(num_row, num_col)
 
+    if method == "gaussian_not_iso":
+        rng = np.random.default_rng(seed)
+        A = rng.standard_normal(size=(num_row, num_col))
+        scales = rng.uniform(0.1, 2.0, size=(1, num_col))
+        A = A * scales
+        if return_labels:
+            return A, np.zeros((num_row,), dtype=float)
+        return A
+
     if method == "uniform":
         rng = np.random.default_rng(seed)
         y_name = getattr(config, "y_name", "target")
@@ -48,14 +57,23 @@ def produce_anchor(
         if X_vals.shape[1] < num_col:
             num_col = X_vals.shape[1]
         X_vals = X_vals[:, :num_col]
-        col_min = np.nanmin(X_vals, axis=0)
-        col_max = np.nanmax(X_vals, axis=0)
-        invalid = ~np.isfinite(col_min) | ~np.isfinite(col_max)
-        col_min = np.where(invalid, -1.0, col_min)
-        col_max = np.where(invalid, 1.0, col_max)
-        width = np.clip(col_max - col_min, 0.0, None)
-        U = rng.random((num_row, num_col))
-        return col_min + U * width
+
+        # スケール変化の有無に関わらず同じ「標準偏差単位 r」でばらつくようにする
+        r_raw = getattr(config, "anchor_uniform_radius", 1.0)
+        try:
+            r = float(r_raw)
+        except (TypeError, ValueError):
+            r = 1.0
+        if not np.isfinite(r) or r <= 0:
+            r = 1.0
+
+        col_mean = np.nanmean(X_vals, axis=0)
+        col_std = np.nanstd(X_vals, axis=0)
+        col_mean = np.where(np.isfinite(col_mean), col_mean, 0.0)
+        col_std = np.where((~np.isfinite(col_std)) | (col_std == 0), 1.0, col_std)
+
+        U = rng.uniform(-r, r, size=(num_row, num_col))
+        return col_mean + U * col_std
 
     if method == "smote":
         rng = np.random.default_rng(seed)

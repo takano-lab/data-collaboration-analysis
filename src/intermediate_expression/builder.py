@@ -288,6 +288,21 @@ class IntermediateExpressionBuilder:
         else:
             ftypes = [getattr(self.config, "F_type", "svd")]
 
+        # samespan 系は共通基底を共有できるよう、最初の機関データで一度だけ作成
+        shared_basis = None
+        use_shared_span = any(str(ft).lower().startswith("samespan") for ft in ftypes)
+        if use_shared_span and dataset.Xs_train:
+            base_X = dataset.Xs_train[0]
+            try:
+                from src.dimensionality_reduction import SVDScratch
+
+                svd = SVDScratch(n_components=self.config.dim_intermediate, center=False)
+                svd.fit(base_X)
+                shared_basis = svd.components_.T
+                setattr(self.config, "_shared_F_basis", shared_basis)
+            except Exception:
+                shared_basis = None
+        
         # 特別扱い: 共有部分空間 F_type=shared_subspace
         if all(str(ft).lower() == "shared_subspace" for ft in ftypes):
             count = len(dataset.Xs_train)

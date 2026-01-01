@@ -993,6 +993,9 @@ def load_data(config: Config) -> pd.DataFrame:
         df_proc = _one_hot_and_scale(df_raw)
     else:
         df_proc = df_raw
+
+    print("cols", len(df_proc.columns))
+    print(df_proc.columns[:10])
     return df_proc
 
 # -------------------------------------------------- #
