@@ -320,17 +320,34 @@ class IntermediateExpressionBuilder:
         projectors = []
         count = len(dataset.Xs_train)
 
-        # Build per-institution F_type list, with optional svd_ratio override
+        # Build per-institution F_type list
         ftypes_per_inst = [ftypes[i % len(ftypes)] for i in range(count)] if count > 0 else []
-        try:
-            svd_ratio = float(getattr(self.config, "svd_ratio", None))
-        except (TypeError, ValueError):
-            svd_ratio = None
-        if svd_ratio is not None:
-            svd_ratio = min(max(svd_ratio, 0.0), 1.0)
-            n_svd = int(round(count * svd_ratio))
-            for i in range(min(n_svd, count)):
-                ftypes_per_inst[i] = "svd"
+
+        # sub_dr_ratio generalizes the legacy svd_ratio override.
+        def _parse_ratio(val):
+            try:
+                return min(max(float(val), 0.0), 1.0)
+            except (TypeError, ValueError):
+                return None
+
+        sub_dr_ratio = _parse_ratio(getattr(self.config, "sub_dr_ratio", None))
+
+        sub_dr_raw = getattr(self.config, "sub_dr", None)
+        if isinstance(sub_dr_raw, (list, tuple)):
+            sub_dr_choice = sub_dr_raw[0] if sub_dr_raw else None
+        else:
+            sub_dr_choice = sub_dr_raw
+
+        # Legacy fallback: treat svd_ratio>0 as sub_dr_ratio with sub_dr="svd" when not explicitly set.
+        legacy_svd_ratio = _parse_ratio(getattr(self.config, "svd_ratio", None))
+        if (sub_dr_choice is None or sub_dr_ratio is None) and legacy_svd_ratio not in (None, 0.0):
+            sub_dr_choice = sub_dr_choice or "svd"
+            sub_dr_ratio = legacy_svd_ratio
+
+        if sub_dr_choice is not None and sub_dr_ratio not in (None, 0.0):
+            n_override = int(round(count * sub_dr_ratio))
+            for i in range(min(n_override, count)):
+                ftypes_per_inst[i] = sub_dr_choice
 
         index_iter = tqdm(range(count), desc="Building intermediate projectors", unit="inst") if count > 1 else range(count)
         for idx in index_iter:

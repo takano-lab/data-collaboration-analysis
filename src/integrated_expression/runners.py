@@ -286,6 +286,8 @@ def build_imakura_projectors(
 def build_targetvec_projectors(
     anchors_inter: List[np.ndarray],
     dim_integrate: int,
+    *,
+    zerosum: bool = False,
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray]:
     """
     TargetVec-based projector builders.
@@ -298,15 +300,100 @@ def build_targetvec_projectors(
     for anchor_inter_k in anchors_inter:
         C_tildeS -= anchor_inter_k @ pinv(anchor_inter_k)
 
-    eigvals, eigvecs = np.linalg.eigh(C_tildeS)
-    eigvals[eigvals < 0] = 0.0
-    Z_integ = eigvecs[:, :dim_integrate]
+    if zerosum:
+        B = _zerosum_helmert_basis(r)
+        M_tilde = (B.T @ C_tildeS @ B + (B.T @ C_tildeS @ B).T) * 0.5
+        eigvals, eigvecs_sub = np.linalg.eigh(M_tilde)
+        order = np.argsort(eigvals)
+        take = min(dim_integrate, eigvecs_sub.shape[1])
+        select = order[:take]
+        eigvecs = eigvecs_sub[:, select]
+        Z_integ = B @ eigvecs
+    else:
+        eigvals, eigvecs = np.linalg.eigh(C_tildeS)
+        eigvals[eigvals < 0] = 0.0
+        Z_integ = eigvecs[:, :dim_integrate]
+
+    for j in range(Z_integ.shape[1]):
+        nz = np.linalg.norm(Z_integ[:, j])
+        if nz > 0:
+            Z_integ[:, j] /= nz
 
     projs: List[Callable[[np.ndarray], np.ndarray]] = []
     for anchor_inter_k in anchors_inter:
         proj, _Gk = compute_linear_integrator_from_Z_anchor(Z_integ, anchor_inter_k)
         projs.append(proj)
     return projs, Z_integ
+
+
+def build_laplacian_targetvec_projectors(
+    anchors_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    graph_mu_align: float = 0.0,
+    laplacian_k: int = 10,
+    zerosum: bool = False,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray]:
+    """
+    TargetVec eigenproblem regularized by an unlabeled Laplacian.
+    Solves (M + μ * scale * L) for the smallest eigenvalues, where
+    M is the original TargetVec matrix and L is the averaged k-NN
+    Laplacian used in laplacian_nonlinear.
+    """
+    if not anchors_inter:
+        return [], np.zeros((0, 0)), np.zeros((0,))
+
+    c = len(anchors_inter)
+    r = anchors_inter[0].shape[0]
+    if r == 0:
+        return [], np.zeros((0, 0)), np.zeros((0,))
+
+    I_r = np.eye(r)
+    M = c * I_r
+    for anchor_inter_k in anchors_inter:
+        M -= anchor_inter_k @ pinv(anchor_inter_k)
+    M = (M + M.T) * 0.5
+
+    L_plain = _build_unlabeled_anchor_laplacian(anchors_inter, k_neighbors=laplacian_k)
+    if graph_mu_align == 0.0 or L_plain.shape != M.shape:
+        A = M
+    else:
+        eps = 1e-12
+        tr_M = float(np.trace(M))
+        tr_L = float(np.trace(L_plain))
+        scale_L = tr_M / max(tr_L, eps) if tr_L > 0 else 1.0
+        A = M + float(graph_mu_align) * scale_L * L_plain
+    A = (A + A.T) * 0.5
+
+    if zerosum:
+        B_zero = _zerosum_helmert_basis(A.shape[0])
+        A_tilde = (B_zero.T @ A @ B_zero + (B_zero.T @ A @ B_zero).T) * 0.5
+        eigvals_raw, eigvecs_sub = np.linalg.eigh(A_tilde)
+        eigvecs_full = B_zero @ eigvecs_sub
+    else:
+        eigvals_raw, eigvecs_full = np.linalg.eigh(A)
+
+    order = np.argsort(eigvals_raw)
+    take = min(dim_integrate, eigvecs_full.shape[1])
+    select = order[:take]
+    eigvals_selected = eigvals_raw[select]
+    Z_integ = eigvecs_full[:, select]
+
+    for j in range(Z_integ.shape[1]):
+        nz = np.linalg.norm(Z_integ[:, j])
+        if nz > 0:
+            Z_integ[:, j] /= nz
+
+    for j in range(Z_integ.shape[1]):
+        nz = np.linalg.norm(Z_integ[:, j])
+        if nz > 0:
+            Z_integ[:, j] /= nz
+
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    for anchor_inter_k in anchors_inter:
+        proj, _Gk = compute_linear_integrator_from_Z_anchor(Z_integ, anchor_inter_k)
+        projs.append(proj)
+    return projs, Z_integ, eigvals_selected
 
 
 def build_linear_nonridge_projectors(

@@ -254,7 +254,7 @@ def run_grid(
     all_columns = PARAM_COLUMNS + [
         "score_mean", "score_stdev",
         # 新しい集計カラム（seed ループの平均）
-        "lni_inter_test", "lni_integ_test", "integ_metrics_train", "integ_metrics_test",
+        # "lni_inter_test", "lni_integ_test", "integ_metrics_train", "integ_metrics_test",
     ]
     # 追加: 注入値の優先適用
     grid = grid or PARAM_GRID
@@ -377,12 +377,12 @@ def run_grid(
             vals_ = [float(x) for x in xs if x is not None and math.isfinite(float(x))]
             return (sum(vals_) / len(vals_)) if vals_ else 0.0
 
-        row.update({
-            "lni_inter_test": _mean_finite(lni_inter_vals),
-            "lni_integ_test": _mean_finite(lni_integ_vals),
-            "integ_metrics_train": _mean_finite(integ_train_vals),
-            "integ_metrics_test": _mean_finite(integ_test_vals),
-        })
+        # row.update({
+        #     "lni_inter_test": _mean_finite(lni_inter_vals),
+        #     "lni_integ_test": _mean_finite(lni_integ_vals),
+        #     "integ_metrics_train": _mean_finite(integ_train_vals),
+        #     "integ_metrics_test": _mean_finite(integ_test_vals),
+        # })
 
         out_path = cfg.output_path / f"result_grid_{dataset}.csv"
         one = pd.DataFrame([row], columns=all_columns)
@@ -405,7 +405,7 @@ def run_grid(
     rows: list[dict] = []
     all_columns = PARAM_COLUMNS + [
         "score_mean", "score_stdev",
-        "lni_inter_test", "lni_integ_test", "integ_metrics_train", "integ_metrics_test",
+    #    "lni_inter_test", "lni_integ_test", "integ_metrics_train", "integ_metrics_test",
     ]
     grid = grid or PARAM_GRID
     log = logger_ if logger_ is not None else getLogger(__name__)
@@ -550,12 +550,12 @@ def run_grid(
             vals_ = [float(x) for x in xs if x is not None and math.isfinite(float(x))]
             return (sum(vals_) / len(vals_)) if vals_ else 0.0
 
-        row.update({
-            "lni_inter_test": _mean_finite(lni_inter_vals),
-            "lni_integ_test": _mean_finite(lni_integ_vals),
-            "integ_metrics_train": _mean_finite(integ_train_vals),
-            "integ_metrics_test": _mean_finite(integ_test_vals),
-        })
+        # row.update({
+        #     "lni_inter_test": _mean_finite(lni_inter_vals),
+        #     "lni_integ_test": _mean_finite(lni_integ_vals),
+        #     "integ_metrics_train": _mean_finite(integ_train_vals),
+        #     "integ_metrics_test": _mean_finite(integ_test_vals),
+        # })
 
         out_path = cfg.output_path / f"result_grid_{dataset}.csv"
         one = pd.DataFrame([row], columns=all_columns)

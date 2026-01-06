@@ -33,6 +33,7 @@ from .runners import (
     build_laplacian_nonlinear_projectors,
     build_multi_cca_projectors,
     build_odc_projectors,
+    build_laplacian_targetvec_projectors,
     build_targetvec_projectors,
     build_targetvec_new_projectors,
     build_gep_new_projectors,
@@ -97,29 +98,31 @@ class IntegratedExpressionBuilder:
         metrics = None
         if getattr(self.config, "evaluate_integrate_metrics", False):
             metrics = integrate_metrics(self)
-        gtype_key = str(getattr(self.config, "G_type", "")).lower()
-        lni_enabled_types = {
-            "nonlinear",
-            "nonlinear_maximize",
-            "graph_nonlinear",
-            "graph_nonlinear_minimize",
-            "graph_nonlinear_maximize",
-            "graph_nonlinear_x",
-            "graph_nonlinear_x_minimize",
-            "graph_nonlinear_x_maximize",
-            "kernel_gep",
-            "kernel_graph_gep",
-            "kernel_graph_gep_minimize",
-            "kernel_graph_gep_maximize",
-            "laplacian_nonlinear",
-        }
-        should_eval_lni = gtype_key in lni_enabled_types
-        if should_eval_lni:
-            try:
-                evaluate_nonlinearity_indices(self)
-            except Exception as exc:  # pragma: no cover - diagnostics only
-                if self.logger:
-                    self.logger.warning("evaluate_nonlinearity_indices failed: %s", exc)
+
+        if getattr(self.config, "evaluate_sub_metrics", False):
+            gtype_key = str(getattr(self.config, "G_type", "")).lower()
+            lni_enabled_types = {
+                "nonlinear",
+                "nonlinear_maximize",
+                "graph_nonlinear",
+                "graph_nonlinear_minimize",
+                "graph_nonlinear_maximize",
+                "graph_nonlinear_x",
+                "graph_nonlinear_x_minimize",
+                "graph_nonlinear_x_maximize",
+                "kernel_gep",
+                "kernel_graph_gep",
+                "kernel_graph_gep_minimize",
+                "kernel_graph_gep_maximize",
+                "laplacian_nonlinear",
+            }
+            should_eval_lni = gtype_key in lni_enabled_types
+            if should_eval_lni:
+                try:
+                    evaluate_nonlinearity_indices(self)
+                except Exception as exc:  # pragma: no cover - diagnostics only
+                    if self.logger:
+                        self.logger.warning("evaluate_nonlinearity_indices failed: %s", exc)
 
         if metrics is not None:
             artifacts = replace(artifacts, metrics=metrics)
@@ -342,14 +345,42 @@ def _run_imakura_new_integration(analysis: "IntegratedExpressionBuilder") -> tup
 
 def _run_targetvec_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
     zerosum = bool(getattr(analysis.config, "zerosum", False))
-    anchors_inter = _apply_zerosum_helmert_to_anchors(analysis.anchors_inter, zerosum)
     projs, Z_integ = build_targetvec_projectors(
-        anchors_inter=anchors_inter,
+        anchors_inter=analysis.anchors_inter,
         dim_integrate=_dim_integrate(analysis.config),
+        zerosum=zerosum,
     )
     extras: Dict[str, object] = {"Z_integ": Z_integ}
     projs, extras = _apply_random_linear_post_transform(
         analysis.config, projs, extras, method_tag="targetvec"
+    )
+    analysis.Z_integ = extras.get("Z_integ")
+    return projs, extras
+
+
+def _run_laplacian_targetvec_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    zerosum = bool(getattr(analysis.config, "zerosum", False))
+    graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 0.0)
+    graph_mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 0.0
+
+    graph_k_cfg = getattr(analysis.config, "graph_knn_k", None)
+    try:
+        graph_k = int(graph_k_cfg) if graph_k_cfg is not None else 0
+    except (TypeError, ValueError):
+        graph_k = 0
+    if graph_k <= 0:
+        graph_k = 10
+
+    projs, Z_integ, eigvals = build_laplacian_targetvec_projectors(
+        anchors_inter=analysis.anchors_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+        graph_mu_align=graph_mu_align,
+        laplacian_k=graph_k,
+        zerosum=zerosum,
+    )
+    extras: Dict[str, object] = {"Z_integ": Z_integ, "eigvals": eigvals}
+    projs, extras = _apply_random_linear_post_transform(
+        analysis.config, projs, extras, method_tag="laplacian_targetvec"
     )
     analysis.Z_integ = extras.get("Z_integ")
     return projs, extras
@@ -951,6 +982,7 @@ _INTEGRATION_RUNNERS: Dict[str, IntegrationRunner] = {
     "imakura": _run_imakura_integration,
     "imakura_new": _run_imakura_new_integration,
     "targetvec": _run_targetvec_integration,
+    "laplacian_targetvec": _run_laplacian_targetvec_integration,
     "targetvec_new": _run_targetvec_new_integration,
     "gep": _run_gep_integration,
     "gep_new": _run_gep_new_integration,

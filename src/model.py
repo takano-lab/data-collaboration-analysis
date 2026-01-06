@@ -357,6 +357,7 @@ class ModelRunner:
             activation='relu',
             solver='adam',
             max_iter=1000,
+            alpha=1e-3,  # 少し強めのL2正則化で収束を安定化
             early_stopping=use_early_stopping,
             validation_fraction=base_val_fraction,
             n_iter_no_change=10,
