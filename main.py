@@ -436,26 +436,43 @@ def run_grid(
 
         mean_param = MEAN_PARAM
 
-        # seed_values / seeds から「データ分割 seed」の候補を取得
+        # seed_values / seeds / seed_range から「データ分割 seed」の候補を取得
         seeds_raw = None
         for key in ("seed_values", "seeds"):
             if key in combo:
                 seeds_raw = combo[key]
                 break
-        seeds_list_raw = _to_list(seeds_raw) or [0]
+        if seeds_raw is None and "seed_range" in combo:
+            try:
+                n_seed = int(combo["seed_range"])
+            except Exception:
+                n_seed = 0
+            seeds_list_raw = list(range(max(n_seed, 0)))
+        else:
+            seeds_list_raw = _to_list(seeds_raw) or [0]
 
         # 平均対象パラメータの値リスト（_generate_unique_combos がまとめてくれている）
         mean_values_raw = combo.get(mean_param, None)
         mean_values_list = _to_list(mean_values_raw) or [None]
+        if mean_param == "seed_range" and mean_values_list and mean_values_list[0] is not None:
+            try:
+                n_seed = int(mean_values_list[0])
+            except Exception:
+                n_seed = 0
+            mean_values_list = list(range(max(n_seed, 0))) or [0]
 
-        # MEAN_PARAM が seed_values / seeds の場合は、その値をそのまま分割 seed に使う
-        if mean_param in ("seed_values", "seeds"):
-            base_seed_list = [int(v) for v in mean_values_list]
+        # MEAN_PARAM が seed_values / seeds / seed_range の場合は、その値をそのまま分割 seed に使う。
+        # ただし値が None の場合は seeds_list_raw の先頭を用いる。
+        if mean_param in ("seed_values", "seeds", "seed_range"):
+            if mean_values_list and mean_values_list[0] is not None:
+                base_seed_list = [int(v) for v in mean_values_list]
+            else:
+                base_seed_list = [int(seeds_list_raw[0])]
         else:
             base_seed_list = [int(seeds_list_raw[0])]
 
         for mean_val in mean_values_list:
-            if mean_param in ("seed_values", "seeds") and mean_val is not None:
+            if mean_param in ("seed_values", "seeds", "seed_range") and mean_val is not None:
                 base_seed_value = int(mean_val)
             else:
                 base_seed_value = base_seed_list[0]
@@ -479,6 +496,8 @@ def run_grid(
             # seed_values / seeds には「分割 seed」を記録（ログ用）
             cfg.seed_values = base_seed_value
             cfg.seeds = base_seed_value
+            if "seed_range" in combo:
+                cfg.seed_range = combo.get("seed_range")
 
             cfg.df_name = _build_identifier(DF_COLUMNS, cfg)
             cfg.intermediate_name = _build_identifier(INTERMEDIATE_COLUMNS, cfg)
