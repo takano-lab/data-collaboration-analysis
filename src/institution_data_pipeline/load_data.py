@@ -297,6 +297,12 @@ def load_tdc_dataset(name: str, **kwargs) -> pd.DataFrame:
 
     return df
 
+def normalize_01(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    pixel_cols = df.columns.drop("target")  # ラベル列を除外
+    df[pixel_cols] = df[pixel_cols].astype("float32") / 255.0
+    return df
+
 def _load_mnist_df() -> pd.DataFrame:
     """
     OpenML 経由で MNIST データセットを読み込んで DataFrame で返す。
@@ -305,6 +311,7 @@ def _load_mnist_df() -> pd.DataFrame:
     data = fetch_openml("mnist_784", version=1, as_frame=True)
     df = data.frame
     df = df.rename(columns={"class": "target"})  # ラベル列名を 'target' に統一
+    df = normalize_01(df)
     return df
 
 def _load_mnist_df_1248() -> pd.DataFrame:
@@ -326,6 +333,7 @@ def _load_fashion_mnist_df() -> pd.DataFrame:
     data = fetch_openml("Fashion-MNIST", version=1, as_frame=True)
     df = data.frame
     df = df.rename(columns={"class": "target"})  # ラベル列を統一
+    df = normalize_01(df)
     return df
 
 def _load_cifar10_df() -> pd.DataFrame:

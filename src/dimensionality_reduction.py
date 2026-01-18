@@ -662,11 +662,14 @@ def _run_umap(
     n_neighbors = min(max_valid_neighbors, max(2, nn_sample))
     # min_dist: 0.05〜0.8 の一様連続
     min_dist = float(rng.uniform(0.0, 0.8))
-    
-    #min_dist = 0.1
-    #n_neighbors = 15
-    #metric = "euclidean"
-    
+
+    # vis circle
+    min_dist = 0.5
+    n_neighbors = 50
+    metric = "euclidean"
+    init="spectral"
+    spread=1.0
+
     # 追加オプション（必要に応じて）
     extra_params = {}
     tm = _cfg_str(config, "umap_transform_mode", None)

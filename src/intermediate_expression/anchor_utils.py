@@ -96,8 +96,19 @@ def produce_anchor(
         X0 = X0_full[:, :columns]
         y0 = y_public
 
-        # Decide how many public anchors to include in output.
-        n_public_keep = min(n_public, num_row) if include_public_anchor else 0
+        # SMOTE/ガウスの割り当て:
+        # - 全体 num_row に対して smote_ratio を掛けて SMOTE 枠を決める
+        # - 公開アンカーはその SMOTE 枠を優先的に埋める（枠を超える分は捨てる）
+        total_smote_target = int(round(num_row * smote_ratio))
+        total_smote_target = min(max(total_smote_target, 0), num_row)
+
+        # Decide how many public anchors to include in output (capped by SMOTE枠).
+        # smote_ratio が 0 のときは公開アンカーも入れず、全枠をガウスで埋める。
+        if include_public_anchor and total_smote_target > 0:
+            n_public_keep = min(n_public, num_row, total_smote_target)
+        else:
+            n_public_keep = 0
+
         if n_public_keep > 0:
             idx_pub = rng.choice(n_public, size=n_public_keep, replace=False)
             X_public_keep = X0[idx_pub]
@@ -106,10 +117,14 @@ def produce_anchor(
             X_public_keep = np.zeros((0, columns))
             y_public_keep = np.zeros((0,))
 
-        remaining = max(0, num_row - n_public_keep)
-        n_smote = int(round(remaining * smote_ratio))
-        n_smote = min(max(n_smote, 0), remaining)
-        n_gauss = max(0, remaining - n_smote)
+        remaining_slots = max(0, num_row - n_public_keep)
+        if include_public_anchor:
+            smote_quota_after_public = max(total_smote_target - n_public_keep, 0)
+            n_smote = min(smote_quota_after_public, remaining_slots)
+        else:
+            n_smote = min(total_smote_target, remaining_slots)
+        n_gauss = max(0, remaining_slots - n_smote)
+        n_uniform = max(0, remaining_slots - n_smote)
 
         classes, counts = np.unique(y0, return_counts=True)
         N_total = int(len(y0))
@@ -121,7 +136,7 @@ def produce_anchor(
             return X_rand
 
         # decide same-label vs cross-label fraction within SMOTE portion
-        raw = getattr(config, "smote_cross_label_ratio", None)
+        raw = getattr(config, "smote_cross_label_ratio", 0)
         if raw in (None, ""):
             cross_ratio = 0.1
         else:
@@ -164,7 +179,8 @@ def produce_anchor(
                 if Nc == 0:
                     continue
 
-                k = min(6, Nc)
+                #k = min(6, Nc)
+                k = min(10, Nc)
                 if Nc == 1:
                     repeated = np.repeat(Xc, repeats=max(n_gen, 1), axis=0)
                     noise = rng.normal(scale=0.01, size=repeated.shape)
@@ -189,7 +205,8 @@ def produce_anchor(
                             except (TypeError, ValueError):
                                 eps = 0.0
                         eps = max(0.0, min(eps, 1.0))
-                        lam = rng.uniform(-eps, 1.0 + eps)
+                        #lam = rng.uniform(-eps, 1.0 + eps)
+                        lam = rng.uniform(0.0, 1.0 + eps)
                         interpolated.append(Xc[idx] + lam * (Xc[nn_idx] - Xc[idx]))
                     X_syn = np.vstack(interpolated[:n_gen])
 
@@ -219,15 +236,47 @@ def produce_anchor(
             y_parts.append(y_cross)
 
         # 4) Gaussian fill for any remaining anchors
-        if n_gauss > 0:
-            Xg = rng.normal(size=(n_gauss, columns))
+        # if n_gauss > 0:
+        #     if X0.size > 0:
+        #         mu = X0.mean(axis=0)
+        #         std = X0.std(axis=0)
+        #         std = np.where(std == 0, 1e-6, std)  # avoid zero-variance
+        #         Xg = rng.normal(loc=mu, scale=std, size=(n_gauss, columns))
+        #     else:
+        #         Xg = rng.normal(size=(n_gauss, columns))
+
+        #     if classes.size > 0 and N_total > 0:
+        #         probs = counts / float(N_total)
+        #         yg = rng.choice(classes, size=n_gauss, p=probs)
+        #     else:
+        #         yg = np.full((n_gauss,), np.nan)
+        #     X_parts.append(Xg)
+        #     y_parts.append(yg)
+
+        if n_uniform > 0:
+            if X0.size > 0:
+                # 各特徴ごとに min/max を使う（よりデータ分布に近い）
+                x_min = X0.min(axis=0)
+                x_max = X0.max(axis=0)
+
+                # 万一 min == max の場合の対策
+                same = x_min == x_max
+                x_max = np.where(same, x_min + 1e-6, x_max)
+
+                Xu = rng.uniform(low=x_min, high=x_max, size=(n_uniform, columns))
+            else:
+                # 完全な 0–1 一様分布
+                Xu = rng.uniform(0.0, 1.0, size=(n_uniform, columns))
+
             if classes.size > 0 and N_total > 0:
                 probs = counts / float(N_total)
-                yg = rng.choice(classes, size=n_gauss, p=probs)
+                yu = rng.choice(classes, size=n_uniform, p=probs)
             else:
-                yg = np.full((n_gauss,), np.nan)
-            X_parts.append(Xg)
-            y_parts.append(yg)
+                yu = np.full((n_uniform,), np.nan)
+
+            X_parts.append(Xu)
+            y_parts.append(yu)
+
 
         # Separate public vs synthetic parts to keep public anchors as a prefix.
         X_public = X_parts[0] if X_parts else np.zeros((0, columns))

@@ -605,7 +605,7 @@ class DataCollabVisualizer:
 
         if do_train:
             fig_train, axes_train = plt.subplots(num_institutions, 3, figsize=(18, 5 * num_institutions), squeeze=False)
-            col_titles = ["アンカーデータ", "中間表現", "統合表現"]
+            col_titles = ["機関データ", "中間表現", "統合表現"]
             for ci, title in enumerate(col_titles):
                 xpos = (ci + 0.5) / 3.0
                 fig_train.text(xpos, 0.98, title, ha="center", va="top", fontsize=20, fontweight="bold", fontproperties=jp_font)
@@ -669,7 +669,7 @@ class DataCollabVisualizer:
 
         if do_test and dataset.Xs_test and inter.Xs_test_inter and integ.Xs_test_integ and xlim_test:
             fig_test, axes_test = plt.subplots(num_institutions, 3, figsize=(18, 5 * num_institutions), squeeze=False)
-            col_titles = ["アンカーデータ", "中間表現", "統合表現"]
+            col_titles = ["機関データ", "中間表現", "統合表現"]
             for ci, title in enumerate(col_titles):
                 xpos = (ci + 0.5) / 3.0
                 fig_test.text(xpos, 0.98, title, ha="center", va="top", fontsize=20, fontweight="bold", fontproperties=jp_font)

@@ -511,6 +511,9 @@ class IntermediateExpressionBuilder:
 
 _FTYPE_MIXTURES = {
     "kernel_pca_svd_mixed": ["kernel_pca_self_tuning", "svd"],
+    "kernel_pca_ae_mixed": ["kernel_pca_self_tuning", "ae"],
+    "kernel_pca_umap_mixed": ["kernel_pca_self_tuning", "umap"],
+    "kernel_pca_dm_mixed": ["kernel_pca_self_tuning", "dm"],
     "ae_dm_mixed": ["ae", "dm"],
     "ae_svd_mixed": ["ae", "svd"],
     "ae_dm_svd_mixed": ["ae", "dm", "svd"],
