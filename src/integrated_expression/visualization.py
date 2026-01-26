@@ -28,7 +28,10 @@ class DataCollabVisualizer:
         Draw anchor transformation flow (original → intermediate → integrated).
         """
         config = self.config
-        if not getattr(config, "visualize_for_anchor", False):
+        if not (
+            getattr(config, "visualize_for_anchor", False)
+            or getattr(config, "visualize_anchors_3d", False)
+        ):
             return
         import matplotlib.pyplot as plt
         import seaborn as sns
@@ -92,7 +95,7 @@ class DataCollabVisualizer:
             valid = [d for d in data_list if d is not None and d.ndim == 2 and d.shape[1] >= 3]
             if not valid:
                 return [None for _ in data_list], None
-            pca = PCA(n_components=3).fit(np.vstack(valid))
+            pca = PCA(n_components=3, svd_solver="full").fit(np.vstack(valid))
             projected = []
             for d in data_list:
                 if d is None:
@@ -176,6 +179,11 @@ class DataCollabVisualizer:
             else:
                 ax.text(-0.12, 0.5, text, transform=ax.transAxes, ha="right", va="center", fontsize=20, fontweight="bold", rotation=90, fontproperties=jp_font)
 
+        point_size_2d_default = int(getattr(config, "visualize_point_size_2d", 60) or 60)
+        point_size_3d_default = int(getattr(config, "visualize_point_size_3d", 20) or 20)
+        anchor_point_size_2d = int(getattr(config, "visualize_point_size_anchor_2d", point_size_2d_default) or point_size_2d_default)
+        anchor_point_size_3d = int(getattr(config, "visualize_point_size_anchor_3d", point_size_3d_default) or point_size_3d_default)
+
         col_titles = ["アンカーデータ", "中間表現", "統合表現"]
         for ci, title in enumerate(col_titles):
             xpos = (ci + 0.5) / 3.0
@@ -188,7 +196,7 @@ class DataCollabVisualizer:
                 ax_orig = to_3d(ax_orig)
                 axes[train_row, 0] = ax_orig
                 d3o = col1_train_3d[0]
-                ax_orig.scatter(d3o[:, 0], d3o[:, 1], d3o[:, 2], c=anchor_labels_train, cmap="coolwarm", s=14, depthshade=True)
+                ax_orig.scatter(d3o[:, 0], d3o[:, 1], d3o[:, 2], c=anchor_labels_train, cmap="copper", s=anchor_point_size_3d, depthshade=True)
                 if col1_train_limits:
                     ax_orig.set_xlim(col1_train_limits[0]); ax_orig.set_ylim(col1_train_limits[1]); ax_orig.set_zlim(col1_train_limits[2])
                 if use_graph:
@@ -196,8 +204,9 @@ class DataCollabVisualizer:
             else:
                 sns.scatterplot(
                     x=col1_2d[0][:, 0], y=col1_2d[0][:, 1],
-                    hue=anchor_labels_train, palette="coolwarm",
+                    hue=anchor_labels_train, palette="copper",
                     ax=ax_orig, legend=False,
+                    s=anchor_point_size_2d,
                 )
                 ax_orig.set_xlim(xlim1); ax_orig.set_ylim(ylim1)
                 if use_graph:
@@ -206,8 +215,9 @@ class DataCollabVisualizer:
 
             sns.scatterplot(
                 x=col2_2d[i][:, 0], y=col2_2d[i][:, 1],
-                hue=anchor_labels_train, palette="coolwarm",
+                hue=anchor_labels_train, palette="copper",
                 ax=axes[train_row, 1], legend=False,
+                s=anchor_point_size_2d,
             )
             axes[train_row, 1].set_xlim(xlim2); axes[train_row, 1].set_ylim(ylim2)
             if use_graph:
@@ -216,7 +226,7 @@ class DataCollabVisualizer:
             if enable_3d and col3_train_3d and col3_train_3d[i] is not None:
                 ax3d = to_3d(axes[train_row, 2])
                 d3 = col3_train_3d[i]
-                ax3d.scatter(d3[:, 0], d3[:, 1], d3[:, 2], c=anchor_labels_train, cmap="coolwarm", s=14, depthshade=True)
+                ax3d.scatter(d3[:, 0], d3[:, 1], d3[:, 2], c=anchor_labels_train, cmap="copper", s=anchor_point_size_3d, depthshade=True)
                 if train3d_limits:
                     ax3d.set_xlim(train3d_limits[0]); ax3d.set_ylim(train3d_limits[1]); ax3d.set_zlim(train3d_limits[2])
                 if use_graph:
@@ -224,8 +234,9 @@ class DataCollabVisualizer:
             else:
                 sns.scatterplot(
                     x=col3_2d[i][:, 0], y=col3_2d[i][:, 1],
-                    hue=anchor_labels_train, palette="coolwarm",
+                    hue=anchor_labels_train, palette="copper",
                     ax=axes[train_row, 2], legend=False,
+                    s=anchor_point_size_2d,
                 )
                 axes[train_row, 2].set_xlim(xlim3); axes[train_row, 2].set_ylim(ylim3)
                 if use_graph:
@@ -281,7 +292,7 @@ class DataCollabVisualizer:
             valid = [a for a in arr_list if a is not None and a.ndim == 2 and a.shape[1] >= 3]
             if not valid:
                 return [None for _ in arr_list], None
-            pca = PCA(n_components=3).fit(np.vstack(valid))
+            pca = PCA(n_components=3, svd_solver="full").fit(np.vstack(valid))
             projected = []
             for a in arr_list:
                 if a is None:
@@ -347,6 +358,9 @@ class DataCollabVisualizer:
             arr2d = np.asarray(arr2d)
             if arr2d.ndim != 2:
                 return
+            if arr2d.shape[1] < 2:
+                return
+            arr2d = arr2d[:, :2]
             for j, (x, y) in enumerate(arr2d):
                 mk = markers[j % len(markers)]
                 ax.scatter(x, y, s=300, marker=mk, color=colors[j % len(colors)], edgecolor="k", linewidth=1.5)
@@ -422,7 +436,11 @@ class DataCollabVisualizer:
 
         do_train = bool(getattr(cfg, "visualize_for_train", False))
         do_test = bool(getattr(cfg, "visualize_for_test", False))
-        do_anchor = bool(getattr(cfg, "visualize_for_anchor", False) or getattr(cfg, "visualize_for_presenations", False))
+        do_anchor = bool(
+            getattr(cfg, "visualize_for_anchor", False)
+            or getattr(cfg, "visualize_for_presenations", False)
+            or getattr(cfg, "visualize_anchors_3d", False)
+        )
 
         if do_train and (not dataset.Xs_train or not inter.Xs_train_inter or not integ.Xs_train_integ):
             self._log("Train visualization skipped: insufficient training data.")
@@ -436,6 +454,7 @@ class DataCollabVisualizer:
             return
 
         save_dir = Path(save_dir or (cfg.output_path / "visualizations"))
+        save_dir.mkdir(parents=True, exist_ok=True)
 
         num_institutions = len(dataset.Xs_train) if dataset.Xs_train else 0
         train_concat = self._stack_arrays(integ.Xs_train_integ) if do_train else None
@@ -460,7 +479,7 @@ class DataCollabVisualizer:
             valid = [a for a in arr_list if a is not None and a.ndim == 2 and a.shape[1] >= 3]
             if not valid:
                 return [None for _ in arr_list], None
-            pca = PCA(n_components=3).fit(np.vstack(valid))
+            pca = PCA(n_components=3, svd_solver="full").fit(np.vstack(valid))
             projected = []
             for a in arr_list:
                 if a is None:
@@ -485,6 +504,17 @@ class DataCollabVisualizer:
         use_graph = bool(getattr(cfg, "visual_knn_graph", False))
 
         enable_3d = bool(getattr(cfg, "visualize_anchors_3d", False))
+
+        point_size_2d_default = int(getattr(cfg, "visualize_point_size_2d", 60) or 60)
+        point_size_3d_default = int(getattr(cfg, "visualize_point_size_3d", 20) or 20)
+
+        train_point_size_default = int(getattr(cfg, "visualize_point_size_train", point_size_2d_default) or point_size_2d_default)
+        train_point_size_2d = int(getattr(cfg, "visualize_point_size_train_2d", train_point_size_default) or train_point_size_default)
+        train_point_size_3d = int(getattr(cfg, "visualize_point_size_train_3d", point_size_3d_default) or point_size_3d_default)
+
+        test_point_size_default = int(getattr(cfg, "visualize_point_size_test", point_size_2d_default) or point_size_2d_default)
+        test_point_size_2d = int(getattr(cfg, "visualize_point_size_test_2d", test_point_size_default) or test_point_size_default)
+        test_point_size_3d = int(getattr(cfg, "visualize_point_size_test_3d", point_size_3d_default) or point_size_3d_default)
         orig_train_3d = inter_train_3d = integ_train_3d = None
         orig_test_3d = inter_test_3d = integ_test_3d = None
         orig_train_limits = inter_train_limits = integ_train_limits = None
@@ -617,13 +647,13 @@ class DataCollabVisualizer:
                     ax_orig = to_3d(ax_orig)
                     axes_train[idx, 0] = ax_orig
                     d3o = orig_train_3d[idx]
-                    ax_orig.scatter(d3o[:, 0], d3o[:, 1], d3o[:, 2], c=dataset.ys_train[idx], cmap="viridis", s=14, depthshade=True)
+                    ax_orig.scatter(d3o[:, 0], d3o[:, 1], d3o[:, 2], c=dataset.ys_train[idx], cmap="viridis", s=train_point_size_3d, depthshade=True)
                     if orig_train_limits:
                         ax_orig.set_xlim(orig_train_limits[0]); ax_orig.set_ylim(orig_train_limits[1]); ax_orig.set_zlim(orig_train_limits[2])
                     if use_graph:
                         draw_edges_3d(ax_orig, d3o, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
                 else:
-                    sns.scatterplot(x=orig[:, 0], y=orig[:, 1], hue=dataset.ys_train[idx], palette="viridis", ax=ax_orig, legend=False)
+                    sns.scatterplot(x=orig[:, 0], y=orig[:, 1], hue=dataset.ys_train[idx], palette="viridis", ax=ax_orig, legend=False, s=train_point_size_2d)
                     if use_graph:
                         draw_edges_2d(ax_orig, orig, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
                 add_row_label(ax_orig, f"機関 {idx+1}")
@@ -634,13 +664,13 @@ class DataCollabVisualizer:
                     ax_inter = to_3d(ax_inter)
                     axes_train[idx, 1] = ax_inter
                     d3i = inter_train_3d[idx]
-                    ax_inter.scatter(d3i[:, 0], d3i[:, 1], d3i[:, 2], c=dataset.ys_train[idx], cmap="viridis", s=14, depthshade=True)
+                    ax_inter.scatter(d3i[:, 0], d3i[:, 1], d3i[:, 2], c=dataset.ys_train[idx], cmap="viridis", s=train_point_size_3d, depthshade=True)
                     if inter_train_limits:
                         ax_inter.set_xlim(inter_train_limits[0]); ax_inter.set_ylim(inter_train_limits[1]); ax_inter.set_zlim(inter_train_limits[2])
                     if use_graph:
                         draw_edges_3d(ax_inter, d3i, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
                 else:
-                    sns.scatterplot(x=inter_data[:, 0], y=inter_data[:, 1], hue=dataset.ys_train[idx], palette="viridis", ax=ax_inter, legend=False)
+                    sns.scatterplot(x=inter_data[:, 0], y=inter_data[:, 1], hue=dataset.ys_train[idx], palette="viridis", ax=ax_inter, legend=False, s=train_point_size_2d)
                     if use_graph:
                         draw_edges_2d(ax_inter, inter_data, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
 
@@ -650,14 +680,14 @@ class DataCollabVisualizer:
                     ax_integ = to_3d(ax_integ)
                     axes_train[idx, 2] = ax_integ
                     d3t = integ_train_3d[idx]
-                    ax_integ.scatter(d3t[:, 0], d3t[:, 1], d3t[:, 2], c=integ.ys_train_integ[idx], cmap="viridis", s=14, depthshade=True)
+                    ax_integ.scatter(d3t[:, 0], d3t[:, 1], d3t[:, 2], c=integ.ys_train_integ[idx], cmap="viridis", s=train_point_size_3d, depthshade=True)
                     limits_use = integ_train_3d_limits or integ_train_limits
                     if limits_use:
                         ax_integ.set_xlim(limits_use[0]); ax_integ.set_ylim(limits_use[1]); ax_integ.set_zlim(limits_use[2])
                     if use_graph:
                         draw_edges_3d(ax_integ, d3t, mst_edges_train[idx] if idx < len(mst_edges_train) else [])
                 else:
-                    sns.scatterplot(x=integ_data[:, 0], y=integ_data[:, 1], hue=integ.ys_train_integ[idx], palette="viridis", ax=ax_integ, legend=False)
+                    sns.scatterplot(x=integ_data[:, 0], y=integ_data[:, 1], hue=integ.ys_train_integ[idx], palette="viridis", ax=ax_integ, legend=False, s=train_point_size_2d)
                     if xlim_train is not None and ylim_train is not None:
                         ax_integ.set_xlim(xlim_train); ax_integ.set_ylim(ylim_train)
                     if use_graph:
@@ -681,13 +711,13 @@ class DataCollabVisualizer:
                     ax_orig_t = to_3d(ax_orig_t)
                     axes_test[idx, 0] = ax_orig_t
                     d3ot = orig_test_3d[idx]
-                    ax_orig_t.scatter(d3ot[:, 0], d3ot[:, 1], d3ot[:, 2], c=dataset.ys_test[idx], cmap="viridis", s=14, depthshade=True)
+                    ax_orig_t.scatter(d3ot[:, 0], d3ot[:, 1], d3ot[:, 2], c=dataset.ys_test[idx], cmap="copper", s=test_point_size_3d, depthshade=True)
                     if orig_test_limits:
                         ax_orig_t.set_xlim(orig_test_limits[0]); ax_orig_t.set_ylim(orig_test_limits[1]); ax_orig_t.set_zlim(orig_test_limits[2])
                     if use_graph:
                         draw_edges_3d(ax_orig_t, d3ot, mst_edges_test[idx] if idx < len(mst_edges_test) else [])
                 else:
-                    sns.scatterplot(x=orig[:, 0], y=orig[:, 1], hue=dataset.ys_test[idx], palette="viridis", ax=ax_orig_t, legend=False)
+                    sns.scatterplot(x=orig[:, 0], y=orig[:, 1], hue=dataset.ys_test[idx], palette="copper", ax=ax_orig_t, legend=False, s=test_point_size_2d)
                     if use_graph:
                         draw_edges_2d(ax_orig_t, orig, mst_edges_test[idx] if idx < len(mst_edges_test) else [])
                 add_row_label(ax_orig_t, f"機関 {idx+1}")
@@ -698,13 +728,13 @@ class DataCollabVisualizer:
                     ax_inter_t = to_3d(ax_inter_t)
                     axes_test[idx, 1] = ax_inter_t
                     d3it = inter_test_3d[idx]
-                    ax_inter_t.scatter(d3it[:, 0], d3it[:, 1], d3it[:, 2], c=dataset.ys_test[idx], cmap="viridis", s=14, depthshade=True)
+                    ax_inter_t.scatter(d3it[:, 0], d3it[:, 1], d3it[:, 2], c=dataset.ys_test[idx], cmap="copper", s=test_point_size_3d, depthshade=True)
                     if inter_test_limits:
                         ax_inter_t.set_xlim(inter_test_limits[0]); ax_inter_t.set_ylim(inter_test_limits[1]); ax_inter_t.set_zlim(inter_test_limits[2])
                     if use_graph:
                         draw_edges_3d(ax_inter_t, d3it, mst_edges_test[idx] if idx < len(mst_edges_test) else [])
                 else:
-                    sns.scatterplot(x=inter_data[:, 0], y=inter_data[:, 1], hue=dataset.ys_test[idx], palette="viridis", ax=ax_inter_t, legend=False)
+                    sns.scatterplot(x=inter_data[:, 0], y=inter_data[:, 1], hue=dataset.ys_test[idx], palette="copper", ax=ax_inter_t, legend=False, s=test_point_size_2d)
                     if use_graph:
                         draw_edges_2d(ax_inter_t, inter_data, mst_edges_test[idx] if idx < len(mst_edges_test) else [])
 
@@ -714,14 +744,14 @@ class DataCollabVisualizer:
                     ax_integ_t = to_3d(ax_integ_t)
                     axes_test[idx, 2] = ax_integ_t
                     d3tt = integ_test_3d[idx]
-                    ax_integ_t.scatter(d3tt[:, 0], d3tt[:, 1], d3tt[:, 2], c=integ.ys_test_integ[idx], cmap="viridis", s=14, depthshade=True)
+                    ax_integ_t.scatter(d3tt[:, 0], d3tt[:, 1], d3tt[:, 2], c=integ.ys_test_integ[idx], cmap="copper", s=test_point_size_3d, depthshade=True)
                     limits_use = integ_test_3d_limits or integ_test_limits
                     if limits_use:
                         ax_integ_t.set_xlim(limits_use[0]); ax_integ_t.set_ylim(limits_use[1]); ax_integ_t.set_zlim(limits_use[2])
                     if use_graph:
                         draw_edges_3d(ax_integ_t, d3tt, mst_edges_test[idx] if idx < len(mst_edges_test) else [])
                 else:
-                    sns.scatterplot(x=integ_data[:, 0], y=integ_data[:, 1], hue=integ.ys_test_integ[idx], palette="viridis", ax=ax_integ_t, legend=False)
+                    sns.scatterplot(x=integ_data[:, 0], y=integ_data[:, 1], hue=integ.ys_test_integ[idx], palette="copper", ax=ax_integ_t, legend=False, s=test_point_size_2d)
                     ax_integ_t.set_xlim(xlim_test); ax_integ_t.set_ylim(ylim_test)
                     if use_graph:
                         draw_edges_2d(ax_integ_t, integ_data, mst_edges_test[idx] if idx < len(mst_edges_test) else [])

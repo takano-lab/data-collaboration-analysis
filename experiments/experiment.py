@@ -102,7 +102,10 @@ def run_once(config, logger):
 
         do_viz_train = bool(getattr(config, "visualize_for_train", False))
         do_viz_test = bool(getattr(config, "visualize_for_test", False))
-        do_viz_anchor = bool(getattr(config, "visualize_for_anchor", False))
+        do_viz_anchor = bool(
+            getattr(config, "visualize_for_anchor", False)
+            or getattr(config, "visualize_anchors_3d", False)
+        )
         do_viz_presentation = bool(getattr(config, "visualize_for_presenations", False))
 
         if any([do_viz_train, do_viz_test, do_viz_anchor, do_viz_presentation]):

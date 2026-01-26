@@ -664,11 +664,11 @@ def _run_umap(
     min_dist = float(rng.uniform(0.0, 0.8))
 
     # vis circle
-    min_dist = 0.5
-    n_neighbors = 50
-    metric = "euclidean"
-    init="spectral"
-    spread=1.0
+    # min_dist = 0.5
+    # n_neighbors = 50
+    # metric = "euclidean"
+    # init="spectral"
+    # spread=1.0
 
     # 追加オプション（必要に応じて）
     extra_params = {}
