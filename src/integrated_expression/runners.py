@@ -1102,6 +1102,75 @@ def build_gep_singular_projectors(
     return projs, Z_integ, eigvals
 
 
+def build_gep_singular_2_projectors(
+    anchors_inter: List[np.ndarray],
+    dim_integrate: int,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray]:
+    """
+    QR+SVD based solution tolerant to rank-deficient anchors (alternative closed-form).
+
+    This implements the closed-form given by (with Q = I):
+        G_k^* = sqrt(c) * A_k^† U_{Qd} Σ_{Qd}^†
+    where W_Q = [Q_1 ... Q_c] and W_Q = U Σ V^T is the SVD (truncated to d=t).
+
+    Notes:
+    - Q_k is an orthonormal basis of Col(A_k) with r_k = rank(A_k).
+    - Z_integ is returned as (1/sqrt(c)) U_{Qd} Σ_{Qd}.
+    """
+    if not anchors_inter:
+        return [], np.zeros((0, 0)), np.zeros((0,))
+
+    c = len(anchors_inter)
+    row_dim = anchors_inter[0].shape[0]
+    Q_blocks: List[np.ndarray] = []
+
+    for A in anchors_inter:
+        if A.shape[0] != row_dim:
+            raise ValueError("gep_singular_2 requires all anchor matrices to share the same number of rows.")
+        r_k = int(np.linalg.matrix_rank(A))
+        if r_k <= 0:
+            Q_blocks.append(np.zeros((row_dim, 0)))
+            continue
+        if r_k == min(A.shape):
+            Q_k, _ = np.linalg.qr(A, mode="reduced")
+            Q_k = Q_k[:, :r_k]
+        else:
+            U_k, _, _ = np.linalg.svd(A, full_matrices=False)
+            Q_k = U_k[:, :r_k]
+        Q_blocks.append(Q_k)
+
+    W_Q = np.hstack(Q_blocks) if Q_blocks else np.zeros((row_dim, 0))
+    if W_Q.size == 0:
+        return [], np.zeros((0, 0)), np.zeros((0,))
+
+    U, S, _ = np.linalg.svd(W_Q, full_matrices=False)
+    t = min(dim_integrate, U.shape[1])
+    if t <= 0:
+        return [], np.zeros((0, 0)), S
+
+    U_d = U[:, :t]
+    S_d = S[:t]
+
+    Z_integ = (U_d * S_d) / np.sqrt(float(c))
+
+    # Build U Σ^† robustly (diagonal pseudoinverse).
+    eps = np.finfo(float).eps
+    tol = float(max(W_Q.shape)) * eps * (float(S_d[0]) if S_d.size else 0.0)
+    inv_S = np.zeros_like(S_d)
+    mask = S_d > tol
+    inv_S[mask] = 1.0 / S_d[mask]
+    U_S_dagger = U_d * inv_S  # equals U_d @ diag(inv_S)
+
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    scale = np.sqrt(float(c))
+    for A_k in anchors_inter:
+        G_k = scale * (np.linalg.pinv(A_k) @ U_S_dagger)
+        projs.append(make_linear_integrator(G_k))
+
+    eigvals = S_d
+    return projs, Z_integ, eigvals
+
+
 def build_kernel_gep_projectors(
     anchors_inter: List[np.ndarray],
     Xs_train_inter: List[np.ndarray],
@@ -1481,17 +1550,15 @@ def build_nonlinear_new_projectors(
         if take <= 0:
             return np.zeros((A.shape[0], 0)), np.zeros((0,))
 
-        if B_mass is not None:
-            B_mass = _sym(B_mass)
-            B_mass = B_mass + float(eps) * np.eye(B_mass.shape[0])
-
         if zerosum_enabled and A.shape[0] >= 2:
             B0 = _zerosum_helmert_basis(A.shape[0])
             A_tilde = _sym(B0.T @ A @ B0)
             if B_mass is None:
                 eigvals_raw, eigvecs = eigh(A_tilde, np.eye(A_tilde.shape[0]))
             else:
+                B_mass = _sym(B_mass)
                 B_tilde = _sym(B0.T @ B_mass @ B0)
+                # Add stability term once in the reduced (zero-sum) subspace.
                 B_tilde = B_tilde + float(eps) * np.eye(B_tilde.shape[0])
                 eigvals_raw, eigvecs = eigh(A_tilde, B_tilde)
             order = np.argsort(eigvals_raw)
@@ -1503,6 +1570,9 @@ def build_nonlinear_new_projectors(
         if B_mass is None:
             eigvals_raw, eigvecs = eigh(A, np.eye(A.shape[0]))
         else:
+            B_mass = _sym(B_mass)
+            # Add stability term once in the original space.
+            B_mass = B_mass + float(eps) * np.eye(B_mass.shape[0])
             eigvals_raw, eigvecs = eigh(A, B_mass)
         order = np.argsort(eigvals_raw)
         select = order[: min(take, eigvecs.shape[1])]
@@ -1583,6 +1653,233 @@ def build_nonlinear_new_projectors(
         projs.append(proj)
 
     return projs, Z_integ, eigvals_selected, gammas
+
+
+def build_nonlinear_imakura_Z_projectors(
+    anchors_inter: List[np.ndarray],
+    Xs_train_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    gamma_type: str = "auto",
+    gamma_ratio_krr: float = 1.0,
+    kernel_type: str = "rbf",
+    K_normalization: bool = False,
+    nl_lambda: float = 1e-2,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
+    """
+    Nonlinear integration with Imakura-fixed target representation Z.
+
+    Z is fixed to the leading left singular vectors of concatenated anchors:
+        W = [A_1, A_2, ..., A_c],  Z = U[:, :dim_integrate]  where W = U Σ V^T.
+
+    Then each institution-specific nonlinear projector is obtained by
+        C_k = (K_k + λI)^(-1) Z,
+        g_k(x) = k(x, A_k) C_k.
+    """
+    if not anchors_inter:
+        return [], np.zeros((0, 0)), np.zeros((0,)), []
+
+    r = anchors_inter[0].shape[0]
+    if r == 0:
+        return [], np.zeros((0, 0)), np.zeros((0,)), []
+
+    for anchor_inter_k in anchors_inter:
+        if anchor_inter_k.shape[0] != r:
+            raise ValueError("nonlinear_imakura_Z requires all anchor matrices to share the same number of rows.")
+
+    # Fix Z to Imakura-style target representation.
+    W_concat = np.hstack(anchors_inter)
+    U, S, _ = np.linalg.svd(W_concat, full_matrices=False)
+    take = min(int(dim_integrate), U.shape[1])
+    if take <= 0:
+        return [], np.zeros((r, 0)), np.zeros((0,)), []
+    Z_integ = U[:, :take]
+    eigvals_selected = S[:take]
+
+    I_r = np.eye(r)
+    lam = float(nl_lambda)
+    gammas = _determine_kernel_gammas(anchors_inter, Xs_train_inter, gamma_type, gamma_ratio_krr)
+    kernel_type_key = (kernel_type or "rbf").lower()
+
+    Ss: List[np.ndarray] = []
+    mu_max_list: List[Optional[float]] = []
+    for i, anchor_inter_k in enumerate(anchors_inter):
+        if kernel_type_key == "linear":
+            K = anchor_inter_k @ anchor_inter_k.T
+        else:
+            K = rbf_kernel(anchor_inter_k, anchor_inter_k, gamma=gammas[i])
+
+        if K_normalization:
+            mu_max = max(float(np.linalg.eigvalsh(K).max()), 1e-12)
+            mu_max_list.append(mu_max)
+            K = K / mu_max
+        else:
+            mu_max_list.append(None)
+
+        try:
+            S_k = np.linalg.inv(K + lam * I_r)
+        except np.linalg.LinAlgError:
+            S_k = np.linalg.pinv(K + lam * I_r)
+        Ss.append(S_k)
+
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    for i, (S_k, anchor_inter_k) in enumerate(zip(Ss, anchors_inter)):
+        C_k = S_k @ Z_integ
+        proj = make_kernel_integrator(
+            anchor_inter_k,
+            C_k,
+            gamma=gammas[i],
+            normalize=K_normalization,
+            mu_max=mu_max_list[i],
+            kernel_type=kernel_type_key,
+        )
+        projs.append(proj)
+
+    return projs, Z_integ, eigvals_selected, gammas
+
+
+def build_nonlinear_mlp_projectors(
+    anchors_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    hidden_dims: Optional[List[int]] = None,
+    mlp_lambda: float = 1e-3,
+    nl_lambda: Optional[float] = None,
+    epochs: int = 500,
+    lr: float = 1e-3,
+    batch_size: Optional[int] = None,
+    seed: int = 0,
+    zerosum: bool = False,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
+    """
+    MLP-based nonlinear integration with a common fixed target representation Z.
+
+    Steps:
+      1. Stack anchors W = [A_1 ... A_c] and compute W = U Σ V^T.
+      2. Fix Z_integ = U_{:, 1:t} (or B U in the zero-sum subspace).
+      3. Train institution-specific MLPs g_k so that g_k(A_k) ~= Z_integ.
+      4. Apply row-wise L2 normalization at the output layer.
+
+    Returns:
+      - per-institution projectors backed by trained MLPs,
+      - the common fixed Z_integ,
+      - leading singular values of the concatenated anchor matrix,
+      - an empty gamma list for API compatibility.
+    """
+    if not anchors_inter:
+        return [], np.zeros((0, 0)), np.zeros((0,)), []
+
+    try:
+        import torch
+        import torch.nn as nn
+        import torch.nn.functional as F
+    except Exception as e:
+        raise RuntimeError("nonlinear_mlp を利用するには 'torch' が必要です") from e
+
+    row_dim = anchors_inter[0].shape[0]
+    if row_dim == 0:
+        return [], np.zeros((0, 0)), np.zeros((0,)), []
+    if any(anchor.shape[0] != row_dim for anchor in anchors_inter):
+        raise ValueError("nonlinear_mlp requires all anchor matrices to share the same number of rows.")
+
+    hidden_dims = list(hidden_dims) if hidden_dims is not None else [500, 200]
+    hidden_dims = [int(h) for h in hidden_dims if int(h) > 0]
+    take = min(int(dim_integrate), row_dim)
+    if take <= 0:
+        return [], np.zeros((row_dim, 0)), np.zeros((0,)), []
+
+    W_concat = np.hstack(anchors_inter)
+    if zerosum and row_dim >= 2:
+        B_zero = _zerosum_helmert_basis(row_dim)
+        U_sub, S, _ = np.linalg.svd(B_zero.T @ W_concat, full_matrices=False)
+        Z_integ = B_zero @ U_sub[:, :take]
+    else:
+        U, S, _ = np.linalg.svd(W_concat, full_matrices=False)
+        Z_integ = U[:, :take]
+    eigvals = S[:take]
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    base_seed = int(seed)
+    # Backward compatibility: nl_lambda is accepted for legacy callers,
+    # but nonlinear_mlp should use mlp_lambda going forward.
+    lam_cfg = mlp_lambda if mlp_lambda is not None else nl_lambda
+    lam = float(max(lam_cfg if lam_cfg is not None else 1e-3, 0.0))
+    train_batch_size = None if batch_size is None else max(1, int(batch_size))
+
+    class _ProjectorMLP(nn.Module):
+        def __init__(self, input_dim: int, output_dim: int, widths: List[int]) -> None:
+            super().__init__()
+            layers: List[nn.Module] = []
+            prev_dim = int(input_dim)
+            for width in widths:
+                layers.append(nn.Linear(prev_dim, int(width)))
+                layers.append(nn.ReLU())
+                prev_dim = int(width)
+            self.hidden = nn.Sequential(*layers)
+            self.out = nn.Linear(prev_dim, int(output_dim))
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            h = self.hidden(x)
+            y = self.out(h)
+            return F.normalize(y, p=2, dim=1, eps=1e-12)
+
+    target_tensor = torch.from_numpy(np.asarray(Z_integ, dtype=np.float32)).to(device)
+    projs: List[Callable[[np.ndarray], np.ndarray]] = []
+    losses: List[float] = []
+
+    for inst_idx, anchor_inter_k in enumerate(anchors_inter):
+        torch.manual_seed(base_seed + inst_idx)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(base_seed + inst_idx)
+
+        X_anchor = np.asarray(anchor_inter_k, dtype=np.float32)
+        input_dim = int(X_anchor.shape[1])
+        model = _ProjectorMLP(input_dim=input_dim, output_dim=take, widths=hidden_dims).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=float(lr))
+        data_tensor = torch.from_numpy(X_anchor).to(device)
+
+        effective_batch = data_tensor.shape[0] if train_batch_size is None else min(train_batch_size, data_tensor.shape[0])
+        indices_full = torch.arange(data_tensor.shape[0], device=device)
+
+        for epoch_idx in range(max(1, int(epochs))):
+            model.train()
+            if effective_batch >= data_tensor.shape[0]:
+                batch_slices = [indices_full]
+            else:
+                perm = torch.randperm(data_tensor.shape[0], device=device)
+                batch_slices = [perm[start:start + effective_batch] for start in range(0, data_tensor.shape[0], effective_batch)]
+
+            for batch_idx in batch_slices:
+                pred = model(data_tensor[batch_idx])
+                target_batch = target_tensor[batch_idx]
+                data_loss = torch.sum((pred - target_batch) ** 2)
+                reg_loss = torch.zeros((), device=device)
+                for name, param in model.named_parameters():
+                    if "weight" in name:
+                        reg_loss = reg_loss + torch.sum(param ** 2)
+                loss = data_loss + lam * reg_loss
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            if epoch_idx == max(1, int(epochs)) - 1:
+                losses.append(float(loss.detach().cpu().item()))
+
+        model.eval()
+
+        def _make_proj(model_ref: nn.Module):
+            def projector(X: np.ndarray) -> np.ndarray:
+                arr = np.asarray(X, dtype=np.float32)
+                with torch.no_grad():
+                    tensor = torch.from_numpy(arr).to(device)
+                    out = model_ref(tensor).detach().cpu().numpy()
+                return out
+
+            return projector
+
+        projs.append(_make_proj(model))
+
+    return projs, Z_integ, eigvals, losses
 
 
 def build_graph_nonlinear_projectors(
@@ -1845,6 +2142,7 @@ def build_laplacian_nonlinear_new_projectors(
     constraint_matrix: Optional[np.ndarray] = None,
     constraint_eps: float = 1e-9,
     L_within: Optional[np.ndarray] = None,
+    L_between: Optional[np.ndarray] = None,
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray, List[float]]:
     """
     Paper-matching Laplacian-regularized nonlinear integration.
@@ -1855,6 +2153,12 @@ def build_laplacian_nonlinear_new_projectors(
 
     where L is an unlabeled k-NN Laplacian over anchors (graph), and scale is chosen
     so that tr(scale * L) ~= tr(M_λ).
+
+    regularization options:
+      - "identity": A = M_λ + μI (trace-matched)
+      - "graph": A = M_λ + μL
+      - "target-graph": A = M_λ + μL_within, with L_between used as mass (default)
+      - "penal-target-graph": A = M_λ + μ(L_within - L_between)
     """
     def _sym(A: np.ndarray) -> np.ndarray:
         return (A + A.T) * 0.5
@@ -1872,17 +2176,15 @@ def build_laplacian_nonlinear_new_projectors(
         if take <= 0:
             return np.zeros((A.shape[0], 0)), np.zeros((0,))
 
-        if B_mass is not None:
-            B_mass = _sym(B_mass)
-            B_mass = B_mass + float(eps) * np.eye(B_mass.shape[0])
-
         if zerosum_enabled and A.shape[0] >= 2:
             B0 = _zerosum_helmert_basis(A.shape[0])
             A_tilde = _sym(B0.T @ A @ B0)
             if B_mass is None:
                 eigvals_raw, eigvecs = eigh(A_tilde, np.eye(A_tilde.shape[0]))
             else:
+                B_mass = _sym(B_mass)
                 B_tilde = _sym(B0.T @ B_mass @ B0)
+                # Add stability term once in the reduced (zero-sum) subspace.
                 B_tilde = B_tilde + float(eps) * np.eye(B_tilde.shape[0])
                 eigvals_raw, eigvecs = eigh(A_tilde, B_tilde)
             order = np.argsort(eigvals_raw)
@@ -1894,6 +2196,9 @@ def build_laplacian_nonlinear_new_projectors(
         if B_mass is None:
             eigvals_raw, eigvecs = eigh(A, np.eye(A.shape[0]))
         else:
+            B_mass = _sym(B_mass)
+            # Add stability term once in the original space.
+            B_mass = B_mass + float(eps) * np.eye(B_mass.shape[0])
             eigvals_raw, eigvecs = eigh(A, B_mass)
         order = np.argsort(eigvals_raw)
         select = order[: min(take, eigvecs.shape[1])]
@@ -1949,16 +2254,55 @@ def build_laplacian_nonlinear_new_projectors(
             scale = tr_M / max(tr_I, eps) if tr_I > 0 else 1.0
             A = M_lambda + float(graph_mu_align) * scale * I
         elif reg_key == "graph":
-            L_plain = np.asarray(L_within, dtype=float) if L_within is not None else _build_unlabeled_anchor_laplacian(anchors_inter, k_neighbors=int(laplacian_k))
+            # Label-agnostic graph: always build an unlabeled anchor Laplacian.
+            L_plain = _build_unlabeled_anchor_laplacian(anchors_inter, k_neighbors=int(laplacian_k))
             if L_plain.shape == M_lambda.shape:
                 L_plain = _sym(L_plain)
                 tr_L = float(np.trace(L_plain))
                 scale = tr_M / max(tr_L, eps) if tr_L > 0 else 1.0
                 A = M_lambda + float(graph_mu_align) * scale * L_plain
+        elif reg_key in {"target-graph", "target_graph"}:
+            if L_within is None:
+                raise ValueError("target-graph regularization requires L_within.")
+            Lw = np.asarray(L_within, dtype=float)
+            if Lw.shape != M_lambda.shape:
+                raise ValueError(f"target-graph requires L_within shape {M_lambda.shape} but got {Lw.shape}")
+            Lw = _sym(Lw)
+            tr_Lw = float(np.trace(Lw))
+            scale_w = tr_M / max(tr_Lw, eps) if tr_Lw > 0 else 1.0
+            A = M_lambda + float(graph_mu_align) * scale_w * Lw
+        elif reg_key in {"penal-target-graph", "penal_target_graph"}:
+            if L_within is None or L_between is None:
+                raise ValueError("penal-target-graph regularization requires both L_within and L_between.")
+            Lw = np.asarray(L_within, dtype=float)
+            Lb = np.asarray(L_between, dtype=float)
+            if Lw.shape != M_lambda.shape or Lb.shape != M_lambda.shape:
+                raise ValueError(
+                    f"penal-target-graph requires L_within/L_between shape {M_lambda.shape} but got {Lw.shape}/{Lb.shape}"
+                )
+            Lw = _sym(Lw)
+            Lb = _sym(Lb)
+            tr_Lw = float(np.trace(Lw))
+            tr_Lb = float(np.trace(Lb))
+            scale_w = tr_M / max(tr_Lw, eps) if tr_Lw > 0 else 1.0
+            scale_b = tr_M / max(tr_Lb, eps) if tr_Lb > 0 else 1.0
+            A = M_lambda + float(graph_mu_align) * (scale_w * Lw - scale_b * Lb)
 
     A = _sym(A)
 
     mass = None
+    if reg_key in {"target-graph", "target_graph"} and constraint_matrix is None:
+        # Use L_between as the mass matrix (constraint) by default, scaled so that tr(B) ~= n.
+        if L_between is None:
+            raise ValueError("target-graph regularization requires L_between.")
+        Lb = np.asarray(L_between, dtype=float)
+        if Lb.shape != (r, r):
+            raise ValueError(f"L_between must be shape {(r, r)} but got {Lb.shape}")
+        Lb = _sym(Lb)
+        tr_Lb = float(np.trace(Lb))
+        n = float(Lb.shape[0])
+        scale_b = n / max(tr_Lb, 1e-12) if tr_Lb > 0 else 1.0
+        mass = scale_b * Lb
     if constraint_matrix is not None:
         mass = np.asarray(constraint_matrix, dtype=float)
         if mass.shape != (r, r):

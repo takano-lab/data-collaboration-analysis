@@ -229,7 +229,13 @@ class IntermediateExpressionBuilder:
         need_anchor_laplacian = (lw_alpha > 0.0) or self._needs_anchor_laplacian()
         if need_anchor_laplacian:
             gamma = getattr(self.config, "laplacian_gamma", None)
-            anchor_lap_k = int(getattr(self.config, "anchor_laplacian_k", assign_k) or assign_k)
+            # Use graph_knn_k as the neighborhood size for anchor label-aware Laplacians
+            # (paper-style within/penalty graphs).
+            graph_k_cfg = getattr(self.config, "graph_knn_k", None)
+            try:
+                anchor_lap_k = int(graph_k_cfg) if graph_k_cfg is not None else int(assign_k)
+            except (TypeError, ValueError):
+                anchor_lap_k = int(assign_k)
             self.L_within, self.L_between = build_laplacians_from_anchor_labels(
                 anchor=self.anchor,
                 anchor_y=self.anchor_y,
@@ -416,7 +422,11 @@ class IntermediateExpressionBuilder:
         if artifacts.anchor.size == 0 or artifacts.anchor_y.size == 0:
             return artifacts
         assign_k = int(getattr(self.config, "anchor_assign_k", 10) or 10)
-        anchor_lap_k = int(getattr(self.config, "anchor_laplacian_k", assign_k) or assign_k)
+        graph_k_cfg = getattr(self.config, "graph_knn_k", None)
+        try:
+            anchor_lap_k = int(graph_k_cfg) if graph_k_cfg is not None else int(assign_k)
+        except (TypeError, ValueError):
+            anchor_lap_k = int(assign_k)
         gamma = getattr(self.config, "laplacian_gamma", None)
         L_within, L_between = build_laplacians_from_anchor_labels(
             anchor=artifacts.anchor,

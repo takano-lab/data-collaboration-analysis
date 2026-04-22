@@ -49,6 +49,7 @@ class ModelRunner:
             "svm_linear_classifier": self._run_svm_linear,
             "mlp": self._run_mlp,  # MLPを追加
             "softmax": self._run_softmax,
+            "logistic_regression": self._run_softmax,
         }
         self._last_train_labels: Optional[np.ndarray] = None
 
@@ -106,7 +107,7 @@ class ModelRunner:
         y_train_enc = y_train
         h_model = getattr(self.config, 'h_model', 'svm_classifier')
         # SVM/MLP/Softmax は内部でエンコードしているため合わせる
-        if h_model in ["svm_classifier", "svm_linear_classifier", "mlp", "softmax", "random_forest"]:
+        if h_model in ["svm_classifier", "svm_linear_classifier", "mlp", "softmax", "logistic_regression", "random_forest"]:
             if not np.issubdtype(y_train.dtype, np.number):
                 from sklearn.preprocessing import LabelEncoder
                 encoder = LabelEncoder().fit(y_train)
@@ -177,7 +178,7 @@ class ModelRunner:
                 y_pred = y_pred_enc
             return y_pred, y_proba, np.array(classes)
 
-        elif h_model == "softmax":
+        elif h_model in ["softmax", "logistic_regression"]:
             from sklearn.linear_model import LogisticRegression
             clf = LogisticRegression(
                 multi_class='multinomial',

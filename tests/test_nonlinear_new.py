@@ -105,3 +105,116 @@ def test_build_laplacian_nonlinear_new_projectors_trace_scaled():
     residual = np.linalg.norm(A_expected @ Z - Z @ np.diag(eigvals), ord="fro")
     assert residual < 1e-7
 
+
+def test_build_laplacian_nonlinear_new_target_graph_requires_l_matrices():
+    anchors_inter = [np.array([[0.0], [1.0], [2.0]])]
+    Xs_train_inter = [np.array([[0.0], [1.0], [2.0]])]
+    anchor = np.array([[0.0], [1.0], [2.0]])
+
+    Lw = np.eye(3)
+    Lb = np.eye(3)
+
+    projs, Z, eigvals, gammas = runners.build_laplacian_nonlinear_new_projectors(
+        anchors_inter=anchors_inter,
+        Xs_train_inter=Xs_train_inter,
+        anchor=anchor,
+        dim_integrate=2,
+        nl_lambda=1.0,
+        graph_mu_align=1.0,
+        laplacian_k=1,
+        regularization="target-graph",
+        L_within=Lw,
+        L_between=Lb,
+    )
+    assert len(projs) == 1
+    assert Z.shape == (3, 2)
+    assert eigvals.shape == (2,)
+    assert len(gammas) == 1
+
+    try:
+        runners.build_laplacian_nonlinear_new_projectors(
+            anchors_inter=anchors_inter,
+            Xs_train_inter=Xs_train_inter,
+            anchor=anchor,
+            dim_integrate=2,
+            nl_lambda=1.0,
+            graph_mu_align=1.0,
+            laplacian_k=1,
+            regularization="target-graph",
+            L_within=Lw,
+            L_between=None,
+        )
+        assert False, "Expected ValueError when L_between is missing for target-graph"
+    except ValueError:
+        pass
+
+
+def test_build_nonlinear_mlp_projectors_uses_common_fixed_u_target():
+    c = 2
+    r = 8
+    d = 4
+    dim = 3
+
+    anchors = [_rand(500 + i, (r, d)) for i in range(c)]
+    concat = np.hstack(anchors)
+    U, S, _ = np.linalg.svd(concat, full_matrices=False)
+
+    projs, Z, eigvals, losses = runners.build_nonlinear_mlp_projectors(
+        anchors_inter=anchors,
+        dim_integrate=dim,
+        hidden_dims=[16],
+        mlp_lambda=1e-4,
+        epochs=20,
+        lr=1e-2,
+        seed=7,
+    )
+
+    assert len(projs) == c
+    assert Z.shape == (r, dim)
+    assert eigvals.shape == (dim,)
+    assert len(losses) == c
+    assert np.allclose(Z, U[:, :dim], atol=1e-6)
+    assert np.allclose(eigvals, S[:dim], atol=1e-6)
+
+    out = projs[0](_rand(999, (5, d)))
+    assert out.shape == (5, dim)
+    row_norms = np.linalg.norm(out, axis=1)
+    assert np.allclose(row_norms, np.ones_like(row_norms), atol=1e-5)
+
+
+def test_build_nonlinear_imakura_z_projectors_fixes_z_by_anchor_svd():
+    c = 3
+    r = 9
+    d = 4
+    dim = 5
+    lam = 1e-2
+
+    anchors = [_rand(700 + i, (r, d)) for i in range(c)]
+    Xs = [_rand(800 + i, (20, d)) for i in range(c)]
+    W = np.hstack(anchors)
+    U, S, _ = np.linalg.svd(W, full_matrices=False)
+    U_ref = U[:, :dim]
+
+    projs, Z, eigvals, gammas = runners.build_nonlinear_imakura_Z_projectors(
+        anchors_inter=anchors,
+        Xs_train_inter=Xs,
+        dim_integrate=dim,
+        kernel_type="linear",
+        nl_lambda=lam,
+        gamma_type="fixed",
+        gamma_ratio_krr=1.0,
+    )
+
+    assert len(projs) == c
+    assert len(gammas) == c
+    assert Z.shape == (r, dim)
+    assert eigvals.shape == (dim,)
+    assert np.allclose(eigvals, S[:dim], atol=1e-8)
+
+    # Column signs are ambiguous, so compare subspaces via projection matrices.
+    P_ref = U_ref @ U_ref.T
+    P = Z @ Z.T
+    assert np.allclose(P, P_ref, atol=1e-6)
+
+    out = projs[0](_rand(999, (7, d)))
+    assert out.shape == (7, dim)

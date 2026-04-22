@@ -30,10 +30,13 @@ from .runners import (
     build_kernel_graph_gep_projectors,
     build_nonlinear_projectors,
     build_nonlinear_projectors_maximize,
+    build_nonlinear_imakura_Z_projectors,
     build_gep_singular_projectors,
+    build_gep_singular_2_projectors,
     build_laplacian_nonlinear_projectors,
     build_laplacian_nonlinear_new_projectors,
     build_multi_cca_projectors,
+    build_nonlinear_mlp_projectors,
     build_odc_projectors,
     build_laplacian_targetvec_projectors,
     build_targetvec_projectors,
@@ -263,7 +266,13 @@ class IntegratedExpressionBuilder:
             return None, None
 
         assign_k = int(getattr(self.config, "anchor_assign_k", 10) or 10)
-        anchor_lap_k = int(getattr(self.config, "anchor_laplacian_k", assign_k) or assign_k)
+        # Use graph_knn_k as the neighborhood size for anchor label-aware Laplacians
+        # (paper-style within/penalty graphs).
+        graph_k_cfg = getattr(self.config, "graph_knn_k", None)
+        try:
+            anchor_lap_k = int(graph_k_cfg) if graph_k_cfg is not None else int(assign_k)
+        except (TypeError, ValueError):
+            anchor_lap_k = int(assign_k)
         gamma = getattr(self.config, "laplacian_gamma", None)
 
         L_within, L_between = build_laplacians_from_anchor_labels(
@@ -489,6 +498,24 @@ def _run_gep_singular_integration(analysis: "IntegratedExpressionBuilder") -> tu
     return projs, extras
 
 
+def _run_gep_singular_2_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    """
+    Integration runner for rank-deficient tolerant QR+SVD (gep_singular_2).
+    """
+    zerosum = bool(getattr(analysis.config, "zerosum", False))
+    anchors_inter = _apply_zerosum_helmert_to_anchors(analysis.anchors_inter, zerosum)
+    projs, Z_integ, eigvals = build_gep_singular_2_projectors(
+        anchors_inter=anchors_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+    )
+    extras: Dict[str, object] = {"Z_integ": Z_integ, "eigvals": eigvals}
+    projs, extras = _apply_random_linear_post_transform(
+        analysis.config, projs, extras, method_tag="gep_singular_2"
+    )
+    analysis.Z_integ = extras.get("Z_integ")
+    return projs, extras
+
+
 def _run_multi_cca_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
     projs, metrics = build_multi_cca_projectors(
         anchors_inter=analysis.anchors_inter,
@@ -611,6 +638,58 @@ def _run_nonlinear_new_integration(analysis: "IntegratedExpressionBuilder") -> t
     gammas_mean = float(np.mean(gammas)) if gammas else None
     analysis.config.gamma_krr_means = gammas_mean
     extras = {"Z_integ": Z_integ, "eigvals": eigvals, "gammas": gammas}
+    analysis.Z_integ = Z_integ
+    return projs, extras
+
+
+def _run_nonlinear_imakura_Z_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    projs, Z_integ, eigvals, gammas = build_nonlinear_imakura_Z_projectors(
+        anchors_inter=analysis.anchors_inter,
+        Xs_train_inter=analysis.Xs_train_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+        gamma_type=getattr(analysis.config, "gamma_type", "auto"),
+        gamma_ratio_krr=getattr(analysis.config, "gamma_ratio_krr", 1.0),
+        kernel_type=str(getattr(analysis.config, "kernel_type", "rbf") or "rbf"),
+        K_normalization=bool(getattr(analysis.config, "K_normalization", False)),
+        nl_lambda=getattr(analysis.config, "nl_lambda", 1e-2),
+    )
+    gammas_mean = float(np.mean(gammas)) if gammas else None
+    analysis.config.gamma_krr_means = gammas_mean
+    extras = {"Z_integ": Z_integ, "eigvals": eigvals, "gammas": gammas}
+    analysis.Z_integ = Z_integ
+    return projs, extras
+
+
+def _run_nonlinear_mlp_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    hidden_cfg = getattr(analysis.config, "nonlinear_mlp_hidden_dims", None)
+    if hidden_cfg is None:
+        hidden_dims = [500, 200]
+    elif isinstance(hidden_cfg, (list, tuple)):
+        hidden_dims = [int(v) for v in hidden_cfg]
+    else:
+        hidden_dims = [int(v.strip()) for v in str(hidden_cfg).split(",") if v.strip()]
+
+    projs, Z_integ, eigvals, train_losses = build_nonlinear_mlp_projectors(
+        anchors_inter=analysis.anchors_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+        hidden_dims=hidden_dims,
+        mlp_lambda=float(
+            getattr(
+                analysis.config,
+                "mlp_lambda",
+                getattr(analysis.config, "nl_lambda", 1e-3),
+            )
+            or 0.0
+        ),
+        epochs=int(getattr(analysis.config, "nonlinear_mlp_epochs", 500) or 500),
+        lr=float(getattr(analysis.config, "nonlinear_mlp_lr", 1e-3) or 1e-3),
+        batch_size=getattr(analysis.config, "nonlinear_mlp_batch_size", None),
+        seed=int(getattr(analysis.config, "seed", 0) or 0),
+        zerosum=bool(getattr(analysis.config, "zerosum", False)),
+    )
+    analysis.config.nonlinear_mlp_hidden_dims = hidden_dims
+    analysis.config.nonlinear_mlp_final_losses = train_losses
+    extras = {"Z_integ": Z_integ, "eigvals": eigvals, "train_losses": train_losses}
     analysis.Z_integ = Z_integ
     return projs, extras
 
@@ -806,11 +885,49 @@ def _run_laplacian_nonlinear_new_integration(analysis: "IntegratedExpressionBuil
     if graph_k <= 0:
         graph_k = 10
 
-    # Laplacians built from anchor labels (if available).
-    L_within, L_between = analysis._build_anchor_laplacians_for_integrated()
-    zerosum_constraint = str(getattr(analysis.config, "zerosum_constraint", "identity") or "identity").lower()
-    constraint = L_between if zerosum_constraint in {"l_between", "between", "lb"} else None
+    reg_key = str(regularization or "graph").lower()
+    # "graph": label-agnostic Laplacian (no target labels)
+    # "target-graph": label-aware within/penalty graphs (uses anchor_y)
+    # "penal-target-graph": label-aware additive/subtractive graph, A += mu * (Lw - Lb)
+    if reg_key in {"target-graph", "target_graph", "penal-target-graph", "penal_target_graph"}:
+        L_within, L_between = analysis._build_anchor_laplacians_for_integrated()
+    else:
+        L_within, L_between = None, None
+
+    # For stability in generalized eigenproblems (target-graph only).
     eps = float(getattr(analysis.config, "graph_stability_eps", 1e-9) or 1e-9)
+
+    # Constraint selection for target-graph:
+    # - "between" (default): use L_between as mass matrix (paper-style)
+    # - "identity": use I as mass matrix (ignore between-class constraint)
+    # Optional:
+    # - target_graph_between_weight in [0, 1]:
+    #     B = (1-w) I + w * scaled(L_between)
+    #   to softly control the amount of between-class separation.
+    constraint_matrix = None
+    if reg_key in {"target-graph", "target_graph"}:
+        constraint_mode = str(getattr(analysis.config, "target_graph_constraint", "between") or "between").lower()
+        r = int(analysis.anchor.shape[0]) if analysis.anchor is not None else 0
+        if constraint_mode in {"identity", "i", "eye"}:
+            if r > 0:
+                constraint_matrix = np.eye(r, dtype=float)
+        elif constraint_mode in {"between", "b"}:
+            w_raw = getattr(analysis.config, "target_graph_between_weight", 1.0)
+            try:
+                w = float(w_raw)
+            except (TypeError, ValueError):
+                w = 1.0
+            w = max(0.0, min(1.0, w))
+            if w < 1.0 and r > 0:
+                if L_between is None:
+                    raise ValueError("target_graph_between_weight requires L_between.")
+                Lb = np.asarray(L_between, dtype=float)
+                if Lb.shape != (r, r):
+                    raise ValueError(f"L_between must be shape {(r, r)} but got {Lb.shape}")
+                Lb = (Lb + Lb.T) * 0.5
+                tr_Lb = float(np.trace(Lb))
+                scale_b = float(r) / max(tr_Lb, 1e-12) if tr_Lb > 0 else 1.0
+                constraint_matrix = (1.0 - w) * np.eye(r, dtype=float) + w * (scale_b * Lb)
 
     projs, Z_integ, eigvals, gammas = build_laplacian_nonlinear_new_projectors(
         anchors_inter=analysis.anchors_inter,
@@ -826,9 +943,10 @@ def _run_laplacian_nonlinear_new_integration(analysis: "IntegratedExpressionBuil
         zerosum=bool(getattr(analysis.config, "zerosum", False)),
         regularization=regularization,
         K_normalization=bool(getattr(analysis.config, "K_normalization", False)),
-        constraint_matrix=constraint,
+        constraint_matrix=constraint_matrix,
         constraint_eps=eps,
         L_within=L_within,
+        L_between=L_between,
     )
 
     gammas_mean = float(np.mean(gammas)) if gammas else None
@@ -1103,10 +1221,14 @@ _INTEGRATION_RUNNERS: Dict[str, IntegrationRunner] = {
     "gep2": _run_gep2_integration,
     "faster_gep": _run_faster_gep_integration,
     "gep_singular": _run_gep_singular_integration,
+    "gep_singular_2": _run_gep_singular_2_integration,
+    "gep_singular2": _run_gep_singular_2_integration,
     "odc": _run_odc_integration,
     "nonridge": _run_nonridge_integration,
     "nonlinear": _run_nonlinear_integration,
     "nonlinear_new": _run_nonlinear_new_integration,
+    "nonlinear_imakura_z": _run_nonlinear_imakura_Z_integration,
+    "nonlinear_mlp": _run_nonlinear_mlp_integration,
     "nonlinear_nonridge": _run_nonlinear_nonridge_integration,
     "nonlinear_maximize": _run_nonlinear_max_integration,
     "nonlinear_faster": _run_nonlinear_faster_integration,

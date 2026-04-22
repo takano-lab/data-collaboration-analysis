@@ -211,8 +211,15 @@ def _generate_unique_combos(grid: Dict[str, List[Any]]):
     # それ全体を「平均を取る対象」として 1 つの要素として扱う。
     value_lists: List[List[Any]] = []
     for k in keys:
-        vals = grid.get(k, [])
-        vals = list(vals)
+        vals_raw = grid.get(k, [])
+        if isinstance(vals_raw, list):
+            vals = vals_raw
+        elif isinstance(vals_raw, tuple):
+            vals = list(vals_raw)
+        else:
+            # Allow scalar values in param_grid (e.g. mlp_lambda: 0.001)
+            # by treating them as a one-element candidate list.
+            vals = [vals_raw]
         if k in OR_GROUP_KEY_SET:
             default_val = DEFAULTS.get(k, None)
             if default_val is not None and all(v != default_val for v in vals):

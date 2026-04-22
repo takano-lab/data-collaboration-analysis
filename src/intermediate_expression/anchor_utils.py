@@ -528,6 +528,22 @@ def build_laplacians_from_anchor_labels(
     metric: str = "euclidean",
     logger: logger = None,
 ) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Build label-aware anchor Laplacians using the "within-class graph" and
+    "penalty graph" constructions (paper-style).
+
+    Within-class graph (L_within):
+      w_ij = 1 if j in N_k^in(i) or i in N_k^in(j), else 0,
+    where N_k^in(i) are the k nearest neighbors of i restricted to the same class.
+
+    Penalty graph (L_between):
+      w'_ij = 1 if (i, j) is among the k smallest cross-class pairs for some class ℓ,
+    where cross-class pairs are formed between points in class ℓ and points outside ℓ.
+
+    Notes:
+    - `gamma` is currently unused (kept for config compatibility).
+    - Both graphs use the same `k_neighbors` value for k1 (within) and k2 (penalty).
+    """
     if anchor.size == 0 or anchor_y.size == 0:
         if logger:
             try:
@@ -537,23 +553,106 @@ def build_laplacians_from_anchor_labels(
         return None, None
 
     k_val = int(k_neighbors) if k_neighbors is not None else 5
-    adjacency = _symmetric_knn_graph(anchor, k_val, metric=metric)
+    k_val = max(1, k_val)
 
-    # 無ラベル（NaN など）と判定されたアンカーは、ラプラシアン構築時には接続を持たないようにする
+    anchor = np.asarray(anchor)
+    anchor_y = np.asarray(anchor_y).ravel()
+    n = int(anchor.shape[0])
+    if n <= 1:
+        return np.zeros((n, n)), np.zeros((n, n))
+
+    # 無ラベル（NaN など）と判定されたアンカーは、グラフ構築対象から除外する
     valid_mask = _valid_label_mask(anchor_y)
-    if not np.all(valid_mask):
-        invalid = ~valid_mask
-        adjacency[invalid, :] = 0.0
-        adjacency[:, invalid] = 0.0
+    valid_idx = np.where(valid_mask)[0]
+    if valid_idx.size == 0:
+        return np.zeros((n, n)), np.zeros((n, n))
 
-    same_label_mask = anchor_y.reshape(-1, 1) == anchor_y.reshape(1, -1)
-    diff_label_mask = ~same_label_mask
+    labels_valid = anchor_y[valid_idx]
+    points_valid = anchor[valid_idx]
 
-    W_within = adjacency * same_label_mask
+    Ww_valid = np.zeros((valid_idx.size, valid_idx.size), dtype=float)
+    Wb_valid = np.zeros((valid_idx.size, valid_idx.size), dtype=float)
+
+    unique_labels = np.unique(labels_valid)
+
+    # --- Within-class graph (L_within) ---
+    for lab in unique_labels:
+        cls_mask = labels_valid == lab
+        cls_idx_local = np.where(cls_mask)[0]
+        n_cls = int(cls_idx_local.size)
+        if n_cls <= 1:
+            continue
+
+        pts_cls = points_valid[cls_idx_local]
+        k_eff = max(1, min(k_val, n_cls - 1))
+        # Request k_eff+1 to ensure we can drop self-neighbor robustly.
+        nn = NearestNeighbors(n_neighbors=min(n_cls, k_eff + 1), metric=metric)
+        nn.fit(pts_cls)
+        neigh = nn.kneighbors(pts_cls, return_distance=False)
+
+        for row_local, neigh_local in enumerate(neigh):
+            src = cls_idx_local[row_local]
+            # Drop self index if present, then take first k_eff
+            neigh_local = [j for j in neigh_local if j != row_local][:k_eff]
+            for j_local in neigh_local:
+                dst = cls_idx_local[int(j_local)]
+                Ww_valid[src, dst] = 1.0
+
+    Ww_valid = np.maximum(Ww_valid, Ww_valid.T)
+    np.fill_diagonal(Ww_valid, 0.0)
+
+    # --- Penalty graph (L_between) ---
+    # For each class ℓ, pick the k_val smallest cross-class pairs (i in ℓ, j not in ℓ).
+    for lab in unique_labels:
+        in_mask = labels_valid == lab
+        idx_in = np.where(in_mask)[0]
+        idx_out = np.where(~in_mask)[0]
+        if idx_in.size == 0 or idx_out.size == 0:
+            continue
+
+        pts_in = points_valid[idx_in]
+        pts_out = points_valid[idx_out]
+        k_out = min(k_val, int(pts_out.shape[0]))
+        if k_out <= 0:
+            continue
+
+        nn_out = NearestNeighbors(n_neighbors=k_out, metric=metric)
+        nn_out.fit(pts_out)
+        dists, neigh_out = nn_out.kneighbors(pts_in, return_distance=True)
+
+        # Candidate set: for each i in ℓ, its k2 nearest outside neighbors.
+        # Selecting the global k2 smallest among these candidates is exact:
+        # if a pair (i, j) is in global top-k2, then j is within i's top-k2 outside neighbors.
+        candidates_dist: list[float] = []
+        candidates_src: list[int] = []
+        candidates_dst: list[int] = []
+        for row, src_local in enumerate(idx_in):
+            for pos, neigh_rel in enumerate(neigh_out[row]):
+                candidates_dist.append(float(dists[row, pos]))
+                candidates_src.append(int(src_local))
+                candidates_dst.append(int(idx_out[int(neigh_rel)]))
+
+        if not candidates_dist:
+            continue
+
+        k_pick = min(k_val, len(candidates_dist))
+        dist_arr = np.asarray(candidates_dist, dtype=float)
+        pick_idx = np.argpartition(dist_arr, k_pick - 1)[:k_pick]
+        for t in pick_idx:
+            Wb_valid[candidates_src[int(t)], candidates_dst[int(t)]] = 1.0
+
+    Wb_valid = np.maximum(Wb_valid, Wb_valid.T)
+    np.fill_diagonal(Wb_valid, 0.0)
+
+    # Embed back to full (including invalid labels as isolated nodes).
+    W_within = np.zeros((n, n), dtype=float)
+    W_between = np.zeros((n, n), dtype=float)
+    W_within[np.ix_(valid_idx, valid_idx)] = Ww_valid
+    W_between[np.ix_(valid_idx, valid_idx)] = Wb_valid
+
     D_within = np.diag(W_within.sum(axis=1))
     L_within = D_within - W_within
 
-    W_between = adjacency * diff_label_mask
     D_between = np.diag(W_between.sum(axis=1))
     L_between = D_between - W_between
 

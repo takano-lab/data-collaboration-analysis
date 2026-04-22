@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import mean_squared_error
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import LabelEncoder
@@ -328,6 +329,259 @@ def fl_analysis(
         "mean": weighted_mean,
         "per_institution": institution_metrics,
         "weights": institution_sizes,
+    }
+
+
+def _evaluate_classification_from_scores(
+    *,
+    y_true_enc: np.ndarray,
+    y_score: np.ndarray,
+    metric_name: str,
+) -> float:
+    if y_true_enc.size == 0 or y_score.size == 0:
+        return float("nan")
+    if metric_name == "accuracy":
+        y_pred = np.argmax(y_score, axis=1)
+        return float(np.mean(y_pred == y_true_enc))
+
+    n_classes = int(y_score.shape[1])
+    try:
+        if n_classes == 2:
+            if len(np.unique(y_true_enc)) < 2:
+                return float("nan")
+            return float(roc_auc_score(y_true_enc, y_score[:, 1]))
+        if len(np.unique(y_true_enc)) < 2:
+            return float("nan")
+        return float(roc_auc_score(y_true_enc, y_score, multi_class="ovr", average="macro"))
+    except ValueError:
+        return float("nan")
+
+
+def one_shot_guha_analysis(
+    Xs_train: list[np.ndarray],
+    ys_train: list[np.ndarray],
+    Xs_test: list[np.ndarray],
+    ys_test: list[np.ndarray],
+    config: Config,
+    logger: logger,
+) -> dict[str, object]:
+    """
+    One-shot FL (Guha-style) with client-side local training and server-side ensemble.
+
+    Current implementation targets random_forest models:
+      - Each client trains one local RF model.
+      - Server selects client models by strategy (all/random/data/cv).
+      - Global prediction is weighted average of predict_proba.
+    """
+    h_model = str(getattr(config, "h_model", "random_forest") or "random_forest").lower()
+    if h_model != "random_forest":
+        raise ValueError(
+            "one-shot-guha currently supports h_model='random_forest' only. "
+            f"Got: {h_model}"
+        )
+
+    # Shared label space for probability alignment and evaluation.
+    le = LabelEncoder()
+    concat_parts: list[np.ndarray] = []
+    if ys_train:
+        concat_parts.append(np.concatenate(ys_train))
+    if ys_test:
+        concat_parts.append(np.concatenate(ys_test))
+    if concat_parts:
+        le.fit(np.concatenate(concat_parts))
+    else:
+        le.fit(np.array([], dtype=float))
+    global_classes = le.classes_
+    n_classes = len(global_classes)
+    if n_classes <= 1:
+        raise ValueError("one-shot-guha requires at least 2 classes in labels.")
+
+    # Keep same standardization convention as existing FL baseline.
+    client_stats = [
+        {
+            "n": X.shape[0],
+            "sum": np.sum(X, axis=0),
+            "sum_sq": np.sum(X ** 2, axis=0),
+        }
+        for X in Xs_train
+    ]
+    total_n = sum(s["n"] for s in client_stats)
+    if total_n <= 0:
+        raise ValueError("one-shot-guha requires non-empty training data.")
+
+    global_mean = sum(s["sum"] for s in client_stats) / total_n
+    global_var = (sum(s["sum_sq"] for s in client_stats) / total_n) - (global_mean ** 2)
+    global_var = np.maximum(global_var, 0.0)
+    global_std = np.sqrt(global_var)
+    global_std = np.nan_to_num(global_std, nan=0.0, posinf=0.0, neginf=0.0)
+    global_std[global_std == 0] = 1.0
+
+    clients_X_train_std = [np.nan_to_num((X - global_mean) / global_std) for X in Xs_train]
+    clients_X_test_std = [np.nan_to_num((X - global_mean) / global_std) for X in Xs_test]
+
+    # One-shot settings
+    selection = str(getattr(config, "one_shot_selection", "all") or "all").lower()
+    top_k_raw = getattr(config, "one_shot_top_k", None)
+    top_k = int(top_k_raw) if top_k_raw is not None else None
+    min_samples_raw = getattr(config, "one_shot_min_samples", 0)
+    min_samples = int(min_samples_raw) if min_samples_raw is not None else 0
+    val_ratio_raw = getattr(config, "one_shot_val_ratio", 0.1)
+    try:
+        val_ratio = float(val_ratio_raw)
+    except (TypeError, ValueError):
+        val_ratio = 0.1
+    val_ratio = min(max(val_ratio, 0.0), 0.5)
+    weighting = str(getattr(config, "one_shot_weighting", "n_samples") or "n_samples").lower()
+    rng = np.random.default_rng(int(getattr(config, "seed", 0) or 0))
+
+    # Train local models
+    local_records: list[dict[str, object]] = []
+    for i, (X_tr, y_tr_raw) in enumerate(zip(clients_X_train_std, ys_train)):
+        if X_tr.size == 0 or len(y_tr_raw) == 0:
+            continue
+        if int(X_tr.shape[0]) < max(1, min_samples):
+            continue
+
+        y_tr = np.asarray(y_tr_raw)
+        if len(np.unique(y_tr)) < 2:
+            # Cannot train meaningful probabilistic classifier with a single class.
+            continue
+
+        rf = RandomForestClassifier(random_state=int((getattr(config, "seed", 0) or 0) + i))
+        rf.fit(X_tr, y_tr)
+
+        classes_local = np.asarray(rf.classes_)
+        class_pos = {cls: j for j, cls in enumerate(classes_local)}
+        global_idx = [int(np.where(global_classes == cls)[0][0]) for cls in classes_local if cls in class_pos]
+
+        rec: dict[str, object] = {
+            "model": rf,
+            "global_idx": np.asarray(global_idx, dtype=int),
+            "n_samples": int(X_tr.shape[0]),
+            "client_idx": i,
+            "cv_score": None,
+        }
+
+        # CV selection score on held-out local split (optional for selection stage).
+        if selection == "cv":
+            n = X_tr.shape[0]
+            n_val = int(round(n * val_ratio))
+            if n_val > 0 and n - n_val >= 2:
+                perm = rng.permutation(n)
+                tr_idx = perm[: n - n_val]
+                va_idx = perm[n - n_val :]
+                y_sub = y_tr[tr_idx]
+                if len(np.unique(y_sub)) >= 2 and len(np.unique(y_tr[va_idx])) >= 1:
+                    rf_cv = RandomForestClassifier(random_state=int((getattr(config, "seed", 0) or 0) + 10_000 + i))
+                    rf_cv.fit(X_tr[tr_idx], y_sub)
+                    proba_va = rf_cv.predict_proba(X_tr[va_idx])
+                    score_va = _evaluate_classification_from_scores(
+                        y_true_enc=le.transform(y_tr[va_idx]),
+                        y_score=np.asarray(proba_va, dtype=float),
+                        metric_name=str(getattr(config, "metrics", "accuracy") or "accuracy").lower(),
+                    )
+                    rec["cv_score"] = score_va
+        local_records.append(rec)
+
+    if not local_records:
+        raise ValueError("one-shot-guha: no eligible local models were trained.")
+
+    # Server-side model selection
+    selected = list(local_records)
+    if selection == "random":
+        k = top_k if top_k is not None else len(selected)
+        k = max(1, min(int(k), len(selected)))
+        idx = rng.choice(len(selected), size=k, replace=False)
+        selected = [selected[int(j)] for j in idx]
+    elif selection == "data":
+        selected = sorted(selected, key=lambda r: int(r["n_samples"]), reverse=True)
+        if top_k is not None:
+            selected = selected[: max(1, min(int(top_k), len(selected)))]
+    elif selection == "cv":
+        selected = sorted(
+            selected,
+            key=lambda r: float(r["cv_score"]) if r["cv_score"] is not None and np.isfinite(float(r["cv_score"])) else float("-inf"),
+            reverse=True,
+        )
+        if top_k is not None:
+            selected = selected[: max(1, min(int(top_k), len(selected)))]
+        selected = [r for r in selected if r["cv_score"] is not None and np.isfinite(float(r["cv_score"]))]
+        if not selected:
+            # Fallback if every CV score was invalid.
+            selected = sorted(local_records, key=lambda r: int(r["n_samples"]), reverse=True)
+            if top_k is not None:
+                selected = selected[: max(1, min(int(top_k), len(selected)))]
+    elif selection != "all":
+        raise ValueError(f"Unknown one_shot_selection: {selection}")
+
+    if not selected:
+        raise ValueError("one-shot-guha: no client models selected.")
+
+    # Ensemble weights
+    if weighting == "uniform":
+        weights = np.full(len(selected), 1.0 / len(selected), dtype=float)
+    elif weighting in {"n_samples", "data"}:
+        counts = np.array([int(r["n_samples"]) for r in selected], dtype=float)
+        s = float(np.sum(counts))
+        if s <= 0:
+            weights = np.full(len(selected), 1.0 / len(selected), dtype=float)
+        else:
+            weights = counts / s
+    else:
+        raise ValueError(f"Unknown one_shot_weighting: {weighting}")
+
+    metric_name = str(getattr(config, "metrics", "accuracy") or "accuracy").lower()
+    institution_metrics: list[float] = []
+    institution_sizes: list[int] = []
+
+    for idx, (X_te, y_te_raw) in enumerate(zip(clients_X_test_std, ys_test)):
+        y_te = np.asarray(y_te_raw)
+        institution_sizes.append(len(y_te))
+        if X_te.size == 0 or len(y_te) == 0:
+            logger.warning(f"one-shot-guha eval skipped for institution {idx}: no test samples.")
+            institution_metrics.append(float("nan"))
+            continue
+
+        y_score_ens = np.zeros((X_te.shape[0], n_classes), dtype=float)
+        for w, rec in zip(weights, selected):
+            model = rec["model"]
+            global_idx = np.asarray(rec["global_idx"], dtype=int)
+            proba_local = np.asarray(model.predict_proba(X_te), dtype=float)
+            y_score_ens[:, global_idx] += float(w) * proba_local
+
+        y_te_enc = le.transform(y_te)
+        metric_value = _evaluate_classification_from_scores(
+            y_true_enc=y_te_enc,
+            y_score=y_score_ens,
+            metric_name=metric_name,
+        )
+        institution_metrics.append(metric_value)
+        logger.info(f"one-shot-guha metric (institution {idx}): {metric_value}")
+
+    metrics_array = np.array(institution_metrics, dtype=float)
+    weights_inst = np.array(institution_sizes, dtype=float)
+    valid_mask = (~np.isnan(metrics_array)) & (weights_inst > 0)
+    if valid_mask.any():
+        weighted_mean = float(np.average(metrics_array[valid_mask], weights=weights_inst[valid_mask]))
+    else:
+        weighted_mean = float("nan")
+
+    logger.info(
+        "one-shot-guha selected models=%s/%s, selection=%s, weighting=%s",
+        len(selected),
+        len(local_records),
+        selection,
+        weighting,
+    )
+    logger.info(f"one-shot-guha per-institution metrics: {np.round(metrics_array, 4).tolist()}")
+    logger.info(f"one-shot-guha weighted mean metric: {weighted_mean:.4f}")
+
+    return {
+        "mean": weighted_mean,
+        "per_institution": institution_metrics,
+        "weights": institution_sizes,
+        "num_models_trained": len(local_records),
+        "num_models_selected": len(selected),
     }
 
 def dca_analysis(

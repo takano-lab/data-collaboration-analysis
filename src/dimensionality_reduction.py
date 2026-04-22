@@ -9,7 +9,7 @@ from scipy.linalg import eigh
 from sklearn.decomposition import PCA, KernelPCA, TruncatedSVD
 from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import NearestNeighbors
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
 from sklearn.metrics import pairwise_distances
 
@@ -1045,6 +1045,139 @@ def _run_autoencoder(
 
     return projector
 
+
+def _run_autoencoder_ae2(
+    X, n_components, *, config=None, **kwargs
+) -> Projector:
+    """
+    AE2 (paper table style):
+      input -> 500(ReLU) -> 200(ReLU) -> bottleneck(ReLU)
+      -> 200(ReLU) -> 500(ReLU) -> output(Sigmoid)
+    """
+    try:
+        import torch
+        import torch.nn as nn
+        from torch.utils.data import DataLoader, TensorDataset, random_split
+    except Exception as e:
+        raise RuntimeError("AE2 を利用するには 'torch' が必要です") from e
+
+    ae_seed = 0
+    try:
+        base_seed = int(_cfg_int(config, "seed", 0))
+        fseed = int(getattr(config, "f_seed", 0))
+        ae_seed = int(base_seed + fseed)
+    except Exception:
+        ae_seed = 0
+    try:
+        torch.manual_seed(ae_seed)
+        try:
+            torch.cuda.manual_seed_all(ae_seed)
+        except Exception:
+            pass
+        try:
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
+        except Exception:
+            pass
+        try:
+            torch.use_deterministic_algorithms(True, warn_only=True)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        np.random.seed(ae_seed)
+    except Exception:
+        pass
+    try:
+        random.seed(ae_seed)
+    except Exception:
+        pass
+
+    # Sigmoid output is naturally matched with [0, 1] inputs.
+    use_minmax = bool(_cfg_get(config, "ae2_minmax", True))
+    scaler = MinMaxScaler() if use_minmax else StandardScaler()
+    Xts = scaler.fit_transform(X).astype(np.float32)
+
+    epochs = _cfg_int(config, "ae2_epochs", _cfg_int(config, "ae_epochs", 100))
+    batch = _cfg_int(config, "ae2_batch", _cfg_int(config, "ae_batch", 256))
+    lr = _cfg_float(config, "ae2_lr", 1e-3)
+
+    class _AE2(nn.Module):
+        def __init__(self, input_dim: int, latent_dim: int):
+            super().__init__()
+            self.encoder = nn.Sequential(
+                nn.Linear(input_dim, 500), nn.ReLU(),
+                nn.Linear(500, 200), nn.ReLU(),
+                nn.Linear(200, latent_dim), nn.ReLU(),
+            )
+            self.decoder = nn.Sequential(
+                nn.Linear(latent_dim, 200), nn.ReLU(),
+                nn.Linear(200, 500), nn.ReLU(),
+                nn.Linear(500, input_dim), nn.Sigmoid(),
+            )
+
+        def forward(self, x):
+            z = self.encoder(x)
+            xhat = self.decoder(z)
+            return xhat, z
+
+    input_dim = Xts.shape[1]
+    model = _AE2(input_dim, n_components)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    dataset = TensorDataset(torch.from_numpy(Xts))
+    val_ratio = 0.1
+    val_size = max(1, int(len(dataset) * val_ratio))
+    train_size = len(dataset) - val_size
+    train_set, val_set = random_split(dataset, [train_size, val_size])
+    dl_tr = DataLoader(train_set, batch_size=batch, shuffle=True)
+    dl_va = DataLoader(val_set, batch_size=batch, shuffle=False)
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    crit = nn.MSELoss()
+
+    best_state, best_val, patience, bad = None, float("inf"), 5, 0
+    for _ in range(max(1, epochs)):
+        model.train()
+        for (xb,) in dl_tr:
+            xb = xb.to(device)
+            opt.zero_grad()
+            recon, _ = model(xb)
+            loss = crit(recon, xb)
+            loss.backward()
+            opt.step()
+        model.eval()
+        va = 0.0
+        with torch.no_grad():
+            for (xb,) in dl_va:
+                xb = xb.to(device)
+                recon, _ = model(xb)
+                va += crit(recon, xb).item() * xb.size(0)
+        va /= max(1, len(val_set))
+        if va + 1e-8 < best_val:
+            best_val = va
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            bad = 0
+        else:
+            bad += 1
+            if bad >= patience:
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    model.to("cpu")
+    model.eval()
+
+    def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if data is None:
+            return None
+        arr = scaler.transform(data).astype(np.float32)
+        with torch.no_grad():
+            z = model.encoder(torch.from_numpy(arr))
+        return z.numpy()
+
+    return projector
+
 # ============================================================
 # 公開API
 # ============================================================
@@ -1067,6 +1200,7 @@ _RUNNERS: Dict[str, Any] = {
     "le": _run_le,
     "autoencoder": _run_autoencoder,
     "ae": _run_autoencoder,
+    "ae2": _run_autoencoder_ae2,
 }
 
 

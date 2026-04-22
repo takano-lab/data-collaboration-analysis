@@ -21,6 +21,7 @@ from src.institutional_analysis import (
     centralize_analysis_with_institution_dimension_reduction,
     dca_analysis,
     fl_analysis,
+    one_shot_guha_analysis,
     individual_analysis,
     individual_analysis_with_dimension_reduction,
 )
@@ -92,6 +93,19 @@ def run_once(config, logger):
         metrics_dict['fl'] = metrics_fl["mean"]
         metrics_dict['institutions'] = metrics_fl["per_institution"]
         return metrics_fl["mean"]
+
+    elif config.G_type == 'one-shot-guha':
+        metrics_one_shot = one_shot_guha_analysis(
+            config=config,
+            logger=logger,
+            Xs_train=dataset_builder.Xs_train,
+            ys_train=dataset_builder.ys_train,
+            Xs_test=dataset_builder.Xs_test,
+            ys_test=dataset_builder.ys_test,
+        )
+        metrics_dict['one-shot-guha'] = metrics_one_shot["mean"]
+        metrics_dict['institutions'] = metrics_one_shot["per_institution"]
+        return metrics_one_shot["mean"]
     
     else:
         intermediate_builder = IntermediateExpressionBuilder(config=config, logger=logger)
