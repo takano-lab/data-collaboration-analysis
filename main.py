@@ -252,6 +252,42 @@ def _set_config_from_combo(cfg: Config, combo: Dict[str, Any]) -> None:
     if hasattr(cfg, "F_type"):
         cfg.True_F_type = cfg.F_type
 
+
+def _apply_runtime_gtype_overrides(cfg: Config) -> str | None:
+    """
+    実行時のみ特殊G_typeを既存実装へマッピングする。
+    CSV保存は combo 側の値を使うため、元のG_typeは呼び出し側で復元する。
+    """
+    original_g_type = getattr(cfg, "G_type", None)
+
+    if original_g_type == "kernel_targetvec":
+        cfg.G_type = "nonlinear_new"
+        cfg.kernel_type = "linear"
+        cfg.regularization = "identity"
+        cfg.target_graph_constraint = "identity"
+        cfg.nl_lambda = 1e-5
+    elif original_g_type == "kernel_targetvec_graph":
+        cfg.G_type = "laplacian_nonlinear_new"
+        cfg.regularization = "target-graph"
+        cfg.target_graph_constraint = "identity"
+        cfg.nl_lambda = 1e-5
+    elif original_g_type == "nonlinear_zero":
+        cfg.G_type = "nonlinear_new"
+        cfg.zerosum = True
+    elif original_g_type == "laplacian_nonlinear_zero":
+        cfg.G_type = "laplacian_nonlinear_new"
+        cfg.zerosum = True
+    elif original_g_type == "laplacian_nonlinear_tg":
+        cfg.G_type = "laplacian_nonlinear_new"
+        cfg.zerosum = False
+        cfg.regularization = "target-graph"
+    elif original_g_type == "laplacian_nonlinear_zero_tg":
+        cfg.G_type = "laplacian_nonlinear_new"
+        cfg.zerosum = True
+        cfg.regularization = "target-graph"
+
+    return original_g_type
+
 def run_grid(
     config: Config,
     grid: Dict[str, List[Any]] | None = None,
@@ -511,7 +547,12 @@ def run_grid(
             cfg.integrated_name = _build_identifier(PARAM_COLUMNS, cfg)
 
             def _run_and_collect() -> float:
-                val = run_once(cfg, log)
+                original_g_type = _apply_runtime_gtype_overrides(cfg)
+                try:
+                    val = run_once(cfg, log)
+                finally:
+                    if original_g_type is not None:
+                        cfg.G_type = original_g_type
                 vals.append(float(val))
                 record_config_to_cfg(cfg)
                 record_value_to_cfg(cfg, "???", val)

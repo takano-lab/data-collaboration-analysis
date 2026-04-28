@@ -21,6 +21,7 @@ from src.institutional_analysis import (
     centralize_analysis_with_institution_dimension_reduction,
     dca_analysis,
     fl_analysis,
+    jiang_analysis,
     one_shot_guha_analysis,
     individual_analysis,
     individual_analysis_with_dimension_reduction,
@@ -105,7 +106,24 @@ def run_once(config, logger):
         )
         metrics_dict['one-shot-guha'] = metrics_one_shot["mean"]
         metrics_dict['institutions'] = metrics_one_shot["per_institution"]
+        if "mia_auc" in metrics_one_shot:
+            config.mia_auc = metrics_one_shot["mia_auc"]
         return metrics_one_shot["mean"]
+
+    elif config.G_type == 'Jiang':
+        metrics_jiang = jiang_analysis(
+            config=config,
+            logger=logger,
+            Xs_train=dataset_builder.Xs_train,
+            ys_train=dataset_builder.ys_train,
+            Xs_test=dataset_builder.Xs_test,
+            ys_test=dataset_builder.ys_test,
+        )
+        metrics_dict['Jiang'] = metrics_jiang["mean"]
+        metrics_dict['institutions'] = metrics_jiang["per_institution"]
+        if "mia_auc" in metrics_jiang:
+            config.mia_auc = metrics_jiang["mia_auc"]
+        return metrics_jiang["mean"]
     
     else:
         intermediate_builder = IntermediateExpressionBuilder(config=config, logger=logger)
@@ -140,6 +158,7 @@ def run_once(config, logger):
             )
 
         inst_losses = []
+        mia_aucs = []
 
         for i in range(actual_inst):
             try:
@@ -159,6 +178,8 @@ def run_once(config, logger):
                 metric_i = np.nan
 
             inst_losses.append(metric_i)
+            if bool(getattr(config, "evaluate_mia", False)):
+                mia_aucs.append(getattr(config, "mia_auc_last", np.nan))
 
         inst_losses_arr = np.array(inst_losses, dtype=float)
         valid_mask = ~np.isnan(inst_losses_arr)
@@ -168,6 +189,12 @@ def run_once(config, logger):
             max_val = float(inst_losses_arr[valid_mask].max())
         else:
             mean_val = min_val = max_val = float("nan")
+
+        if bool(getattr(config, "evaluate_mia", False)):
+            mia_arr = np.array(mia_aucs, dtype=float) if mia_aucs else np.array([], dtype=float)
+            mia_valid = np.isfinite(mia_arr)
+            config.mia_auc = float(np.mean(mia_arr[mia_valid])) if mia_valid.any() else float("nan")
+            logger.info(f"MIA AUC (mean over institutions): {config.mia_auc:.4f}")
 
         logger.info(f"平均評価値: {mean_val}")
         logger.info(f"各機関の {config.metrics}: {np.round(inst_losses_arr, 4).tolist()}")

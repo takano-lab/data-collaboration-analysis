@@ -401,12 +401,17 @@ def build_laplacian_targetvec_projectors(
     graph_mu_align: float = 0.0,
     laplacian_k: int = 10,
     zerosum: bool = False,
+    regularization: str = "graph",
+    constraint_matrix: Optional[np.ndarray] = None,
+    constraint_eps: float = 1e-9,
+    L_within: Optional[np.ndarray] = None,
+    L_between: Optional[np.ndarray] = None,
 ) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray]:
     """
-    TargetVec eigenproblem regularized by an unlabeled Laplacian.
-    Solves (M + μ * scale * L) for the smallest eigenvalues, where
-    M is the original TargetVec matrix and L is the averaged k-NN
-    Laplacian used in laplacian_nonlinear.
+    TargetVec eigenproblem regularization:
+      - regularization="graph":      A = M + mu * L_plain
+      - regularization="target-graph": A = M + mu * L_within, with optional mass matrix
+    where M is the original TargetVec matrix.
     """
     if not anchors_inter:
         return [], np.zeros((0, 0)), np.zeros((0,))
@@ -422,24 +427,64 @@ def build_laplacian_targetvec_projectors(
         M -= anchor_inter_k @ pinv(anchor_inter_k)
     M = (M + M.T) * 0.5
 
-    L_plain = _build_unlabeled_anchor_laplacian(anchors_inter, k_neighbors=laplacian_k)
-    if graph_mu_align == 0.0 or L_plain.shape != M.shape:
-        A = M
-    else:
-        eps = 1e-12
+    reg_key = str(regularization or "graph").lower()
+    eps = 1e-12
+    A = M
+    if float(graph_mu_align) != 0.0:
         tr_M = float(np.trace(M))
-        tr_L = float(np.trace(L_plain))
-        scale_L = tr_M / max(tr_L, eps) if tr_L > 0 else 1.0
-        A = M + float(graph_mu_align) * scale_L * L_plain
+        if reg_key == "graph":
+            L_plain = _build_unlabeled_anchor_laplacian(anchors_inter, k_neighbors=laplacian_k)
+            if L_plain.shape == M.shape:
+                L_plain = (L_plain + L_plain.T) * 0.5
+                tr_L = float(np.trace(L_plain))
+                scale_L = tr_M / max(tr_L, eps) if tr_L > 0 else 1.0
+                A = M + float(graph_mu_align) * scale_L * L_plain
+        elif reg_key in {"target-graph", "target_graph"}:
+            if L_within is None:
+                raise ValueError("target-graph regularization requires L_within.")
+            Lw = np.asarray(L_within, dtype=float)
+            if Lw.shape != M.shape:
+                raise ValueError(f"target-graph requires L_within shape {M.shape} but got {Lw.shape}")
+            Lw = (Lw + Lw.T) * 0.5
+            tr_Lw = float(np.trace(Lw))
+            if tr_M > eps:
+                M_use = M / tr_M
+            else:
+                M_use = M
+            if tr_Lw > eps:
+                Lw_use = Lw / tr_Lw
+            else:
+                Lw_use = Lw
+            A = M_use + float(graph_mu_align) * Lw_use
     A = (A + A.T) * 0.5
+
+    mass = None
+    if reg_key in {"target-graph", "target_graph"} and constraint_matrix is None and L_between is not None:
+        Lb = np.asarray(L_between, dtype=float)
+        if Lb.shape == (r, r):
+            Lb = (Lb + Lb.T) * 0.5
+            mass = Lb
+    if constraint_matrix is not None:
+        mass = np.asarray(constraint_matrix, dtype=float)
+        if mass.shape != (r, r):
+            raise ValueError(f"constraint_matrix must be shape {(r, r)} but got {mass.shape}")
 
     if zerosum:
         B_zero = _zerosum_helmert_basis(A.shape[0])
         A_tilde = (B_zero.T @ A @ B_zero + (B_zero.T @ A @ B_zero).T) * 0.5
-        eigvals_raw, eigvecs_sub = np.linalg.eigh(A_tilde)
+        if mass is None:
+            eigvals_raw, eigvecs_sub = np.linalg.eigh(A_tilde)
+        else:
+            B_tilde = (B_zero.T @ mass @ B_zero + (B_zero.T @ mass @ B_zero).T) * 0.5
+            B_tilde = B_tilde + float(constraint_eps) * np.eye(B_tilde.shape[0])
+            eigvals_raw, eigvecs_sub = eigh(A_tilde, B_tilde)
         eigvecs_full = B_zero @ eigvecs_sub
     else:
-        eigvals_raw, eigvecs_full = np.linalg.eigh(A)
+        if mass is None:
+            eigvals_raw, eigvecs_full = np.linalg.eigh(A)
+        else:
+            B_mass = (mass + mass.T) * 0.5 + float(constraint_eps) * np.eye(mass.shape[0])
+            eigvals_raw, eigvecs_full = eigh(A, B_mass)
 
     order = np.argsort(eigvals_raw)
     take = min(dim_integrate, eigvecs_full.shape[1])
@@ -2269,8 +2314,15 @@ def build_laplacian_nonlinear_new_projectors(
                 raise ValueError(f"target-graph requires L_within shape {M_lambda.shape} but got {Lw.shape}")
             Lw = _sym(Lw)
             tr_Lw = float(np.trace(Lw))
-            scale_w = tr_M / max(tr_Lw, eps) if tr_Lw > 0 else 1.0
-            A = M_lambda + float(graph_mu_align) * scale_w * Lw
+            if tr_M > eps:
+                M_use = M_lambda / tr_M
+            else:
+                M_use = M_lambda
+            if tr_Lw > eps:
+                Lw_use = Lw / tr_Lw
+            else:
+                Lw_use = Lw
+            A = M_use + float(graph_mu_align) * Lw_use
         elif reg_key in {"penal-target-graph", "penal_target_graph"}:
             if L_within is None or L_between is None:
                 raise ValueError("penal-target-graph regularization requires both L_within and L_between.")
@@ -2299,10 +2351,7 @@ def build_laplacian_nonlinear_new_projectors(
         if Lb.shape != (r, r):
             raise ValueError(f"L_between must be shape {(r, r)} but got {Lb.shape}")
         Lb = _sym(Lb)
-        tr_Lb = float(np.trace(Lb))
-        n = float(Lb.shape[0])
-        scale_b = n / max(tr_Lb, 1e-12) if tr_Lb > 0 else 1.0
-        mass = scale_b * Lb
+        mass = Lb
     if constraint_matrix is not None:
         mass = np.asarray(constraint_matrix, dtype=float)
         if mass.shape != (r, r):

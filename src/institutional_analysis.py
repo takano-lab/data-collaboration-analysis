@@ -19,6 +19,7 @@ from src.federated_learning import run_federated_learning  # スクラッチ実�
 from src.model import ModelRunner
 from src.dimensionality_reduction import build_dimensionality_projector
 from src.institution_data_pipeline.builders import InstitutionDatasetBuilder
+from src.privacy import compute_membership_auc
 
 logger = TypeVar("logger")
 
@@ -531,15 +532,21 @@ def one_shot_guha_analysis(
         raise ValueError(f"Unknown one_shot_weighting: {weighting}")
 
     metric_name = str(getattr(config, "metrics", "accuracy") or "accuracy").lower()
+    evaluate_mia = bool(getattr(config, "evaluate_mia", False))
     institution_metrics: list[float] = []
     institution_sizes: list[int] = []
+    institution_mia_aucs: list[float] = []
 
     for idx, (X_te, y_te_raw) in enumerate(zip(clients_X_test_std, ys_test)):
+        X_tr = clients_X_train_std[idx] if idx < len(clients_X_train_std) else np.empty((0, 0))
+        y_tr_raw = ys_train[idx] if idx < len(ys_train) else np.array([])
         y_te = np.asarray(y_te_raw)
         institution_sizes.append(len(y_te))
         if X_te.size == 0 or len(y_te) == 0:
             logger.warning(f"one-shot-guha eval skipped for institution {idx}: no test samples.")
             institution_metrics.append(float("nan"))
+            if evaluate_mia:
+                institution_mia_aucs.append(float("nan"))
             continue
 
         y_score_ens = np.zeros((X_te.shape[0], n_classes), dtype=float)
@@ -557,6 +564,31 @@ def one_shot_guha_analysis(
         )
         institution_metrics.append(metric_value)
         logger.info(f"one-shot-guha metric (institution {idx}): {metric_value}")
+
+        if evaluate_mia:
+            try:
+                if X_tr.size == 0 or len(y_tr_raw) == 0:
+                    mia_auc_i = float("nan")
+                else:
+                    y_tr = np.asarray(y_tr_raw)
+                    y_score_train = np.zeros((X_tr.shape[0], n_classes), dtype=float)
+                    for w, rec in zip(weights, selected):
+                        model = rec["model"]
+                        global_idx = np.asarray(rec["global_idx"], dtype=int)
+                        proba_local_tr = np.asarray(model.predict_proba(X_tr), dtype=float)
+                        y_score_train[:, global_idx] += float(w) * proba_local_tr
+                    mia_auc_i = compute_membership_auc(
+                        y_member=y_tr,
+                        score_member=y_score_train,
+                        y_nonmember=y_te,
+                        score_nonmember=y_score_ens,
+                        classes=global_classes,
+                    )
+                institution_mia_aucs.append(mia_auc_i)
+                logger.info(f"one-shot-guha MIA AUC (institution {idx}): {mia_auc_i:.4f}")
+            except Exception as exc:
+                institution_mia_aucs.append(float("nan"))
+                logger.warning(f"one-shot-guha MIA evaluation failed (institution {idx}): {exc}")
 
     metrics_array = np.array(institution_metrics, dtype=float)
     weights_inst = np.array(institution_sizes, dtype=float)
@@ -576,12 +608,26 @@ def one_shot_guha_analysis(
     logger.info(f"one-shot-guha per-institution metrics: {np.round(metrics_array, 4).tolist()}")
     logger.info(f"one-shot-guha weighted mean metric: {weighted_mean:.4f}")
 
+    mia_auc_mean = float("nan")
+    if evaluate_mia:
+        mia_arr = np.array(institution_mia_aucs, dtype=float) if institution_mia_aucs else np.array([], dtype=float)
+        mia_valid = np.isfinite(mia_arr)
+        if mia_valid.any():
+            w_mia = weights_inst[mia_valid]
+            if np.sum(w_mia) > 0:
+                mia_auc_mean = float(np.average(mia_arr[mia_valid], weights=w_mia))
+            else:
+                mia_auc_mean = float(np.mean(mia_arr[mia_valid]))
+        logger.info(f"one-shot-guha MIA AUC (weighted mean): {mia_auc_mean:.4f}")
+
     return {
         "mean": weighted_mean,
         "per_institution": institution_metrics,
         "weights": institution_sizes,
         "num_models_trained": len(local_records),
         "num_models_selected": len(selected),
+        "mia_auc": mia_auc_mean,
+        "mia_auc_per_institution": institution_mia_aucs if evaluate_mia else [],
     }
 
 def dca_analysis(
@@ -600,5 +646,181 @@ def dca_analysis(
         y_test=y_test_integ,
     )
     logger.info(f"提案手法の評価値: {metrics:.4f}")
+
+    # Optional MIA evaluation (black-box true-label confidence AUC).
+    # Kept fully opt-in to avoid changing legacy behavior.
+    if bool(getattr(config, "evaluate_mia", False)):
+        try:
+            X_all = np.vstack([X_train_integ, X_test_integ])
+            y_pred_all, y_score_all, classes = model_runner.predict_with_proba(
+                X_train=X_train_integ,
+                y_train=y_train_integ,
+                X_test=X_all,
+            )
+            n_tr = int(X_train_integ.shape[0])
+            score_m = np.asarray(y_score_all[:n_tr], dtype=float)
+            score_n = np.asarray(y_score_all[n_tr:], dtype=float)
+            mia_auc = compute_membership_auc(
+                y_member=np.asarray(y_train_integ),
+                score_member=score_m,
+                y_nonmember=np.asarray(y_test_integ),
+                score_nonmember=score_n,
+                classes=np.asarray(classes),
+            )
+            setattr(config, "mia_auc_last", mia_auc)
+            logger.info(f"MIA AUC (current institution): {mia_auc:.4f}")
+        except Exception as exc:
+            setattr(config, "mia_auc_last", float("nan"))
+            logger.warning(f"MIA evaluation failed: {exc}")
     
     return metrics
+
+
+def jiang_analysis(
+    Xs_train: list[np.ndarray],
+    ys_train: list[np.ndarray],
+    Xs_test: list[np.ndarray],
+    ys_test: list[np.ndarray],
+    config: Config,
+    logger: logger,
+) -> dict[str, object]:
+    """
+    Jiang et al. (IoTDI'19)-style lightweight PPCL baseline:
+      - each institution applies its own private random projection
+      - coordinator trains a global model on projected, concatenated data
+      - evaluate per institution on projected test data
+    """
+    if not Xs_train or not ys_train:
+        raise ValueError("jiang_analysis requires non-empty institutional training data.")
+
+    proj_dim_raw = getattr(config, "jiang_proj_dim", 10)
+    try:
+        proj_dim = int(proj_dim_raw)
+    except (TypeError, ValueError):
+        proj_dim = 10
+    proj_dim = max(1, proj_dim)
+
+    seed_base = int(getattr(config, "seed", 0) or 0)
+    dist = str(getattr(config, "jiang_proj_dist", "gaussian") or "gaussian").lower()
+    normalize_cols = bool(getattr(config, "jiang_normalize_cols", True))
+
+    Zs_train: list[np.ndarray] = []
+    Zs_test: list[np.ndarray] = []
+    ys_train_clean: list[np.ndarray] = []
+    ys_test_clean: list[np.ndarray] = []
+
+    for i, (X_tr, y_tr, X_te, y_te) in enumerate(zip(Xs_train, ys_train, Xs_test, ys_test)):
+        X_tr_arr, y_tr_arr = ModelRunner._drop_nan_labels(X_tr, y_tr)
+        X_te_arr, y_te_arr = ModelRunner._drop_nan_labels(X_te, y_te)
+        if X_tr_arr.size == 0 or y_tr_arr.size == 0:
+            continue
+
+        d = int(X_tr_arr.shape[1])
+        rng = np.random.default_rng(seed_base + i)
+        if dist == "rademacher":
+            R = rng.choice([-1.0, 1.0], size=(d, proj_dim))
+        else:
+            R = rng.standard_normal(size=(d, proj_dim))
+        if normalize_cols:
+            norms = np.linalg.norm(R, axis=0, keepdims=True)
+            norms = np.where(norms <= 1e-12, 1.0, norms)
+            R = R / norms
+
+        Z_tr = X_tr_arr @ R
+        Z_te = X_te_arr @ R if X_te_arr.size else np.empty((0, proj_dim), dtype=float)
+
+        Zs_train.append(np.asarray(Z_tr, dtype=float))
+        Zs_test.append(np.asarray(Z_te, dtype=float))
+        ys_train_clean.append(np.asarray(y_tr_arr))
+        ys_test_clean.append(np.asarray(y_te_arr))
+
+    if not Zs_train:
+        raise ValueError("jiang_analysis produced no valid projected training splits.")
+
+    X_train_all = np.vstack(Zs_train)
+    y_train_all = np.concatenate(ys_train_clean)
+
+    model_runner = ModelRunner(config)
+    institution_metrics: list[float] = []
+    institution_sizes: list[int] = []
+
+    # Optional MIA tracking
+    mia_aucs: list[float] = []
+    evaluate_mia = bool(getattr(config, "evaluate_mia", False))
+
+    for idx, (Z_te, y_te) in enumerate(zip(Zs_test, ys_test_clean)):
+        institution_sizes.append(int(len(y_te)))
+        if Z_te.size == 0 or y_te.size == 0:
+            institution_metrics.append(float("nan"))
+            if evaluate_mia:
+                mia_aucs.append(float("nan"))
+            continue
+
+        try:
+            metric_val = model_runner.run(
+                X_train=X_train_all,
+                y_train=y_train_all,
+                X_test=Z_te,
+                y_test=y_te,
+            )
+        except Exception as exc:
+            logger.warning(f"Jiang eval failed for institution {idx}: {exc}")
+            metric_val = float("nan")
+        institution_metrics.append(float(metric_val))
+
+        if evaluate_mia:
+            try:
+                Z_train_for_mia = Zs_train[idx]
+                y_train_for_mia = ys_train_clean[idx]
+                X_all = np.vstack([Z_train_for_mia, Z_te])
+                y_pred_all, y_score_all, classes = model_runner.predict_with_proba(
+                    X_train=X_train_all,
+                    y_train=y_train_all,
+                    X_test=X_all,
+                )
+                n_tr = int(Z_train_for_mia.shape[0])
+                score_m = np.asarray(y_score_all[:n_tr], dtype=float)
+                score_n = np.asarray(y_score_all[n_tr:], dtype=float)
+                mia_auc_i = compute_membership_auc(
+                    y_member=np.asarray(y_train_for_mia),
+                    score_member=score_m,
+                    y_nonmember=np.asarray(y_te),
+                    score_nonmember=score_n,
+                    classes=np.asarray(classes),
+                )
+            except Exception as exc:
+                logger.warning(f"Jiang MIA failed for institution {idx}: {exc}")
+                mia_auc_i = float("nan")
+            mia_aucs.append(mia_auc_i)
+
+    metrics_array = np.array(institution_metrics, dtype=float)
+    weights = np.array(institution_sizes, dtype=float)
+    valid_mask = (~np.isnan(metrics_array)) & (weights > 0)
+    if valid_mask.any():
+        weighted_mean = float(np.average(metrics_array[valid_mask], weights=weights[valid_mask]))
+    else:
+        weighted_mean = float("nan")
+
+    out = {
+        "mean": weighted_mean,
+        "per_institution": institution_metrics,
+        "weights": institution_sizes,
+    }
+
+    if evaluate_mia:
+        mia_arr = np.array(mia_aucs, dtype=float)
+        mia_valid = np.isfinite(mia_arr)
+        if mia_valid.any():
+            w_mia = weights[mia_valid]
+            if np.sum(w_mia) > 0:
+                mia_mean = float(np.average(mia_arr[mia_valid], weights=w_mia))
+            else:
+                mia_mean = float(np.mean(mia_arr[mia_valid]))
+        else:
+            mia_mean = float("nan")
+        out["mia_auc"] = mia_mean
+        out["mia_auc_per_institution"] = mia_aucs
+
+    logger.info(f"Jiang weighted mean metric: {weighted_mean:.4f}")
+    logger.info(f"Jiang per-institution metrics: {np.round(metrics_array, 4).tolist()}")
+    return out

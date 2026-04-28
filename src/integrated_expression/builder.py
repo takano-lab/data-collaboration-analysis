@@ -420,12 +420,54 @@ def _run_targetvec_new_integration(analysis: "IntegratedExpressionBuilder") -> t
 
 def _run_targetvec_singular_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
     zerosum = bool(getattr(analysis.config, "zerosum", False))
-    anchors_inter = _apply_zerosum_helmert_to_anchors(analysis.anchors_inter, zerosum)
-    projs, Z_integ, eigvals = build_targetvec_singular_projectors(
-        anchors_inter=anchors_inter,
-        dim_integrate=_dim_integrate(analysis.config),
-        zerosum=zerosum,
-    )
+    anchors_inter_raw = analysis.anchors_inter
+    regularization = str(getattr(analysis.config, "regularization", "graph") or "graph").lower()
+    if regularization in {"graph", "target-graph", "target_graph"}:
+        graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 1.0)
+        graph_mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 1.0
+        graph_k_cfg = getattr(analysis.config, "graph_knn_k", None)
+        try:
+            graph_k = int(graph_k_cfg) if graph_k_cfg is not None else 0
+        except (TypeError, ValueError):
+            graph_k = 0
+        if graph_k <= 0:
+            graph_k = 10
+
+        if regularization in {"target-graph", "target_graph"}:
+            L_within, L_between = analysis._build_anchor_laplacians_for_integrated()
+            # Default target-graph constraint to identity for targetvec_singular.
+            constraint_mode = str(getattr(analysis.config, "target_graph_constraint", "identity") or "identity").lower()
+            constraint_matrix = None
+            if constraint_mode in {"identity", "i", "eye"}:
+                r = int(anchors_inter_raw[0].shape[0]) if anchors_inter_raw else 0
+                if r > 0:
+                    constraint_matrix = np.eye(r, dtype=float)
+            eps = float(getattr(analysis.config, "graph_stability_eps", 1e-9) or 1e-9)
+        else:
+            L_within, L_between = None, None
+            constraint_matrix = None
+            eps = float(getattr(analysis.config, "graph_stability_eps", 1e-9) or 1e-9)
+
+        projs, Z_integ, eigvals = build_laplacian_targetvec_projectors(
+            # Keep anchors in the original row space, then apply zerosum in the solver
+            # as B^T A B. This keeps M and L_within/L_between dimensions consistent.
+            anchors_inter=anchors_inter_raw,
+            dim_integrate=_dim_integrate(analysis.config),
+            graph_mu_align=graph_mu_align,
+            laplacian_k=graph_k,
+            zerosum=zerosum,
+            regularization=regularization,
+            constraint_matrix=constraint_matrix,
+            constraint_eps=eps,
+            L_within=L_within,
+            L_between=L_between,
+        )
+    else:
+        projs, Z_integ, eigvals = build_targetvec_singular_projectors(
+            anchors_inter=anchors_inter_raw,
+            dim_integrate=_dim_integrate(analysis.config),
+            zerosum=zerosum,
+        )
     extras: Dict[str, object] = {"Z_integ": Z_integ, "eigvals": eigvals}
     projs, extras = _apply_random_linear_post_transform(
         analysis.config, projs, extras, method_tag="targetvec_singular"
