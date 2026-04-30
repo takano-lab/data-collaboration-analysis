@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import accuracy_score, mean_squared_error, roc_auc_score
 from sklearn.neural_network import MLPClassifier
@@ -45,6 +45,7 @@ class ModelRunner:
         self._model_map = {
             "linear_regression": self._run_linear_regression,
             "random_forest": self._run_random_forest,
+            "random_forest_regressor": self._run_random_forest,
             "svm_classifier": self._run_svm,
             "svm_linear_classifier": self._run_svm_linear,
             "mlp": self._run_mlp,  # MLPを追加
@@ -312,6 +313,24 @@ class ModelRunner:
 
     def _run_random_forest(self, X_train, y_train, X_test, y_test, **kwargs) -> float:
         """ランダムフォレストで評価指標を算出する"""
+        metric = str(getattr(self.config, "metrics", "accuracy") or "accuracy").lower()
+        h_model = str(getattr(self.config, "h_model", "") or "").lower()
+        if metric in {"rmse", "r2", "mae", "mse"} or h_model == "random_forest_regressor":
+            model = RandomForestRegressor(random_state=self.config.seed)
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+            if metric == "rmse":
+                return np.sqrt(mean_squared_error(y_test, y_pred))
+            if metric == "r2":
+                from sklearn.metrics import r2_score
+                return r2_score(y_test, y_pred)
+            if metric == "mae":
+                from sklearn.metrics import mean_absolute_error
+                return mean_absolute_error(y_test, y_pred)
+            if metric == "mse":
+                return mean_squared_error(y_test, y_pred)
+            raise ValueError(f"未対応の回帰評価指標です: {self.config.metrics}")
+
         model = RandomForestClassifier(random_state=self.config.seed)
         model.fit(X_train, y_train)
         

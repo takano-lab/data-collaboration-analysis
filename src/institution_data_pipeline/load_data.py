@@ -611,6 +611,70 @@ def _load_har() -> pd.DataFrame:
     
     return df
 
+
+def _load_slice_localization() -> pd.DataFrame:
+    """
+    UCI Relative location of CT slices on axial axis.
+
+    入力:
+      input/slice_localization_data.csv
+
+    `patientId` は識別子なので特徴量から外し、`reference` を連続値の
+    `target` として返す。特徴量は value0..value383 の 384 次元。
+    """
+    path = Path("input/slice_localization_data.csv")
+    if not path.exists():
+        raise FileNotFoundError(f"CT Slice Localization CSV が見つかりません: {path}")
+
+    df = pd.read_csv(path)
+    if "reference" not in df.columns:
+        raise ValueError("CT Slice Localization CSV must contain 'reference' column.")
+    if "patientId" in df.columns:
+        df = df.drop(columns=["patientId"])
+    df = df.rename(columns={"reference": "target"})
+    return df
+
+
+def _load_ujiindoorloc(target_column: str = "LONGITUDE") -> pd.DataFrame:
+    """
+    UCI UJIndoorLoc.
+
+    入力:
+      input/UJIndoorLoc/trainingData.csv
+      input/UJIndoorLoc/validationData.csv
+
+    WAP001..WAP520 の WiFi fingerprint だけを特徴量として使い、
+    `target_column` を連続値の `target` として返す。
+    """
+    root = Path("input/UJIndoorLoc")
+    train_path = root / "trainingData.csv"
+    validation_path = root / "validationData.csv"
+    missing = [str(p) for p in (train_path, validation_path) if not p.exists()]
+    if missing:
+        raise FileNotFoundError(f"UJIndoorLoc CSV が見つかりません: {missing}")
+
+    target_column = target_column.upper()
+    frames = [pd.read_csv(train_path), pd.read_csv(validation_path)]
+    df = pd.concat(frames, ignore_index=True)
+    if target_column not in df.columns:
+        raise ValueError(f"UJIndoorLoc target column not found: {target_column}")
+
+    wap_cols = [col for col in df.columns if col.upper().startswith("WAP")]
+    if not wap_cols:
+        raise ValueError("UJIndoorLoc WAP feature columns were not found.")
+
+    out = df[wap_cols + [target_column]].copy()
+    out = out.rename(columns={target_column: "target"})
+    return out
+
+
+def _load_ujiindoorloc_longitude() -> pd.DataFrame:
+    return _load_ujiindoorloc("LONGITUDE")
+
+
+def _load_ujiindoorloc_latitude() -> pd.DataFrame:
+    return _load_ujiindoorloc("LATITUDE")
+
 def _load_wine_quality() -> pd.DataFrame:
     """
     UCI Wine Quality (red/white)。セミコロン区切り。
@@ -893,6 +957,11 @@ LOADERS = {
     "credit_default": _load_credit_default,
     "bank_marketing": _load_bank_marketing,
     "har": _load_har,
+    "slice_localization": _load_slice_localization,
+    "ct_slice_localization": _load_slice_localization,
+    "ujiindoorloc": _load_ujiindoorloc_longitude,
+    "ujiindoorloc_longitude": _load_ujiindoorloc_longitude,
+    "ujiindoorloc_latitude": _load_ujiindoorloc_latitude,
     "digits": _load_digits_df,
     "digits_v2": _load_digits_df,
     "concentric_circles": _load_concentric_circles_df,
@@ -948,6 +1017,41 @@ LOADERS = {
     "shered_subspace_P": _load_shered_subspace_P,
 }
 
+REGRESSION_DATASETS = {
+    "housing",
+    "diabetes",
+    "slice_localization",
+    "ct_slice_localization",
+    "ujiindoorloc",
+    "ujiindoorloc_longitude",
+    "ujiindoorloc_latitude",
+}
+
+
+def _is_regression_dataset(config: Config, df: pd.DataFrame | None = None) -> bool:
+    dataset = str(getattr(config, "dataset", "") or "").lower()
+    if dataset in REGRESSION_DATASETS:
+        return True
+
+    task = str(getattr(config, "task", "") or getattr(config, "problem_type", "") or "").lower()
+    if task == "regression":
+        return True
+
+    metric = str(getattr(config, "metrics", "") or "").lower()
+    if metric in {"rmse", "r2", "mae", "mse"}:
+        return True
+
+    h_model = str(getattr(config, "h_model", "") or "").lower()
+    if h_model in {"linear_regression", "ridge", "lasso", "random_forest_regressor"}:
+        return True
+
+    if df is not None and "target" in df.columns:
+        target = df["target"]
+        if pd.api.types.is_numeric_dtype(target) and target.nunique(dropna=True) > max(20, len(target) // 20):
+            return True
+
+    return False
+
 def drop_rare_labels(df, ycol="target", min_count=2):
     """min_count 未満しか無いクラスは丸ごと捨てる"""
     vc = df[ycol].value_counts()
@@ -987,9 +1091,13 @@ def load_data(config: Config) -> pd.DataFrame:
         raise ValueError(f"unknown dataset: {config.dataset}")
 
     df_raw = LOADERS[config.dataset]()
-    df_raw = drop_rare_labels(df_raw, "target", min_count=2)
-    le = LabelEncoder()
-    df_raw["target"] = le.fit_transform(df_raw["target"])
+    is_regression = _is_regression_dataset(config, df_raw)
+    if is_regression:
+        df_raw["target"] = pd.to_numeric(df_raw["target"], errors="raise")
+    else:
+        df_raw = drop_rare_labels(df_raw, "target", min_count=2)
+        le = LabelEncoder()
+        df_raw["target"] = le.fit_transform(df_raw["target"])
 
     # config.preprocess (or legacy typo config.preprossess) controls whether
     # one-hot + scaling is applied. Default is True if not specified.

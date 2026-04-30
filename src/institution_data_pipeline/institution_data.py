@@ -34,6 +34,42 @@ def _is_undefined(v) -> bool:
     )
 
 
+REGRESSION_DATASETS = {
+    "housing",
+    "diabetes",
+    "slice_localization",
+    "ct_slice_localization",
+    "ujiindoorloc",
+    "ujiindoorloc_longitude",
+    "ujiindoorloc_latitude",
+}
+
+
+def _is_regression_config(config: Config, df: pd.DataFrame | None = None) -> bool:
+    dataset = str(getattr(config, "dataset", "") or "").lower()
+    if dataset in REGRESSION_DATASETS:
+        return True
+
+    task = str(getattr(config, "task", "") or getattr(config, "problem_type", "") or "").lower()
+    if task == "regression":
+        return True
+
+    metric = str(getattr(config, "metrics", "") or "").lower()
+    if metric in {"rmse", "r2", "mae", "mse"}:
+        return True
+
+    h_model = str(getattr(config, "h_model", "") or "").lower()
+    if h_model in {"linear_regression", "ridge", "lasso", "random_forest_regressor"}:
+        return True
+
+    if df is not None and "target" in df.columns:
+        target = df["target"]
+        if pd.api.types.is_numeric_dtype(target) and target.nunique(dropna=True) > max(20, len(target) // 20):
+            return True
+
+    return False
+
+
 def _reserve_smote_anchor_data(
     df: pd.DataFrame,
     config: Config,
@@ -66,6 +102,14 @@ def _reserve_smote_anchor_data(
     total_anchor = min(total_anchor, len(df))
 
     rng = np.random.default_rng(getattr(config, "seed", 42))
+    if _is_regression_config(config, df):
+        selected_arr = np.sort(rng.choice(len(df), size=total_anchor, replace=False))
+        keep_mask = np.ones(len(df), dtype=bool)
+        keep_mask[selected_arr] = False
+        anchor_df = df.iloc[selected_arr].reset_index(drop=True)
+        remaining_df = df.iloc[keep_mask].reset_index(drop=True)
+        return anchor_df, remaining_df
+
     y = df[label_col].to_numpy()
     classes, counts = np.unique(y, return_counts=True)
     n_classes = len(classes)
@@ -133,15 +177,23 @@ def ensure_institution_params(df: pd.DataFrame, config: Config) -> None:
     """未設定パラメータを df に基づき安全に補完 (元 load_data の挙動を踏襲)"""
     if _is_undefined(config.feature_num):
         feature_num = len(df.columns) - 1
+    else:
+        feature_num = int(config.feature_num)
     if _is_undefined(config.dim_intermediate):
         config.dim_intermediate = feature_num - 1
     if _is_undefined(config.dim_integrate):
         config.dim_integrate = config.dim_intermediate
     if _is_undefined(config.num_institution_user):
         config.num_institution_user = 50
+    is_regression = _is_regression_config(config, df)
     y = df["target"].to_numpy()
-    classes, counts = np.unique(y, return_counts=True)
-    n_classes = len(classes)
+    if is_regression:
+        classes = np.array([0])
+        counts = np.array([len(df)])
+        n_classes = 1
+    else:
+        classes, counts = np.unique(y, return_counts=True)
+        n_classes = len(classes)
 
     # 'label_num' 特殊指定は後段（division_split など）で処理するためここでは数値確定しない
     if _is_undefined(config.num_institution):
@@ -346,6 +398,41 @@ def apply_bias_mixing(train_df: pd.DataFrame, config: Config) -> pd.DataFrame:
 
 
 # ------------------------- even (joint) ------------------------- #
+def regression_random_split(
+    df: pd.DataFrame,
+    config: Config,
+    random_state: int = 42,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    連続値 target 用の機関分割。
+
+    分類用 split は「各ラベルを各機関に最低1件」保証するため、連続値回帰では
+    ほぼ全サンプルが別ラベル扱いになり破綻する。回帰データでは単純にシャッフルし、
+    train/test を各機関 `num_institution_user` 行ずつ確保する。
+    """
+    n_inst = int(getattr(config, "num_institution", 1) or 1)
+    per_inst = int(getattr(config, "num_institution_user", 50) or 50)
+    total_per_side = n_inst * per_inst
+    total_needed = 2 * total_per_side
+    if total_needed > len(df):
+        per_inst = max(1, len(df) // (2 * n_inst))
+        config.num_institution_user = per_inst
+        total_per_side = n_inst * per_inst
+        total_needed = 2 * total_per_side
+    if total_needed <= 0 or total_needed > len(df):
+        raise ValueError(
+            f"regression split sample shortage: rows={len(df)}, "
+            f"num_institution={n_inst}, num_institution_user={per_inst}"
+        )
+
+    rng = np.random.default_rng(random_state)
+    idx = np.arange(len(df))
+    rng.shuffle(idx)
+    train_idx = idx[:total_per_side]
+    test_idx = idx[total_per_side:total_needed]
+    return df.iloc[train_idx].reset_index(drop=True), df.iloc[test_idx].reset_index(drop=True)
+
+
 def even_joint_split(
     df: pd.DataFrame,
     label_col: str,
@@ -842,7 +929,8 @@ def to_institution_arrays(
       - Xs_test / ys_test はこの 1 セットを機関数分複製（各機関同一テスト集合）
     even モードの場合は従来どおり連続スライス。
     """
-    y_name = config.y_name
+    y_name = getattr(config, "y_name", None) or "target"
+    config.y_name = y_name
     n_inst = config.num_institution
     per_inst = config.num_institution_user
     Xs_train: List[np.ndarray] = []
@@ -959,6 +1047,8 @@ def prepare_institutional_dataset(
     np.ndarray,
 ]:
     """前処理済み df から機関配列を構築 (even / division)"""
+    if not getattr(config, "y_name", None):
+        config.y_name = "target"
     ensure_institution_params(df, config)
 
     public_anchor = np.empty((0, 0), dtype=float)
@@ -976,6 +1066,11 @@ def prepare_institutional_dataset(
                 public_anchor_y = anchor_df[label_col].to_numpy()
     dist = getattr(config, "data_distribution", None)
     print(f"[prepare_institutional_dataset] data_distribution={dist}")
+    if _is_regression_config(config, df_lim):
+        train_df, test_df = regression_random_split(df_lim, config, random_state=42)
+        Xs_train, Xs_test, ys_train, ys_test = to_institution_arrays(train_df, test_df, config)
+        return Xs_train, Xs_test, ys_train, ys_test, train_df, test_df, public_anchor, public_anchor_y
+
     # even / semi モードで 'label_num' 指定が来た場合はここで数値化
     if dist not in ("division", "bias") and isinstance(getattr(config, 'num_institution'), str) and str(getattr(config, 'num_institution')).lower() == 'label_num':
         labels_unique = df_lim[config.y_name].unique()
@@ -1012,6 +1107,7 @@ def prepare_institutional_dataset(
 
 __all__ = [
     "ensure_institution_params",
+    "regression_random_split",
     "even_joint_split",
     "division_split",
     "dirichlet_split",
