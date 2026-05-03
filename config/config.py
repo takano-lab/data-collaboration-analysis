@@ -8,6 +8,8 @@ class Config:
         self.__dict__.update(kwargs)
 
     def __getattr__(self, name):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
         # 未定義の属性にアクセスしたときは None を返す
         return None
 

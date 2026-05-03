@@ -15,6 +15,7 @@ from sklearn.impute import KNNImputer
 # from tdc.single_pred import ADME, HTS, Tox
 
 from config.config import Config
+from src.task_utils import is_regression_task
 
 # -------------------------------------------------- #
 # テーブル：データ名 → 読み込みロジック             #
@@ -612,6 +613,45 @@ def _load_har() -> pd.DataFrame:
     return df
 
 
+def _load_har_subject() -> pd.DataFrame:
+    """
+    HAR subject-aware variant.
+
+    `har` の従来挙動は変えず、この loader だけ公式 split を `split` 列に残す。
+    後段では `subject` を1機関1人の割当に使い、`split == "test"` を共通テストにする。
+    """
+    root = Path("input/UCI_HAR_Dataset")
+
+    features = pd.read_csv(root / "features.txt", sep="\\s+", header=None)[1].tolist()
+
+    from collections import Counter
+
+    def make_unique(names: list[str]) -> list[str]:
+        counter = Counter()
+        result = []
+        for name in names:
+            counter[name] += 1
+            if counter[name] == 1:
+                result.append(name)
+            else:
+                result.append(f"{name}.{counter[name]-1}")
+        return result
+
+    features = make_unique(features)
+
+    def load_split(split: str) -> pd.DataFrame:
+        X = pd.read_csv(root / split / f"X_{split}.txt", sep=r"\s+", header=None, names=features)
+        y = pd.read_csv(root / split / f"y_{split}.txt", header=None, names=["activity"])
+        subj = pd.read_csv(root / split / f"subject_{split}.txt", header=None, names=["subject"])
+        out = pd.concat([subj, y, X], axis=1)
+        out["split"] = split
+        return out
+
+    df = pd.concat([load_split("train"), load_split("test")], axis=0).reset_index(drop=True)
+    df = df.rename(columns={"activity": "target"})
+    return df
+
+
 def _load_slice_localization() -> pd.DataFrame:
     """
     UCI Relative location of CT slices on axial axis.
@@ -674,6 +714,33 @@ def _load_ujiindoorloc_longitude() -> pd.DataFrame:
 
 def _load_ujiindoorloc_latitude() -> pd.DataFrame:
     return _load_ujiindoorloc("LATITUDE")
+
+
+def _load_blogfeedback() -> pd.DataFrame:
+    """
+    UCI BlogFeedback regression dataset.
+
+    入力:
+      input/blogfeedback/blogData_train.csv
+      input/blogfeedback/blogData_test-*.csv
+
+    ヘッダ無し CSV の最後の列を `target`（コメント数）として返す。
+    特徴量は x_0..x_279 の 280 次元。
+    """
+    root = Path("input/blogfeedback")
+    train_path = root / "blogData_train.csv"
+    if not train_path.exists():
+        raise FileNotFoundError(f"BlogFeedback train CSV が見つかりません: {train_path}")
+
+    paths = [train_path] + sorted(root.glob("blogData_test-*.csv"))
+    frames = [pd.read_csv(path, header=None) for path in paths]
+    df = pd.concat(frames, ignore_index=True)
+    if df.shape[1] < 2:
+        raise ValueError("BlogFeedback CSV must contain at least one feature and one target column.")
+
+    feature_cols = [f"x_{i}" for i in range(df.shape[1] - 1)]
+    df.columns = feature_cols + ["target"]
+    return df
 
 def _load_wine_quality() -> pd.DataFrame:
     """
@@ -957,11 +1024,14 @@ LOADERS = {
     "credit_default": _load_credit_default,
     "bank_marketing": _load_bank_marketing,
     "har": _load_har,
+    "har_subject": _load_har_subject,
     "slice_localization": _load_slice_localization,
     "ct_slice_localization": _load_slice_localization,
     "ujiindoorloc": _load_ujiindoorloc_longitude,
     "ujiindoorloc_longitude": _load_ujiindoorloc_longitude,
     "ujiindoorloc_latitude": _load_ujiindoorloc_latitude,
+    "blog": _load_blogfeedback,
+    "blogfeedback": _load_blogfeedback,
     "digits": _load_digits_df,
     "digits_v2": _load_digits_df,
     "concentric_circles": _load_concentric_circles_df,
@@ -1017,40 +1087,8 @@ LOADERS = {
     "shered_subspace_P": _load_shered_subspace_P,
 }
 
-REGRESSION_DATASETS = {
-    "housing",
-    "diabetes",
-    "slice_localization",
-    "ct_slice_localization",
-    "ujiindoorloc",
-    "ujiindoorloc_longitude",
-    "ujiindoorloc_latitude",
-}
-
-
 def _is_regression_dataset(config: Config, df: pd.DataFrame | None = None) -> bool:
-    dataset = str(getattr(config, "dataset", "") or "").lower()
-    if dataset in REGRESSION_DATASETS:
-        return True
-
-    task = str(getattr(config, "task", "") or getattr(config, "problem_type", "") or "").lower()
-    if task == "regression":
-        return True
-
-    metric = str(getattr(config, "metrics", "") or "").lower()
-    if metric in {"rmse", "r2", "mae", "mse"}:
-        return True
-
-    h_model = str(getattr(config, "h_model", "") or "").lower()
-    if h_model in {"linear_regression", "ridge", "lasso", "random_forest_regressor"}:
-        return True
-
-    if df is not None and "target" in df.columns:
-        target = df["target"]
-        if pd.api.types.is_numeric_dtype(target) and target.nunique(dropna=True) > max(20, len(target) // 20):
-            return True
-
-    return False
+    return is_regression_task(config, df)
 
 def drop_rare_labels(df, ycol="target", min_count=2):
     """min_count 未満しか無いクラスは丸ごと捨てる"""
@@ -1069,17 +1107,23 @@ from sklearn.preprocessing import LabelEncoder
 # ==================================================
 # 内部ヘルパー（振る舞いを変えずに段階的リファクタ）
 # ==================================================
-def _one_hot_and_scale(df: pd.DataFrame) -> pd.DataFrame:
+def _one_hot_and_scale(df: pd.DataFrame, metadata_cols: tuple[str, ...] = ()) -> pd.DataFrame:
     """LabelEncoder 適用後の df (target 数値化済) を one-hot & 標準化する。
     元コードの順序: one-hot -> 標準化 -> DataFrame 再構築 を忠実に再現。
     """
     y = df["target"].reset_index(drop=True)
-    X_raw = df.drop(columns=["target"])  # target 以外
+    metadata_cols = [col for col in metadata_cols if col in df.columns]
+    metadata = df[metadata_cols].reset_index(drop=True) if metadata_cols else None
+    X_raw = df.drop(columns=["target"] + metadata_cols)  # target/metadata 以外
     X_onehot = pd.get_dummies(X_raw, drop_first=True)
     scaler = StandardScaler()
     X_scaled_arr = scaler.fit_transform(X_onehot)
     X_scaled = pd.DataFrame(X_scaled_arr, columns=X_onehot.columns)
-    return pd.concat([X_scaled, y], axis=1)
+    parts = [X_scaled]
+    if metadata is not None:
+        parts.append(metadata)
+    parts.append(y)
+    return pd.concat(parts, axis=1)
 
 
 ## NOTE: _initialize_config_params は institution_data 側へ責務移行のため削除
@@ -1106,7 +1150,8 @@ def load_data(config: Config) -> pd.DataFrame:
         preprocess_flag = getattr(config, "preprossess", True)
 
     if preprocess_flag:
-        df_proc = _one_hot_and_scale(df_raw)
+        metadata_cols = ("subject", "split") if str(config.dataset) == "har_subject" else ()
+        df_proc = _one_hot_and_scale(df_raw, metadata_cols=metadata_cols)
     else:
         df_proc = df_raw
 

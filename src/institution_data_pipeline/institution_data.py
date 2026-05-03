@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from config.config import Config
+from src.task_utils import is_regression_task
 
 logger = logging.getLogger(__name__)
 
@@ -34,40 +35,8 @@ def _is_undefined(v) -> bool:
     )
 
 
-REGRESSION_DATASETS = {
-    "housing",
-    "diabetes",
-    "slice_localization",
-    "ct_slice_localization",
-    "ujiindoorloc",
-    "ujiindoorloc_longitude",
-    "ujiindoorloc_latitude",
-}
-
-
 def _is_regression_config(config: Config, df: pd.DataFrame | None = None) -> bool:
-    dataset = str(getattr(config, "dataset", "") or "").lower()
-    if dataset in REGRESSION_DATASETS:
-        return True
-
-    task = str(getattr(config, "task", "") or getattr(config, "problem_type", "") or "").lower()
-    if task == "regression":
-        return True
-
-    metric = str(getattr(config, "metrics", "") or "").lower()
-    if metric in {"rmse", "r2", "mae", "mse"}:
-        return True
-
-    h_model = str(getattr(config, "h_model", "") or "").lower()
-    if h_model in {"linear_regression", "ridge", "lasso", "random_forest_regressor"}:
-        return True
-
-    if df is not None and "target" in df.columns:
-        target = df["target"]
-        if pd.api.types.is_numeric_dtype(target) and target.nunique(dropna=True) > max(20, len(target) // 20):
-            return True
-
-    return False
+    return is_regression_task(config, df)
 
 
 def _reserve_smote_anchor_data(
@@ -175,8 +144,11 @@ def _distribute_evenly(total: int, buckets: int, *, require_positive: bool = Fal
 
 def ensure_institution_params(df: pd.DataFrame, config: Config) -> None:
     """未設定パラメータを df に基づき安全に補完 (元 load_data の挙動を踏襲)"""
+    metadata_cols = {"subject", "split"} if str(getattr(config, "dataset", "") or "") == "har_subject" else set()
+    raw_num_institution_initial = getattr(config, "num_institution", None)
+    raw_num_institution_user_initial = getattr(config, "num_institution_user", None)
     if _is_undefined(config.feature_num):
-        feature_num = len(df.columns) - 1
+        feature_num = len([col for col in df.columns if col != "target" and col not in metadata_cols])
     else:
         feature_num = int(config.feature_num)
     if _is_undefined(config.dim_intermediate):
@@ -219,6 +191,27 @@ def ensure_institution_params(df: pd.DataFrame, config: Config) -> None:
         orig = config.dim_integrate
         new_dim = int(round(orig * ratio))
         config.dim_integrate = new_dim
+
+    if getattr(config, "data_distribution", None) == "subject":
+        if not {"subject", "split"}.issubset(df.columns):
+            raise ValueError("data_distribution='subject' requires 'subject' and 'split' columns.")
+        train_subject_counts = df[df["split"].astype(str) == "train"].groupby("subject").size()
+        if train_subject_counts.empty:
+            raise ValueError("subject split requires at least one official train subject.")
+        max_subjects = int(train_subject_counts.shape[0])
+        if _is_undefined(raw_num_institution_initial):
+            num_inst = max_subjects
+        else:
+            num_inst = int(raw_num_institution_initial)
+        config.num_institution = max(1, min(num_inst, max_subjects))
+
+        selected_min = int(train_subject_counts.min())
+        if _is_undefined(raw_num_institution_user_initial):
+            num_inst_user = selected_min
+        else:
+            num_inst_user = int(raw_num_institution_user_initial)
+        config.num_institution_user = max(n_classes, num_inst_user)
+        return
 
     # if _is_undefined(getattr(config, "labeling_ratio", None)):
     #     config.labeling_ratio = 0.5
@@ -431,6 +424,94 @@ def regression_random_split(
     train_idx = idx[:total_per_side]
     test_idx = idx[total_per_side:total_needed]
     return df.iloc[train_idx].reset_index(drop=True), df.iloc[test_idx].reset_index(drop=True)
+
+
+def subject_split(
+    df: pd.DataFrame,
+    config: Config,
+    random_state: int = 42,
+    *,
+    return_anchor_pool: bool = False,
+    test_from_train_remaining: bool = False,
+) -> Tuple[pd.DataFrame, pd.DataFrame] | Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    HAR subject-aware split.
+
+    - official train subjects から `num_institution` 人を選び、1 subject = 1 institution にする
+    - 各 subject から `num_institution_user` 件を訓練に使う
+    - official test split 全体は共通テストとして使う
+    - return_anchor_pool=True の場合、選択 subject の未使用 train 行も返す
+    - test_from_train_remaining=True の場合、公式 test は使わず未使用 train 行から共通テストも作る
+    """
+    required = {"subject", "split", "target"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"subject_split requires columns {sorted(required)}; missing={sorted(missing)}")
+
+    train_pool = df[df["split"].astype(str) == "train"].copy()
+    test_df = df[df["split"].astype(str) == "test"].copy()
+    if train_pool.empty or test_df.empty:
+        raise ValueError("subject_split requires non-empty official train/test rows.")
+
+    subjects = np.array(sorted(train_pool["subject"].unique()), dtype=int)
+    if subjects.size == 0:
+        raise ValueError("subject_split found no train subjects.")
+
+    raw_n_inst = getattr(config, "num_institution", None)
+    if _is_undefined(raw_n_inst):
+        n_inst = int(subjects.size)
+    else:
+        n_inst = int(raw_n_inst)
+    n_inst = max(1, min(n_inst, int(subjects.size)))
+    config.num_institution = n_inst
+
+    rng = np.random.default_rng(getattr(config, "seed", random_state) or random_state)
+    shuffled_subjects = subjects.copy()
+    rng.shuffle(shuffled_subjects)
+    selected_subjects = shuffled_subjects[:n_inst]
+
+    counts = train_pool.groupby("subject").size()
+    min_available = int(counts.loc[selected_subjects].min())
+    raw_per_inst = getattr(config, "num_institution_user", None)
+    if _is_undefined(raw_per_inst):
+        per_inst = min_available
+    else:
+        per_inst = int(raw_per_inst)
+    per_inst = max(1, min(per_inst, min_available))
+    config.num_institution_user = per_inst
+    config.subject_institutions = [int(s) for s in selected_subjects.tolist()]
+
+    blocks: list[pd.DataFrame] = []
+    anchor_pool_blocks: list[pd.DataFrame] = []
+    for subject_id in selected_subjects:
+        part = train_pool[train_pool["subject"] == subject_id]
+        sampled = part.sample(n=per_inst, replace=False, random_state=int(rng.integers(0, 2**32 - 1)))
+        blocks.append(sampled.reset_index(drop=True))
+        remaining = part.drop(index=sampled.index)
+        if not remaining.empty:
+            anchor_pool_blocks.append(remaining.reset_index(drop=True))
+
+    train_df = pd.concat(blocks, ignore_index=True)
+    if test_from_train_remaining:
+        if anchor_pool_blocks:
+            remaining_pool = pd.concat(anchor_pool_blocks, ignore_index=True).reset_index(drop=True)
+        else:
+            remaining_pool = train_pool.iloc[0:0].copy()
+        anchor_df, test_df = _reserve_smote_anchor_data(remaining_pool, config)
+        if test_df.empty:
+            raise ValueError("subject_split could not build test data from remaining train subject rows.")
+        config.subject_test_source = "train_subject_remaining"
+        if return_anchor_pool:
+            return train_df.reset_index(drop=True), test_df.reset_index(drop=True), anchor_df.reset_index(drop=True)
+        return train_df.reset_index(drop=True), test_df.reset_index(drop=True)
+
+    if return_anchor_pool:
+        if anchor_pool_blocks:
+            anchor_pool = pd.concat(anchor_pool_blocks, ignore_index=True)
+        else:
+            anchor_pool = train_pool.iloc[0:0].copy()
+        return train_df.reset_index(drop=True), test_df.reset_index(drop=True), anchor_pool.reset_index(drop=True)
+    return train_df.reset_index(drop=True), test_df.reset_index(drop=True)
 
 
 def even_joint_split(
@@ -939,11 +1020,35 @@ def to_institution_arrays(
     ys_test: List[np.ndarray] = []
 
     dist = getattr(config, "data_distribution", None)
+    is_regression = _is_regression_config(config, train_df)
+
+    def _drop_metadata(frame: pd.DataFrame) -> pd.DataFrame:
+        return frame.drop(columns=[col for col in ("subject", "split") if col in frame.columns])
 
     if dist == "fixed":
         # train_df / test_df には既に inst_id 等の列は含まれていない想定なので、
         # 分割は prepare_institutional_dataset 側で完了しており、ここでは even と同様に扱う。
         pass  # 下の even ロジックをそのまま使う
+
+    if dist == "subject":
+        y_train_ser = train_df[y_name]
+        X_train_df = _drop_metadata(train_df.drop(columns=[y_name]))
+        y_test_ser = test_df[y_name]
+        X_test_df = _drop_metadata(test_df.drop(columns=[y_name]))
+        if len(train_df) != n_inst * per_inst:
+            raise ValueError(
+                f"subject train_df 行数不整合: {len(train_df)} != {n_inst * per_inst}"
+            )
+        X_base = X_test_df.to_numpy()
+        y_base = y_test_ser.to_numpy()
+        for i in range(n_inst):
+            start = i * per_inst
+            end = start + per_inst
+            Xs_train.append(X_train_df.iloc[start:end].to_numpy())
+            ys_train.append(y_train_ser.iloc[start:end].to_numpy())
+            Xs_test.append(X_base.copy())
+            ys_test.append(y_base.copy())
+        return Xs_train, Xs_test, ys_train, ys_test
 
     if dist == "dirichlet_label_fixed":
         lengths = getattr(config, "dirichlet_label_fixed_sizes", None)
@@ -992,7 +1097,7 @@ def to_institution_arrays(
             end = start + per_inst
             block = X_train_df.iloc[start:end]
             y_block = y_train_ser.iloc[start:end]
-            if dist == "division" and len(set(y_block)) != 1:
+            if dist == "division" and not is_regression and len(set(y_block)) != 1:
                 raise ValueError("division train block に単一ラベル以外が含まれています")
             Xs_train.append(block.to_numpy())
             ys_train.append(y_block.to_numpy())
@@ -1002,7 +1107,7 @@ def to_institution_arrays(
         X_test_df = test_df.drop(columns=[y_name])
         # ラベル均等性 (警告のみ) ※ 厳密には各ラベル per_inst 行が理想
         counts = y_test_ser.value_counts()
-        if (counts < per_inst).any():
+        if not is_regression and (counts < per_inst).any():
             logger.warning(
                 f"[WARN] division test: 一部ラベル不足 counts={counts.to_dict()} < {per_inst}. 利用可能件数で進行"
             )
@@ -1049,10 +1154,40 @@ def prepare_institutional_dataset(
     """前処理済み df から機関配列を構築 (even / division)"""
     if not getattr(config, "y_name", None):
         config.y_name = "target"
+    if str(getattr(config, "dataset", "") or "") == "har_subject":
+        config.data_distribution = "subject"
     ensure_institution_params(df, config)
 
     public_anchor = np.empty((0, 0), dtype=float)
     public_anchor_y = np.empty((0,), dtype=float)
+
+    dist = getattr(config, "data_distribution", None)
+    if dist == "subject":
+        test_source_raw = getattr(config, "har_subject_test_from_train_remaining", None)
+        test_from_train_remaining = True if test_source_raw is None else bool(test_source_raw)
+        train_df, test_df, anchor_pool_df = subject_split(
+            df,
+            config,
+            random_state=42,
+            return_anchor_pool=True,
+            test_from_train_remaining=test_from_train_remaining,
+        )
+        anchor_method = getattr(config, "anchor_method", None)
+        if anchor_method == "smote" and bool(getattr(config, "use_public_anchor", True)):
+            if test_from_train_remaining:
+                anchor_df = anchor_pool_df
+            else:
+                anchor_df, _ = _reserve_smote_anchor_data(anchor_pool_df, config)
+            if not anchor_df.empty:
+                label_col = getattr(config, "y_name", "target")
+                drop_cols = [col for col in (label_col, "subject", "split") if col in anchor_df.columns]
+                public_anchor = anchor_df.drop(columns=drop_cols).to_numpy()
+                public_anchor_y = anchor_df[label_col].to_numpy()
+                config.public_anchor_source = "train_subject_remaining"
+        elif test_from_train_remaining:
+            config.public_anchor_source = None
+        Xs_train, Xs_test, ys_train, ys_test = to_institution_arrays(train_df, test_df, config)
+        return Xs_train, Xs_test, ys_train, ys_test, train_df, test_df, public_anchor, public_anchor_y
 
     # If SMOTE anchors are requested, reserve public data for them first.
     anchor_method = getattr(config, "anchor_method", None)
@@ -1064,7 +1199,6 @@ def prepare_institutional_dataset(
             if label_col in anchor_df.columns:
                 public_anchor = anchor_df.drop(columns=[label_col]).to_numpy()
                 public_anchor_y = anchor_df[label_col].to_numpy()
-    dist = getattr(config, "data_distribution", None)
     print(f"[prepare_institutional_dataset] data_distribution={dist}")
     if _is_regression_config(config, df_lim):
         train_df, test_df = regression_random_split(df_lim, config, random_state=42)
@@ -1108,6 +1242,7 @@ def prepare_institutional_dataset(
 __all__ = [
     "ensure_institution_params",
     "regression_random_split",
+    "subject_split",
     "even_joint_split",
     "division_split",
     "dirichlet_split",

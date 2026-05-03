@@ -400,14 +400,24 @@ def build_shared_subspace_projectors(
 # すべて「4要素タプル (train, test, anchor, anchor_test)」を返す
 # ============================================================
 
-def _run_svd(X, n_components, **kwargs) -> Projector:
+def _run_svd(X, n_components, *, config=None, **kwargs) -> Projector:
+    raw_flag = getattr(config, "svd_standardize_before", False) if config is not None else False
+    if isinstance(raw_flag, str):
+        svd_standardize_before = raw_flag.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        svd_standardize_before = bool(raw_flag)
+
+    scaler = StandardScaler() if svd_standardize_before else None
+    X_fit = scaler.fit_transform(X) if scaler is not None else X
+
     model = SVDScratch(n_components=n_components, center=True)
-    model.fit(X)
+    model.fit(X_fit)
 
     def projector(data: Optional[np.ndarray]) -> Optional[np.ndarray]:
         if data is None:
             return None
-        return model.transform(data)
+        data_use = scaler.transform(data) if scaler is not None else data
+        return model.transform(data_use)
 
     return projector
 
@@ -596,17 +606,28 @@ def _run_kpca_family(X, n_components, *, mode: str, config=None, seed=None, **kw
     scaler = StandardScaler()
     Xts = scaler.fit_transform(X)
 
+    def _safe_ratio(default: float = 1.0) -> float:
+        if config is None:
+            return float(default)
+        raw = getattr(config, "gamma_ratio", default)
+        if raw in (None, ""):
+            return float(default)
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return float(default)
+
     if mode == "auto":
         gamma = 1.0 / X.shape[1]
-        ratio = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 1.0
+        ratio = _safe_ratio(1.0)
         gamma *= ratio
     elif mode == "kernel_pca_self_tuning":
         #gamma = self_tuning_gamma(Xts, standardize=False, k=7, summary='median')
         gamma = median_heuristic_gamma(Xts, standardize=False)
-        ratio = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 1.0
+        ratio = _safe_ratio(1.0)
         gamma *= ratio
     elif mode == "kernel_pca_gamma_fixed":
-        gamma = float(getattr(config, "gamma_ratio", 1.0)) if config is not None else 1e-4
+        gamma = _safe_ratio(1e-4)
     else:
         raise ValueError(f"unknown kpca mode: {mode}")
 
@@ -621,8 +642,30 @@ def _run_kpca_family(X, n_components, *, mode: str, config=None, seed=None, **kw
 
     return projector
 
-def _run_umap(
-    X, n_components, *, config=None, seed=None, **kwargs
+def _resolve_umap_seed(config=None, seed=None, *, label: str = "UMAP") -> int:
+    seed_val = seed
+    if seed_val is None and config is not None:
+        seed_val = getattr(config, "f_seed", None)
+        print(f"{label} f_seed: {seed_val}")
+    if seed_val is None:
+        seed_val = _cfg_int(config, "seed", 0)
+        print(f"{label} seed: {seed_val}")
+    resolved = int(seed_val)
+    print(f"{label} seed: {resolved}")
+    return resolved
+
+
+def _run_umap_with_ranges(
+    X,
+    n_components,
+    *,
+    config=None,
+    seed=None,
+    label: str = "UMAP",
+    neighbor_low: int = 2,
+    neighbor_high: int = 8,
+    min_dist_low: float = 0.0,
+    min_dist_high: float = 0.8,
 ) -> Projector:
     try:
         from umap import UMAP
@@ -644,24 +687,14 @@ def _run_umap(
 
     # metric は seed%3 で切替、n_neighbors と min_dist は seed に応じてランダム化。
     # 明示的に渡された seed -> f_seed -> seed の優先順位で決定
-    seed_val = seed
-    if seed_val is None and config is not None:
-        seed_val = getattr(config, "f_seed", None)
-        print(f"UMAP f_seed: {seed_val}")
-    if seed_val is None:
-        seed_val = _cfg_int(config, "seed", 0)
-        print(f"UMAP seed: {seed_val}")
-    seed = int(seed_val)
-    print(f"UMAP seed: {seed}")
+    seed = _resolve_umap_seed(config=config, seed=seed, label=label)
     metric_choices = ("correlation", "cosine", "euclidean")
     metric = metric_choices[seed % 3]
     rng = np.random.default_rng(seed + 1337)
-    # n_neighbors: 5〜11 の一様整数から選び、データ数に合わせて安全にクリップ
-    nn_sample = int(rng.integers(low=2, high=8))  # high は排他的
+    nn_sample = int(rng.integers(low=neighbor_low, high=neighbor_high))  # high は排他的
     max_valid_neighbors = max(2, Xts.shape[0] - 1)
     n_neighbors = min(max_valid_neighbors, max(2, nn_sample))
-    # min_dist: 0.05〜0.8 の一様連続
-    min_dist = float(rng.uniform(0.0, 0.8))
+    min_dist = float(rng.uniform(min_dist_low, min_dist_high))
 
     # vis circle
     # min_dist = 0.5
@@ -704,6 +737,38 @@ def _run_umap(
         return model.transform(data_scaled)
 
     return projector
+
+
+def _run_umap(
+    X, n_components, *, config=None, seed=None, **kwargs
+) -> Projector:
+    return _run_umap_with_ranges(
+        X,
+        n_components,
+        config=config,
+        seed=seed,
+        label="UMAP",
+        neighbor_low=2,
+        neighbor_high=8,
+        min_dist_low=0.0,
+        min_dist_high=0.8,
+    )
+
+
+def _run_umap_2(
+    X, n_components, *, config=None, seed=None, **kwargs
+) -> Projector:
+    return _run_umap_with_ranges(
+        X,
+        n_components,
+        config=config,
+        seed=seed,
+        label="UMAP_2",
+        neighbor_low=8,
+        neighbor_high=16,
+        min_dist_low=0.05,
+        min_dist_high=0.3,
+    )
 
 
 def _run_supervised_umap(
@@ -1195,6 +1260,7 @@ _RUNNERS: Dict[str, Any] = {
     "kernel_pca_self_tuning": lambda *a, **kw: _run_kpca_family(*a, mode="kernel_pca_self_tuning", **kw),
     "kernel_pca_gamma_fixed": lambda *a, **kw: _run_kpca_family(*a, mode="kernel_pca_gamma_fixed", **kw),
     "umap": _run_umap,
+    "umap_2": _run_umap_2,
     "supervised_umap": _run_supervised_umap,
     "dm": _run_dm,
     "le": _run_le,

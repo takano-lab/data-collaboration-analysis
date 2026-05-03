@@ -153,6 +153,24 @@ def _make_hashable(v: Any) -> Any:
         return tuple(sorted(_make_hashable(x) for x in v))
     return v
 
+
+def _clean_config_value(value: Any) -> Any:
+    """Normalize simple config values loaded from YAML/CSV-like strings."""
+    if isinstance(value, str):
+        cleaned = value.strip()
+        # Guard against accidental values such as laplacian_nonlinear_zero_penal""
+        # or "laplacian_nonlinear_zero_penal" getting treated as literal strings.
+        cleaned = cleaned.strip("\"'")
+        return cleaned.strip()
+    if isinstance(value, list):
+        return [_clean_config_value(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_clean_config_value(v) for v in value)
+    if isinstance(value, dict):
+        return {k: _clean_config_value(v) for k, v in value.items()}
+    return value
+
+
 def _sanitize_for_identifier(value: Any) -> str:
     if value is None:
         return "none"
@@ -247,7 +265,7 @@ def _set_config_from_combo(cfg: Config, combo: Dict[str, Any]) -> None:
     for k, v in combo.items():
         if k in ("dataset", "metrics", "seed_values", "seeds"):
             continue
-        setattr(cfg, k, v)
+        setattr(cfg, k, _clean_config_value(v))
     # True_F_type を常に同期
     if hasattr(cfg, "F_type"):
         cfg.True_F_type = cfg.F_type
@@ -259,6 +277,9 @@ def _apply_runtime_gtype_overrides(cfg: Config) -> str | None:
     CSV保存は combo 側の値を使うため、元のG_typeは呼び出し側で復元する。
     """
     original_g_type = getattr(cfg, "G_type", None)
+    if isinstance(original_g_type, str):
+        original_g_type = _clean_config_value(original_g_type)
+        cfg.G_type = original_g_type
 
     if original_g_type == "kernel_targetvec":
         cfg.G_type = "nonlinear_new"
@@ -281,10 +302,30 @@ def _apply_runtime_gtype_overrides(cfg: Config) -> str | None:
         cfg.G_type = "laplacian_nonlinear_new"
         cfg.zerosum = False
         cfg.regularization = "target-graph"
+        cfg.target_graph_constraint = "identity"
     elif original_g_type == "laplacian_nonlinear_zero_tg":
         cfg.G_type = "laplacian_nonlinear_new"
         cfg.zerosum = True
         cfg.regularization = "target-graph"
+        cfg.target_graph_constraint = "identity"
+    elif original_g_type == "laplacian_nonlinear_penal":
+        cfg.G_type = "laplacian_nonlinear_new"
+        cfg.zerosum = False
+        cfg.regularization = "target-graph"
+        cfg.target_graph_constraint = "between"
+    elif original_g_type == "laplacian_nonlinear_zero_penal":
+        cfg.G_type = "laplacian_nonlinear_new"
+        cfg.zerosum = True
+        cfg.regularization = "target-graph"
+        cfg.target_graph_constraint = "between"
+    elif original_g_type in {"targetvec_graph", "targetvec_tg"}:
+        cfg.G_type = "targetvec_singular"
+        cfg.regularization = "target-graph"
+        cfg.target_graph_constraint = "identity"
+    elif original_g_type == "targetvec_penal":
+        cfg.G_type = "targetvec_singular"
+        cfg.regularization = "target-graph"
+        cfg.target_graph_constraint = "between"
 
     return original_g_type
 
@@ -307,6 +348,7 @@ def run_grid(
     combos_iter = _generate_unique_combos(grid)
 
     for combo in combos_iter:
+        combo = _clean_config_value(combo)
         dataset = combo["dataset"]
         metrics_name = combo["metrics"]
         cfg = Config(**base_paths)
@@ -464,6 +506,7 @@ def run_grid(
         return [v]
 
     for combo in combos_iter:
+        combo = _clean_config_value(combo)
         dataset = combo["dataset"]
         metrics_name = combo["metrics"]
         cfg = Config(**base_paths)

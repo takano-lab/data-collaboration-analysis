@@ -6,11 +6,13 @@ import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import accuracy_score, mean_squared_error, roc_auc_score
-from sklearn.neural_network import MLPClassifier
+from sklearn.metrics import accuracy_score, mean_absolute_error, mean_squared_error, roc_auc_score
+from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.svm import SVC
+
+from src.task_utils import is_regression_task
 
 
 # --- 前処理用カスタム変換器 ---
@@ -98,6 +100,9 @@ class ModelRunner:
         学習済みモデルで予測ラベルと確率を返すヘルパー。
         戻り値: y_pred(元ラベル), y_proba(shape=(n_samples, n_classes)), classes(元ラベル順)
         """
+        if is_regression_task(self.config, update_config=True):
+            raise ValueError("predict_with_proba is not available for regression tasks.")
+
         X_train, y_train = self._drop_nan_labels(X_train, y_train)
         if len(y_train) == 0:
             raise ValueError("No labeled samples available after dropping NaNs.")
@@ -253,9 +258,13 @@ class ModelRunner:
         """
         metric = getattr(self.config, 'metrics', 'auc').lower()
 
-        if metric in ['rmse', 'r2']:
+        if metric in ['rmse', 'r2', 'mae', 'mse']:
             if metric == 'rmse':
                 return np.sqrt(mean_squared_error(y_true, y_pred))
+            if metric == 'mse':
+                return mean_squared_error(y_true, y_pred)
+            if metric == 'mae':
+                return mean_absolute_error(y_true, y_pred)
             from sklearn.metrics import r2_score
             return r2_score(y_true, y_pred)
 
@@ -313,9 +322,11 @@ class ModelRunner:
 
     def _run_random_forest(self, X_train, y_train, X_test, y_test, **kwargs) -> float:
         """ランダムフォレストで評価指標を算出する"""
-        metric = str(getattr(self.config, "metrics", "accuracy") or "accuracy").lower()
+        task_is_regression = is_regression_task(self.config, update_config=True)
+        metric_default = "rmse" if task_is_regression else "accuracy"
+        metric = str(getattr(self.config, "metrics", None) or metric_default).lower()
         h_model = str(getattr(self.config, "h_model", "") or "").lower()
-        if metric in {"rmse", "r2", "mae", "mse"} or h_model == "random_forest_regressor":
+        if task_is_regression or metric in {"rmse", "r2", "mae", "mse"} or h_model == "random_forest_regressor":
             model = RandomForestRegressor(random_state=self.config.seed)
             model.fit(X_train, y_train)
             y_pred = model.predict(X_test)
@@ -350,6 +361,33 @@ class ModelRunner:
 
     def _run_mlp(self, X_train, y_train, X_test, y_test, **kwargs) -> float:
         """MLPで評価指標を算出する"""
+        task_is_regression = is_regression_task(self.config, update_config=True)
+
+        if task_is_regression:
+            steps = [StandardScaler()]
+            eigenvalues = kwargs.get('eigenvalues', None)
+            if eigenvalues is not None:
+                steps.append(EigenWeightingTransformer(eigenvalues=eigenvalues))
+
+            n_samples = X_train.shape[0]
+            base_val_fraction = 0.1
+            use_early_stopping = n_samples * base_val_fraction >= 2
+            mlp_model = MLPRegressor(
+                hidden_layer_sizes=(128, 64),
+                activation='relu',
+                solver='adam',
+                max_iter=1000,
+                alpha=1e-4,
+                early_stopping=use_early_stopping,
+                validation_fraction=base_val_fraction,
+                n_iter_no_change=20,
+                random_state=self.config.seed,
+            )
+            model = make_pipeline(*(steps + [mlp_model]))
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+            return self._evaluate(y_test, y_pred, None, None)
+
         # ラベルのエンコード
         if not np.issubdtype(y_train.dtype, np.number):
             encoder = LabelEncoder().fit(y_train)

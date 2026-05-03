@@ -10,6 +10,7 @@ from tqdm import tqdm
 
 from config.config import Config
 from src.common import ArtifactStore, IntegratedArtifacts, IntermediateArtifacts
+from src.task_utils import is_regression_task
 
 from .integrate_metrics import evaluate_nonlinearity_indices, integrate_metrics
 from .kernel_target_optimization import build_nonlinear_projectors_faster
@@ -45,7 +46,10 @@ from .runners import (
     build_gep_new_projectors,
     build_nonlinear_new_projectors,
 )
-from src.intermediate_expression.anchor_utils import build_laplacians_from_anchor_labels
+from src.intermediate_expression.anchor_utils import (
+    build_laplacians_from_anchor_labels,
+    build_laplacians_from_anchor_regression_targets,
+)
 
 logger = TypeVar("logger")
 IntegrationRunner = Callable[["IntegratedExpressionBuilder"], Tuple[List, Dict[str, object]]]
@@ -275,14 +279,25 @@ class IntegratedExpressionBuilder:
             anchor_lap_k = int(assign_k)
         gamma = getattr(self.config, "laplacian_gamma", None)
 
-        L_within, L_between = build_laplacians_from_anchor_labels(
-            anchor=anchor,
-            anchor_y=anchor_y,
-            gamma=gamma,
-            k_neighbors=anchor_lap_k,
-            metric="euclidean",
-            logger=self.logger,
-        )
+        if is_regression_task(self.config, self.train_df):
+            L_within, L_between = build_laplacians_from_anchor_regression_targets(
+                anchor=anchor,
+                anchor_y=anchor_y,
+                k_neighbors=anchor_lap_k,
+                metric="euclidean",
+                sigma_x=getattr(self.config, "target_graph_sigma_x", None),
+                sigma_y=getattr(self.config, "target_graph_sigma_y", None),
+                logger=self.logger,
+            )
+        else:
+            L_within, L_between = build_laplacians_from_anchor_labels(
+                anchor=anchor,
+                anchor_y=anchor_y,
+                gamma=gamma,
+                k_neighbors=anchor_lap_k,
+                metric="euclidean",
+                logger=self.logger,
+            )
         return L_within, L_between
 
 # ---------------------------------------------------------------------- #
