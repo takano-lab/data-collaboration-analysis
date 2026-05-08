@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from time import perf_counter
 from typing import Callable, Dict, List, Optional, Tuple, TypeVar
 
 import numpy as np
@@ -42,6 +43,7 @@ from .runners import (
     build_laplacian_targetvec_projectors,
     build_targetvec_projectors,
     build_targetvec_singular_projectors,
+    build_targetvec_singular_light_projectors,
     build_targetvec_new_projectors,
     build_gep_new_projectors,
     build_nonlinear_new_projectors,
@@ -157,7 +159,10 @@ class IntegratedExpressionBuilder:
     def _build_integrated_artifacts(self) -> IntegratedArtifacts:
         if self.logger:
             self.logger.info("******************** Building G (integrated) ********************")
+        projector_start = perf_counter()
         projs, extras = self._build_projectors()
+        projector_elapsed_ms = (perf_counter() - projector_start) * 1_000.0
+        setattr(self.config, "integrate_function_build_time_ms", float(projector_elapsed_ms))
         if not projs:
             raise RuntimeError("No integration projectors were built.")
 
@@ -169,6 +174,7 @@ class IntegratedExpressionBuilder:
         count = min(len(projs), len(self.Xs_train_inter), len(self.Xs_test_inter), len(self.anchors_inter), len(self.anchors_test_inter))
         index_iter = tqdm(range(count), desc="Integrating institutions", unit="inst") if count > 1 else range(count)
 
+        representation_start = perf_counter()
         for idx in index_iter:
             proj = projs[idx]
             X_tr = self.Xs_train_inter[idx]
@@ -180,6 +186,8 @@ class IntegratedExpressionBuilder:
             self.Xs_test_integ.append(proj(X_te))
             self.anchors_integ.append(proj(anc_tr))
             self.anchors_test_integ.append(proj(anc_te))
+        representation_elapsed_ms = (perf_counter() - representation_start) * 1_000.0
+        setattr(self.config, "integrate_representation_build_time_ms", float(representation_elapsed_ms))
 
         self.ys_train_integ = [np.asarray(y) for y in self.ys_train]
         self.ys_test_integ = [np.asarray(y) for y in self.ys_test]
@@ -437,9 +445,19 @@ def _run_targetvec_singular_integration(analysis: "IntegratedExpressionBuilder")
     zerosum = bool(getattr(analysis.config, "zerosum", False))
     anchors_inter_raw = analysis.anchors_inter
     regularization = str(getattr(analysis.config, "regularization", "graph") or "graph").lower()
+    graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 1.0)
+    graph_mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 1.0
     if regularization in {"graph", "target-graph", "target_graph"}:
-        graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 1.0)
-        graph_mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 1.0
+        if graph_mu_align == 0.0:
+            # Skip target-graph Laplacian construction when graph regularization is disabled.
+            projs, Z_integ, eigvals = build_targetvec_singular_projectors(
+                anchors_inter=anchors_inter_raw,
+                dim_integrate=_dim_integrate(analysis.config),
+                zerosum=zerosum,
+            )
+            extras: Dict[str, object] = {"Z_integ": Z_integ, "eigvals": eigvals}
+            analysis.Z_integ = Z_integ
+            return projs, extras
         graph_k_cfg = getattr(analysis.config, "graph_knn_k", None)
         try:
             graph_k = int(graph_k_cfg) if graph_k_cfg is not None else 0
@@ -486,6 +504,21 @@ def _run_targetvec_singular_integration(analysis: "IntegratedExpressionBuilder")
     extras: Dict[str, object] = {"Z_integ": Z_integ, "eigvals": eigvals}
     projs, extras = _apply_random_linear_post_transform(
         analysis.config, projs, extras, method_tag="targetvec_singular"
+    )
+    analysis.Z_integ = extras.get("Z_integ")
+    return projs, extras
+
+
+def _run_targetvec_singular_light_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    zerosum = bool(getattr(analysis.config, "zerosum", False))
+    projs, Z_integ, eigvals = build_targetvec_singular_light_projectors(
+        anchors_inter=analysis.anchors_inter,
+        dim_integrate=_dim_integrate(analysis.config),
+        zerosum=zerosum,
+    )
+    extras: Dict[str, object] = {"Z_integ": Z_integ, "eigvals": eigvals}
+    projs, extras = _apply_random_linear_post_transform(
+        analysis.config, projs, extras, method_tag="targetvec_singular_light"
     )
     analysis.Z_integ = extras.get("Z_integ")
     return projs, extras
@@ -664,8 +697,6 @@ def _run_nonlinear_integration(analysis: "IntegratedExpressionBuilder") -> tuple
     )
     gamma_mean = float(np.mean(gammas)) if gammas else None
     analysis.config.gamma_krr_means = gamma_mean
-    print(gammas)
-    print("gammas")
     extras = {"Z_integ": Z_integ, "eigvals": eigvals, "gammas": gammas}
     analysis.Z_integ = Z_integ
     return projs, extras
@@ -676,8 +707,11 @@ def _run_nonlinear_new_integration(analysis: "IntegratedExpressionBuilder") -> t
     # - "identity": Z^T Z = I  (common in older code paths / L_b = I)
     # - "l_between": Z^T L_between Z = I  (paper-style generalized constraint)
     zerosum_constraint = str(getattr(analysis.config, "zerosum_constraint", "identity") or "identity").lower()
-    L_within, L_between = analysis._build_anchor_laplacians_for_integrated()
-    constraint = L_between if zerosum_constraint in {"l_between", "between", "lb"} else None
+    if zerosum_constraint in {"l_between", "between", "lb"}:
+        _, L_between = analysis._build_anchor_laplacians_for_integrated()
+        constraint = L_between
+    else:
+        constraint = None
     eps = float(getattr(analysis.config, "graph_stability_eps", 1e-9) or 1e-9)
     projs, Z_integ, eigvals, gammas = build_nonlinear_new_projectors(
         anchors_inter=analysis.anchors_inter,
@@ -754,6 +788,10 @@ def _run_nonlinear_mlp_integration(analysis: "IntegratedExpressionBuilder") -> t
 def _run_graph_nonlinear_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
     graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 1.0)
     graph_mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 1.0
+    if graph_mu_align == 0.0:
+        if analysis.logger:
+            analysis.logger.info("graph_mu_align=0: fallback graph_nonlinear -> nonlinear (skip graph Laplacian build).")
+        return _run_nonlinear_integration(analysis)
     L_within, L_between = analysis._build_anchor_laplacians_for_integrated()
     if L_within is None or L_between is None:
         raise ValueError("graph_nonlinear requires anchor Laplacians built from anchor labels.")
@@ -797,6 +835,13 @@ def _run_kernel_gep_integration(analysis: "IntegratedExpressionBuilder") -> tupl
 
 
 def _run_kernel_graph_gep_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 1.0)
+    mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 1.0
+    if mu_align == 0.0:
+        if analysis.logger:
+            analysis.logger.info("graph_mu_align=0: fallback kernel_graph_gep -> kernel_gep (skip graph Laplacian build).")
+        return _run_kernel_gep_integration(analysis)
+
     # Require graph Laplacians (from intermediate data) for kernel_graph_gep
     if analysis.graph_L_within is None or analysis.graph_L_between is None:
         raise ValueError(
@@ -805,8 +850,6 @@ def _run_kernel_graph_gep_integration(analysis: "IntegratedExpressionBuilder") -
         )
     L_within_use = analysis.graph_L_within
     L_between_use = analysis.graph_L_between
-    graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 1.0)
-    mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 1.0
     projs, metrics = build_kernel_graph_gep_projectors(
         anchors_inter=analysis.anchors_inter,
         Xs_train_inter=analysis.Xs_train_inter,
@@ -850,14 +893,19 @@ def _run_nonlinear_max_integration(analysis: "IntegratedExpressionBuilder") -> t
 
 
 def _run_graph_nonlinear_X_integration(analysis: "IntegratedExpressionBuilder") -> tuple[list, Dict[str, object]]:
+    graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 1.0)
+    graph_mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 1.0
+    if graph_mu_align == 0.0:
+        if analysis.logger:
+            analysis.logger.info("graph_mu_align=0: fallback graph_nonlinear_X -> nonlinear (skip graph Laplacian build).")
+        return _run_nonlinear_integration(analysis)
+
     # Require graph Laplacians (from intermediate data) for graph_nonlinear_X
     if analysis.graph_L_within is None or analysis.graph_L_between is None:
         raise ValueError(
             "graph_nonlinear_X requires graph Laplacians built from intermediate data. "
             "Set config.graph_knn_k > 0 to enable build_laplacians_from_intermediate_data and retry."
         )
-    graph_mu_align_cfg = getattr(analysis.config, "graph_mu_align", 1.0)
-    graph_mu_align = float(graph_mu_align_cfg) if graph_mu_align_cfg is not None else 1.0
     projs, Z_integ, eigvals, gammas = build_graph_nonlinear_X_projectors(
         anchors_inter=analysis.anchors_inter,
         Xs_train_inter=analysis.Xs_train_inter,
@@ -946,6 +994,11 @@ def _run_laplacian_nonlinear_new_integration(analysis: "IntegratedExpressionBuil
     # "graph": label-agnostic Laplacian (no target labels)
     # "target-graph": label-aware within/penalty graphs (uses anchor_y)
     # "penal-target-graph": label-aware additive/subtractive graph, A += mu * (Lw - Lb)
+    if graph_mu_align == 0.0:
+        # Disable graph regularization path entirely to avoid target-graph Laplacian construction.
+        reg_key = "graph"
+        regularization = "graph"
+
     if reg_key in {"target-graph", "target_graph", "penal-target-graph", "penal_target_graph"}:
         L_within, L_between = analysis._build_anchor_laplacians_for_integrated()
     else:
@@ -1271,6 +1324,7 @@ _INTEGRATION_RUNNERS: Dict[str, IntegrationRunner] = {
     "targetvec": _run_targetvec_integration,
     "laplacian_targetvec": _run_laplacian_targetvec_integration,
     "targetvec_singular": _run_targetvec_singular_integration,
+    "targetvec_singular_light": _run_targetvec_singular_light_integration,
     "targetvec_new": _run_targetvec_new_integration,
     "gep": _run_gep_integration,
     "gep_new": _run_gep_new_integration,
