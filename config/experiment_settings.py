@@ -25,6 +25,7 @@ def _build_from_data(data: dict) -> dict:
     return {
         "PARAM_GRID": param_grid,
         "ERROR_SKIP": bool(data.get("error_skip", False)),
+        "SAVE_TIME_METRICS": bool(data.get("save_time_metrics", True)),
         "PARAM_COLUMNS": list(data.get("param_columns", [])),
         "DF_COLUMNS": list(data.get("df_columns", [])),
         "INTERMEDIATE_COLUMNS": list(data.get("intermediate_columns", [])),
@@ -55,6 +56,9 @@ PARAM_GRID: Dict[str, List[Any]] = _SETTINGS["PARAM_GRID"]
 
 # 2-1) 実行失敗時の挙動（True でスキップ、False で例外をそのまま投げる）
 ERROR_SKIP: bool = _SETTINGS["ERROR_SKIP"]
+
+# 2-2) 時間計測（integrate_*_build_time_ms）を result_grid に保存するか
+SAVE_TIME_METRICS: bool = _SETTINGS["SAVE_TIME_METRICS"]
 
 # 3) DataFrameに保持したい「パラメータ列」（順序もこの通り）
 PARAM_COLUMNS: List[str] = _SETTINGS["PARAM_COLUMNS"]
@@ -87,6 +91,7 @@ RULES: List[Dict[str, Any]] = _SETTINGS["RULES"]
 __all__ = [
     "PARAM_GRID",
     "ERROR_SKIP",
+    "SAVE_TIME_METRICS",
     "PARAM_COLUMNS",
     "DF_COLUMNS",
     "INTERMEDIATE_COLUMNS",

@@ -16,6 +16,7 @@ from pathlib import Path
 from config.experiment_settings import (
     PARAM_GRID,
     ERROR_SKIP,
+    SAVE_TIME_METRICS,
     PARAM_COLUMNS,
     DF_COLUMNS,
     INTERMEDIATE_COLUMNS,
@@ -510,6 +511,8 @@ def run_grid(
         dataset = combo["dataset"]
         metrics_name = combo["metrics"]
         cfg = Config(**base_paths)
+        # combo ごとに最終設定（DEFAULTS 等適用後）を見て保存可否を決める
+        combo_save_time_metrics = bool(SAVE_TIME_METRICS)
         vals: list[float] = []
         pattern_dict = {k: combo[k] for k in PARAM_COLUMNS if k in combo}
         log.info(f"[pattern] {pattern_dict}")
@@ -519,6 +522,8 @@ def run_grid(
         lni_integ_vals: list[float] = []
         integ_train_vals: list[float] = []
         integ_test_vals: list[float] = []
+        integrate_function_build_time_vals: list[float] = []
+        integrate_representation_build_time_vals: list[float] = []
 
         mean_param = MEAN_PARAM
 
@@ -573,6 +578,7 @@ def run_grid(
             # combo から config へコピーしてデフォルト埋め
             _set_config_from_combo(cfg, combo)
             _apply_defaults(cfg, dataset, combo)
+            combo_save_time_metrics = bool(getattr(cfg, "save_time_metrics", SAVE_TIME_METRICS))
 
             cfg.plot_name = _build_plot_name(PLOT_COLUMNS, cfg)
 
@@ -627,6 +633,18 @@ def run_grid(
                         integ_test_vals.append(float(v))
                 except Exception:
                     pass
+                try:
+                    v = getattr(cfg, "integrate_function_build_time_ms", None)
+                    if v is not None:
+                        integrate_function_build_time_vals.append(float(v))
+                except Exception:
+                    pass
+                try:
+                    v = getattr(cfg, "integrate_representation_build_time_ms", None)
+                    if v is not None:
+                        integrate_representation_build_time_vals.append(float(v))
+                except Exception:
+                    pass
                 return float(val)
 
             if ERROR_SKIP:
@@ -654,6 +672,18 @@ def run_grid(
             "score_mean": mean_val,
             "score_stdev": stdev_val,
         })
+        if combo_save_time_metrics:
+            row.update({
+                "integrate_function_build_time_ms_mean": _mean_finite(integrate_function_build_time_vals),
+                "integrate_representation_build_time_ms_mean": _mean_finite(integrate_representation_build_time_vals),
+            })
+
+        combo_columns = list(all_columns)
+        if combo_save_time_metrics:
+            combo_columns += [
+                "integrate_function_build_time_ms_mean",
+                "integrate_representation_build_time_ms_mean",
+            ]
 
         def _mean_finite(xs: list[float]) -> float:
             import math
@@ -668,14 +698,14 @@ def run_grid(
         # })
 
         out_path = cfg.output_path / f"result_grid_{dataset}.csv"
-        one = pd.DataFrame([row], columns=all_columns)
+        one = pd.DataFrame([row], columns=combo_columns)
         header_needed = not out_path.exists()
         one.to_csv(out_path, mode="a", header=header_needed, index=False, encoding="utf-8-sig")
         log.info(f"[saved] {out_path}")
 
         rows.append(row)
 
-    df_all = pd.DataFrame(rows, columns=all_columns)
+    df_all = pd.DataFrame(rows)
     return df_all
 
 # run.py
@@ -705,6 +735,7 @@ if __name__ == "__main__":
 
         PARAM_GRID = settings["PARAM_GRID"]
         ERROR_SKIP = settings["ERROR_SKIP"]
+        SAVE_TIME_METRICS = settings["SAVE_TIME_METRICS"]
         PARAM_COLUMNS = settings["PARAM_COLUMNS"]
         DF_COLUMNS = settings["DF_COLUMNS"]
         INTERMEDIATE_COLUMNS = settings["INTERMEDIATE_COLUMNS"]

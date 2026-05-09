@@ -434,6 +434,23 @@ def build_targetvec_singular_projectors(
     return projs, Z_integ, eigvals
 
 
+def build_targetvec_singular_light_projectors(
+    anchors_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    zerosum: bool = False,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray]:
+    """
+    Lightweight alias of targetvec_singular.
+    Kept for backward compatibility with builder.py import/method mapping.
+    """
+    return build_targetvec_singular_projectors(
+        anchors_inter=anchors_inter,
+        dim_integrate=dim_integrate,
+        zerosum=zerosum,
+    )
+
+
 def build_laplacian_targetvec_projectors(
     anchors_inter: List[np.ndarray],
     dim_integrate: int,
