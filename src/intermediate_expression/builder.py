@@ -14,10 +14,13 @@ from src.dimensionality_reduction import (
     build_dimensionality_projector,
     build_shared_subspace_projectors,
 )
+from src.task_utils import is_regression_task
 
 from .anchor_utils import (
     assign_anchor_labels,
+    assign_anchor_regression_targets,
     build_laplacians_from_anchor_labels,
+    build_laplacians_from_anchor_regression_targets,
     build_laplacians_from_intermediate_data,
     produce_anchor,
     _valid_label_mask,
@@ -193,18 +196,50 @@ class IntermediateExpressionBuilder:
             self.anchors_inter.append(anchor_reduced)
             self.anchors_test_inter.append(anchor_test_reduced)
 
-        # Assign anchor labels if not already determined (e.g., non-SMOTE methods)
-        if self.anchor_y.size == 0 or self.anchor_y_test.size == 0:
+        # Assign anchor labels.
+        # Default behavior keeps SMOTE-provided labels when available.
+        # Set `anchor_label_source: intermediate_knn` to force relabeling
+        # from neighborhood search on intermediate representations.
+        raw_anchor_label_source = getattr(self.config, "anchor_label_source", None)
+        anchor_label_source = str(raw_anchor_label_source).strip().lower() if raw_anchor_label_source is not None else "smote"
+        if anchor_label_source in {"intermediate", "intermediate_knn", "knn"}:
+            force_relabel_from_intermediate = True
+        elif anchor_label_source in {"smote", "source", "original", "auto", ""}:
+            force_relabel_from_intermediate = False
+        else:
+            force_relabel_from_intermediate = False
+            if self.logger:
+                self.logger.warning(
+                    "Unknown anchor_label_source=%r; fallback to default behavior (keep SMOTE labels when available).",
+                    raw_anchor_label_source,
+                )
+
+        need_assign_labels = (
+            force_relabel_from_intermediate
+            or self.anchor_y.size == 0
+            or self.anchor_y_test.size == 0
+        )
+        if need_assign_labels:
             assign_k = int(getattr(self.config, "anchor_assign_k", 10) or 10)
             max_anchor_dist = float(getattr(self.config, "anchor_label_max_dist", 0.0) or 0.0)
-            self.anchor_y, self.anchor_y_test = assign_anchor_labels(
-                anchors_inter=self.anchors_inter,
-                anchors_test_inter=self.anchors_test_inter,
-                Xs_train_inter=self.Xs_train_inter,
-                ys_train=dataset.ys_train,
-                k=assign_k,
-                max_neighbor_dist=max_anchor_dist,
-            )
+            if is_regression_task(self.config, dataset.train_df):
+                self.anchor_y, self.anchor_y_test = assign_anchor_regression_targets(
+                    anchors_inter=self.anchors_inter,
+                    anchors_test_inter=self.anchors_test_inter,
+                    Xs_train_inter=self.Xs_train_inter,
+                    ys_train=dataset.ys_train,
+                    k=assign_k,
+                    max_neighbor_dist=max_anchor_dist,
+                )
+            else:
+                self.anchor_y, self.anchor_y_test = assign_anchor_labels(
+                    anchors_inter=self.anchors_inter,
+                    anchors_test_inter=self.anchors_test_inter,
+                    Xs_train_inter=self.Xs_train_inter,
+                    ys_train=dataset.ys_train,
+                    k=assign_k,
+                    max_neighbor_dist=max_anchor_dist,
+                )
 
         # 全機関からラベルが付かなかったアンカー（無ラベル）は、そもそもアンカーとして除外する
         if self.anchor_y.size:
@@ -236,13 +271,23 @@ class IntermediateExpressionBuilder:
                 anchor_lap_k = int(graph_k_cfg) if graph_k_cfg is not None else int(assign_k)
             except (TypeError, ValueError):
                 anchor_lap_k = int(assign_k)
-            self.L_within, self.L_between = build_laplacians_from_anchor_labels(
-                anchor=self.anchor,
-                anchor_y=self.anchor_y,
-                gamma=gamma,
-                k_neighbors=anchor_lap_k,
-                logger=self.logger,
-            )
+            if is_regression_task(self.config, dataset.train_df):
+                self.L_within, self.L_between = build_laplacians_from_anchor_regression_targets(
+                    anchor=self.anchor,
+                    anchor_y=self.anchor_y,
+                    k_neighbors=anchor_lap_k,
+                    sigma_x=getattr(self.config, "target_graph_sigma_x", None),
+                    sigma_y=getattr(self.config, "target_graph_sigma_y", None),
+                    logger=self.logger,
+                )
+            else:
+                self.L_within, self.L_between = build_laplacians_from_anchor_labels(
+                    anchor=self.anchor,
+                    anchor_y=self.anchor_y,
+                    gamma=gamma,
+                    k_neighbors=anchor_lap_k,
+                    logger=self.logger,
+                )
         else:
             self.L_within = None
             self.L_between = None
@@ -428,13 +473,23 @@ class IntermediateExpressionBuilder:
         except (TypeError, ValueError):
             anchor_lap_k = int(assign_k)
         gamma = getattr(self.config, "laplacian_gamma", None)
-        L_within, L_between = build_laplacians_from_anchor_labels(
-            anchor=artifacts.anchor,
-            anchor_y=artifacts.anchor_y,
-            gamma=gamma,
-            k_neighbors=anchor_lap_k,
-            logger=self.logger,
-        )
+        if is_regression_task(self.config, artifacts.dataset.train_df):
+            L_within, L_between = build_laplacians_from_anchor_regression_targets(
+                anchor=artifacts.anchor,
+                anchor_y=artifacts.anchor_y,
+                k_neighbors=anchor_lap_k,
+                sigma_x=getattr(self.config, "target_graph_sigma_x", None),
+                sigma_y=getattr(self.config, "target_graph_sigma_y", None),
+                logger=self.logger,
+            )
+        else:
+            L_within, L_between = build_laplacians_from_anchor_labels(
+                anchor=artifacts.anchor,
+                anchor_y=artifacts.anchor_y,
+                gamma=gamma,
+                k_neighbors=anchor_lap_k,
+                logger=self.logger,
+            )
         return replace(artifacts, L_within=L_within, L_between=L_between)
 
     def _maybe_attach_graph_laplacians(self, artifacts: IntermediateArtifacts) -> IntermediateArtifacts:

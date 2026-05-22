@@ -29,3 +29,20 @@ def test_logistic_regression_alias_runs_and_predicts_proba():
     assert y_pred.shape == (3,)
     assert y_proba.shape[0] == 3
     assert classes.shape[0] == y_proba.shape[1]
+
+
+def test_mlp_uses_regressor_for_regression_task():
+    rng = np.random.default_rng(0)
+    X_train = rng.normal(size=(80, 6))
+    coef = np.array([1.5, -2.0, 0.7, 0.0, 1.0, -0.3])
+    y_train = X_train @ coef + 0.1 * rng.normal(size=80)
+    X_test = rng.normal(size=(20, 6))
+    y_test = X_test @ coef + 0.1 * rng.normal(size=20)
+
+    cfg = Config(h_model="mlp", seed=0, metrics="rmse", task="regression")
+    runner = ModelRunner(cfg)
+
+    score = runner.run(X_train, y_train, X_test, y_test)
+
+    assert np.isfinite(score)
+    assert score >= 0.0

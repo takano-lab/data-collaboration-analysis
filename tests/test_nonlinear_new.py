@@ -8,6 +8,31 @@ def _rand(seed: int, shape: tuple[int, ...]) -> np.ndarray:
     return rng.standard_normal(size=shape)
 
 
+def test_smallest_eigh_matches_full_standard_and_generalized():
+    rng = np.random.default_rng(42)
+    X = rng.standard_normal(size=(16, 16))
+    A = (X + X.T) * 0.5
+    k = 5
+
+    vals, vecs = runners._smallest_eigh(A, k)
+    vals_full, _ = runners.eigh(A)
+
+    assert vals.shape == (k,)
+    assert vecs.shape == (16, k)
+    assert np.allclose(vals, vals_full[:k], atol=1e-10)
+    assert np.linalg.norm(A @ vecs - vecs @ np.diag(vals), ord="fro") < 1e-9
+
+    Y = rng.standard_normal(size=(16, 16))
+    B = Y.T @ Y + np.eye(16)
+    vals_g, vecs_g = runners._smallest_eigh(A, k, B=B)
+    vals_g_full, _ = runners.eigh(A, B)
+
+    assert vals_g.shape == (k,)
+    assert vecs_g.shape == (16, k)
+    assert np.allclose(vals_g, vals_g_full[:k], atol=1e-10)
+    assert np.linalg.norm(A @ vecs_g - B @ vecs_g @ np.diag(vals_g), ord="fro") < 1e-9
+
+
 def test_build_nonlinear_new_projectors_matches_eigenproblem():
     # Small synthetic setup (no dataset dependency)
     c = 3

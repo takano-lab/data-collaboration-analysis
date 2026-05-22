@@ -7,6 +7,8 @@ import pandas as pd
 from sklearn.metrics.pairwise import rbf_kernel
 from sklearn.neighbors import KNeighborsClassifier, NearestNeighbors
 
+from src.task_utils import is_regression_task
+
 logger = Optional[object]
 
 
@@ -134,6 +136,65 @@ def produce_anchor(
             if return_labels:
                 return X_rand, y_rand
             return X_rand
+
+        if is_regression_task(config, update_config=False):
+            X_parts: list[np.ndarray] = [X_public_keep]
+            y_parts: list[np.ndarray] = [y_public_keep.astype(float, copy=False)]
+
+            if n_smote > 0:
+                if N_total == 1:
+                    X_syn = np.repeat(X0, repeats=n_smote, axis=0)
+                    X_syn = X_syn + rng.normal(scale=0.01, size=X_syn.shape)
+                    y_syn = np.repeat(y0.astype(float), repeats=n_smote)
+                else:
+                    k = min(10, N_total)
+                    nn = NearestNeighbors(n_neighbors=k, metric="euclidean")
+                    nn.fit(X0)
+                    neighbors = nn.kneighbors(X0, return_distance=False)
+                    X_syn_rows: list[np.ndarray] = []
+                    y_syn_rows: list[float] = []
+                    y_float = y0.astype(float)
+                    while len(X_syn_rows) < n_smote:
+                        i = int(rng.integers(0, N_total))
+                        candidates = [int(j) for j in neighbors[i] if int(j) != i]
+                        j = int(rng.choice(candidates)) if candidates else int(rng.integers(0, N_total))
+                        lam = float(rng.random())
+                        X_syn_rows.append(X0[i] + lam * (X0[j] - X0[i]))
+                        y_syn_rows.append(float(y_float[i] + lam * (y_float[j] - y_float[i])))
+                    X_syn = np.vstack(X_syn_rows)
+                    y_syn = np.asarray(y_syn_rows, dtype=float)
+                X_parts.append(X_syn)
+                y_parts.append(y_syn)
+
+            if n_uniform > 0:
+                x_min = X0.min(axis=0)
+                x_max = X0.max(axis=0)
+                same = x_min == x_max
+                x_max = np.where(same, x_min + 1e-6, x_max)
+                Xu = rng.uniform(low=x_min, high=x_max, size=(n_uniform, columns))
+                nn_y = NearestNeighbors(n_neighbors=min(5, N_total), metric="euclidean")
+                nn_y.fit(X0)
+                dist_u, idx_u = nn_y.kneighbors(Xu, return_distance=True)
+                weights = 1.0 / np.maximum(dist_u, 1e-12)
+                y_float = y0.astype(float)
+                yu = (weights * y_float[idx_u]).sum(axis=1) / np.maximum(weights.sum(axis=1), 1e-12)
+                X_parts.append(Xu)
+                y_parts.append(yu)
+
+            anchor = np.vstack(X_parts)
+            anchor_labels = np.concatenate(y_parts)
+            if anchor.shape[0] > num_row:
+                anchor = anchor[:num_row]
+                anchor_labels = anchor_labels[:num_row]
+            elif anchor.shape[0] < num_row:
+                deficit = num_row - anchor.shape[0]
+                extra_X = rng.normal(size=(deficit, columns))
+                extra_y = np.full((deficit,), np.nan)
+                anchor = np.vstack([anchor, extra_X])
+                anchor_labels = np.concatenate([anchor_labels, extra_y])
+            if return_labels:
+                return anchor, anchor_labels
+            return anchor
 
         # decide same-label vs cross-label fraction within SMOTE portion
         raw = getattr(config, "smote_cross_label_ratio", 0)
@@ -429,6 +490,86 @@ def assign_anchor_labels(
     return anchor_labels, anchor_test_labels
 
 
+def assign_anchor_regression_targets(
+    *,
+    anchors_inter: Sequence[np.ndarray],
+    anchors_test_inter: Sequence[np.ndarray],
+    Xs_train_inter: Sequence[np.ndarray],
+    ys_train: Sequence[np.ndarray],
+    k: int = 10,
+    max_neighbor_dist: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    if not anchors_inter:
+        raise ValueError("assign_anchor_regression_targets requires at least one institution.")
+    num_institutions = len(anchors_inter)
+    if not (len(anchors_test_inter) == len(Xs_train_inter) == len(ys_train) == num_institutions):
+        raise ValueError("anchors_inter, anchors_test_inter, Xs_train_inter, and ys_train must have the same length.")
+
+    num_anchor = anchors_inter[0].shape[0] if anchors_inter else 0
+    num_anchor_test = anchors_test_inter[0].shape[0] if anchors_test_inter else 0
+    sum_anchor = np.zeros((num_anchor,), dtype=float)
+    weight_anchor = np.zeros((num_anchor,), dtype=float)
+    sum_anchor_test = np.zeros((num_anchor_test,), dtype=float)
+    weight_anchor_test = np.zeros((num_anchor_test,), dtype=float)
+
+    all_min_dists: list[np.ndarray] = []
+
+    def _accumulate(query: np.ndarray, X_arr: np.ndarray, y_arr: np.ndarray, sums: np.ndarray, weights_total: np.ndarray):
+        if query is None or np.asarray(query).size == 0:
+            return
+        query_arr = np.asarray(query)
+        k_eff = max(1, min(int(k), X_arr.shape[0]))
+        nn = NearestNeighbors(n_neighbors=k_eff, metric="euclidean")
+        nn.fit(X_arr)
+        dists, idx = nn.kneighbors(query_arr, return_distance=True)
+        if dists.size:
+            all_min_dists.append(np.min(dists, axis=1))
+        weights = 1.0 / np.maximum(dists, 1e-12)
+        if max_neighbor_dist > 0.0:
+            far_mask = np.min(dists, axis=1) > float(max_neighbor_dist)
+            weights[far_mask, :] = 0.0
+        pred_sum = (weights * y_arr[idx]).sum(axis=1)
+        pred_weight = weights.sum(axis=1)
+        rows = min(sums.shape[0], pred_sum.shape[0])
+        sums[:rows] += pred_sum[:rows]
+        weights_total[:rows] += pred_weight[:rows]
+
+    for X_proj, anchor_proj, anchor_test_proj, y_raw in zip(
+        Xs_train_inter, anchors_inter, anchors_test_inter, ys_train
+    ):
+        if X_proj is None or len(X_proj) == 0:
+            continue
+        X_arr = np.asarray(X_proj)
+        y_arr_raw = np.asarray(y_raw).ravel()
+        mask = _valid_label_mask(y_arr_raw)
+        if not np.any(mask):
+            continue
+        X_arr = X_arr[mask]
+        y_arr = y_arr_raw[mask].astype(float)
+        if X_arr.shape[0] == 0:
+            continue
+        _accumulate(np.asarray(anchor_proj), X_arr, y_arr, sum_anchor, weight_anchor)
+        if anchor_test_proj is not None:
+            _accumulate(np.asarray(anchor_test_proj), X_arr, y_arr, sum_anchor_test, weight_anchor_test)
+
+    anchor_y = np.full((num_anchor,), np.nan, dtype=float)
+    valid_anchor = weight_anchor > 0
+    anchor_y[valid_anchor] = sum_anchor[valid_anchor] / weight_anchor[valid_anchor]
+
+    anchor_y_test = np.full((num_anchor_test,), np.nan, dtype=float)
+    valid_anchor_test = weight_anchor_test > 0
+    anchor_y_test[valid_anchor_test] = sum_anchor_test[valid_anchor_test] / weight_anchor_test[valid_anchor_test]
+
+    print(f"[assign_anchor_regression_targets] unlabeled anchors: {np.count_nonzero(~valid_anchor)}/{valid_anchor.size}")
+    if all_min_dists:
+        try:
+            p5 = float(np.percentile(np.concatenate(all_min_dists), 5))
+            print(f"[assign_anchor_regression_targets] 5th percentile of min neighbor distances: {p5}")
+        except Exception:
+            pass
+    return anchor_y, anchor_y_test
+
+
 def _accumulate_label_counts(
     counts_matrix: np.ndarray,
     neighbor_indices: np.ndarray,
@@ -668,6 +809,123 @@ def build_laplacians_from_anchor_labels(
         try:
             logger.info(f"L_within shape: {L_within.shape}")
             logger.info(f"L_between shape: {L_between.shape}")
+        except Exception:
+            pass
+    return L_within, L_between
+
+
+def build_laplacians_from_anchor_regression_targets(
+    *,
+    anchor: np.ndarray,
+    anchor_y: np.ndarray,
+    k_neighbors: Optional[int] = None,
+    metric: str = "euclidean",
+    sigma_x: Optional[float] = None,
+    sigma_y: Optional[float] = None,
+    normalize: bool = True,
+    logger: logger = None,
+) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Build anchor Laplacians for continuous regression targets.
+
+    Within graph:
+      Ww_ij = A_ij exp(-(y_i-y_j)^2 / sigma_y^2)
+
+    Between graph:
+      Wb_ij = A_ij (1 - exp(-(y_i-y_j)^2 / sigma_y^2))
+
+    A_ij is a symmetric kNN mask over anchors. sigma_x is accepted for
+    backward-compatible config handling but is not used by this weighting.
+    """
+    if anchor.size == 0 or anchor_y.size == 0:
+        if logger:
+            try:
+                logger.warning("Regression anchor Laplacian skipped: empty anchor or targets.")
+            except Exception:
+                pass
+        return None, None
+
+    anchor = np.asarray(anchor, dtype=float)
+    anchor_y = np.asarray(anchor_y).ravel().astype(float)
+    n = int(anchor.shape[0])
+    if n <= 1:
+        return np.zeros((n, n)), np.zeros((n, n))
+
+    valid_mask = _valid_label_mask(anchor_y)
+    valid_idx = np.where(valid_mask)[0]
+    if valid_idx.size == 0:
+        return np.zeros((n, n)), np.zeros((n, n))
+
+    points = anchor[valid_idx]
+    y = anchor_y[valid_idx]
+    n_valid = points.shape[0]
+    if n_valid <= 1:
+        return np.zeros((n, n)), np.zeros((n, n))
+
+    k_val = int(k_neighbors) if k_neighbors is not None else 5
+    k_eff = max(1, min(k_val, n_valid - 1))
+    nn = NearestNeighbors(n_neighbors=min(n_valid, k_eff + 1), metric=metric)
+    nn.fit(points)
+    neigh = nn.kneighbors(points, return_distance=False)
+
+    Ww_valid = np.zeros((n_valid, n_valid), dtype=float)
+    Wb_valid = np.zeros((n_valid, n_valid), dtype=float)
+
+    dy_values: list[float] = []
+    edge_pairs: list[tuple[int, int, float]] = []
+    for i, neigh_row in enumerate(neigh):
+        kept = 0
+        for j in neigh_row:
+            j = int(j)
+            if j == i:
+                continue
+            dy = float(abs(y[i] - y[j]))
+            edge_pairs.append((i, j, dy))
+            dy_values.append(dy)
+            kept += 1
+            if kept >= k_eff:
+                break
+
+    if not edge_pairs:
+        return np.zeros((n, n)), np.zeros((n, n))
+
+    sy = float(sigma_y) if sigma_y is not None else 0.0
+    if not np.isfinite(sy) or sy <= 0:
+        positive_dy = np.asarray([v for v in dy_values if v > 0], dtype=float)
+        sy = float(np.median(positive_dy)) if positive_dy.size else float(np.std(y))
+        if not np.isfinite(sy) or sy <= 0:
+            sy = 1.0
+
+    for i, j, dy in edge_pairs:
+        wy = float(np.exp(-(dy * dy) / max(sy * sy, 1e-12)))
+        Ww_valid[i, j] = max(Ww_valid[i, j], wy)
+        Wb_valid[i, j] = max(Wb_valid[i, j], 1.0 - wy)
+
+    Ww_valid = np.maximum(Ww_valid, Ww_valid.T)
+    Wb_valid = np.maximum(Wb_valid, Wb_valid.T)
+    np.fill_diagonal(Ww_valid, 0.0)
+    np.fill_diagonal(Wb_valid, 0.0)
+
+    W_within = np.zeros((n, n), dtype=float)
+    W_between = np.zeros((n, n), dtype=float)
+    W_within[np.ix_(valid_idx, valid_idx)] = Ww_valid
+    W_between[np.ix_(valid_idx, valid_idx)] = Wb_valid
+
+    L_within = np.diag(W_within.sum(axis=1)) - W_within
+    L_between = np.diag(W_between.sum(axis=1)) - W_between
+
+    if normalize:
+        trace_Lw = np.trace(L_within)
+        if trace_Lw > 1e-9:
+            L_within = L_within / trace_Lw
+        trace_Lb = np.trace(L_between)
+        if trace_Lb > 1e-9:
+            L_between = L_between / trace_Lb
+
+    if logger:
+        try:
+            logger.info(f"Regression L_within shape: {L_within.shape}")
+            logger.info(f"Regression L_between shape: {L_between.shape}")
         except Exception:
             pass
     return L_within, L_between

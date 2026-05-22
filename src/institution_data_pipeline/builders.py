@@ -92,10 +92,31 @@ class InstitutionDatasetBuilder:
     def _load_from_store(self) -> DatasetArtifacts | None:
         cached = self.store.load("dataset", getattr(self.config, "df_name", None))
         if isinstance(cached, DatasetArtifacts):
+            if self._cached_artifact_is_stale(cached):
+                if self.logger:
+                    self.logger.info("Ignoring stale dataset artifact; rebuilding dataset artifacts.")
+                return None
             self._sync_from_artifacts(cached)
             self.artifacts = cached
             return cached
         return None
+
+    def _cached_artifact_is_stale(self, artifacts: DatasetArtifacts) -> bool:
+        dataset = str(getattr(self.config, "dataset", "") or "")
+        anchor_method = getattr(self.config, "anchor_method", None)
+        use_public_anchor = bool(getattr(self.config, "use_public_anchor", True))
+        if dataset == "har_subject" and anchor_method == "smote" and use_public_anchor:
+            public_anchor = getattr(artifacts, "public_anchor", None)
+            if public_anchor is None or getattr(public_anchor, "size", 0) == 0:
+                return True
+            prefer_raw = getattr(self.config, "har_subject_test_from_train_remaining", None)
+            prefer_train_remaining_test = True if prefer_raw is None else bool(prefer_raw)
+            test_df = getattr(artifacts, "test_df", None)
+            if prefer_train_remaining_test and test_df is not None and "split" in test_df.columns:
+                return not test_df["split"].astype(str).eq("train").all()
+            if not prefer_train_remaining_test:
+                return test_df is not None and len(test_df) < 2947
+        return False
 
     def _sync_from_artifacts(self, artifacts: DatasetArtifacts) -> None:
         self.train_df = artifacts.train_df.copy()

@@ -211,6 +211,46 @@ def _top_eig_symmetric(
     return eigvals_sel, eigvecs_sel
 
 
+def _smallest_eigh(
+    A: np.ndarray,
+    k: int,
+    *,
+    B: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute the k smallest eigenpairs of a dense symmetric problem.
+
+    scipy.linalg.eigh can ask LAPACK for only a selected index range. That keeps
+    the nonlinear integration step from computing every eigenvector when only
+    dim_integrate columns are used.
+    """
+    n = A.shape[0]
+    k_eff = min(max(int(k), 0), n)
+    if k_eff == 0:
+        return np.zeros((0,)), np.zeros((n, 0))
+
+    kwargs: Dict[str, Any] = {"check_finite": False}
+    if k_eff < n:
+        kwargs["subset_by_index"] = [0, k_eff - 1]
+
+    try:
+        if B is None:
+            eigvals, eigvecs = eigh(A, **kwargs)
+        else:
+            eigvals, eigvecs = eigh(A, B, **kwargs)
+    except (TypeError, ValueError):
+        # Older SciPy builds may not support subset_by_index for the selected
+        # driver. Fall back to the full decomposition for compatibility.
+        if B is None:
+            eigvals, eigvecs = eigh(A, check_finite=False)
+        else:
+            eigvals, eigvecs = eigh(A, B, check_finite=False)
+        order = np.argsort(eigvals)[:k_eff]
+        eigvals = eigvals[order]
+        eigvecs = eigvecs[:, order]
+
+    return eigvals[:k_eff], eigvecs[:, :k_eff]
+
+
 def _build_anchor_alignment_terms(Ks: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     if not Ks:
         return np.zeros((0, 0)), np.zeros((0, 0)), np.zeros((0, 0))
@@ -392,6 +432,23 @@ def build_targetvec_singular_projectors(
 
     eigvals = S[:t]
     return projs, Z_integ, eigvals
+
+
+def build_targetvec_singular_light_projectors(
+    anchors_inter: List[np.ndarray],
+    dim_integrate: int,
+    *,
+    zerosum: bool = False,
+) -> Tuple[List[Callable[[np.ndarray], np.ndarray]], np.ndarray, np.ndarray]:
+    """
+    Lightweight alias of targetvec_singular.
+    Kept for backward compatibility with builder.py import/method mapping.
+    """
+    return build_targetvec_singular_projectors(
+        anchors_inter=anchors_inter,
+        dim_integrate=dim_integrate,
+        zerosum=zerosum,
+    )
 
 
 def build_laplacian_targetvec_projectors(
@@ -1598,31 +1655,26 @@ def build_nonlinear_new_projectors(
         if zerosum_enabled and A.shape[0] >= 2:
             B0 = _zerosum_helmert_basis(A.shape[0])
             A_tilde = _sym(B0.T @ A @ B0)
+            take_tilde = min(take, A_tilde.shape[0])
             if B_mass is None:
-                eigvals_raw, eigvecs = eigh(A_tilde, np.eye(A_tilde.shape[0]))
+                eigvals, eigvecs = _smallest_eigh(A_tilde, take_tilde)
             else:
                 B_mass = _sym(B_mass)
                 B_tilde = _sym(B0.T @ B_mass @ B0)
                 # Add stability term once in the reduced (zero-sum) subspace.
                 B_tilde = B_tilde + float(eps) * np.eye(B_tilde.shape[0])
-                eigvals_raw, eigvecs = eigh(A_tilde, B_tilde)
-            order = np.argsort(eigvals_raw)
-            select = order[: min(take, eigvecs.shape[1])]
-            eigvals = eigvals_raw[select]
-            Z = B0 @ eigvecs[:, select]
+                eigvals, eigvecs = _smallest_eigh(A_tilde, take_tilde, B=B_tilde)
+            Z = B0 @ eigvecs
             return Z, eigvals
 
         if B_mass is None:
-            eigvals_raw, eigvecs = eigh(A, np.eye(A.shape[0]))
+            eigvals, eigvecs = _smallest_eigh(A, take)
         else:
             B_mass = _sym(B_mass)
             # Add stability term once in the original space.
             B_mass = B_mass + float(eps) * np.eye(B_mass.shape[0])
-            eigvals_raw, eigvecs = eigh(A, B_mass)
-        order = np.argsort(eigvals_raw)
-        select = order[: min(take, eigvecs.shape[1])]
-        eigvals = eigvals_raw[select]
-        Z = eigvecs[:, select]
+            eigvals, eigvecs = _smallest_eigh(A, take, B=B_mass)
+        Z = eigvecs
         return Z, eigvals
 
     if not anchors_inter:
@@ -2224,31 +2276,26 @@ def build_laplacian_nonlinear_new_projectors(
         if zerosum_enabled and A.shape[0] >= 2:
             B0 = _zerosum_helmert_basis(A.shape[0])
             A_tilde = _sym(B0.T @ A @ B0)
+            take_tilde = min(take, A_tilde.shape[0])
             if B_mass is None:
-                eigvals_raw, eigvecs = eigh(A_tilde, np.eye(A_tilde.shape[0]))
+                eigvals, eigvecs = _smallest_eigh(A_tilde, take_tilde)
             else:
                 B_mass = _sym(B_mass)
                 B_tilde = _sym(B0.T @ B_mass @ B0)
                 # Add stability term once in the reduced (zero-sum) subspace.
                 B_tilde = B_tilde + float(eps) * np.eye(B_tilde.shape[0])
-                eigvals_raw, eigvecs = eigh(A_tilde, B_tilde)
-            order = np.argsort(eigvals_raw)
-            select = order[: min(take, eigvecs.shape[1])]
-            eigvals = eigvals_raw[select]
-            Z = B0 @ eigvecs[:, select]
+                eigvals, eigvecs = _smallest_eigh(A_tilde, take_tilde, B=B_tilde)
+            Z = B0 @ eigvecs
             return Z, eigvals
 
         if B_mass is None:
-            eigvals_raw, eigvecs = eigh(A, np.eye(A.shape[0]))
+            eigvals, eigvecs = _smallest_eigh(A, take)
         else:
             B_mass = _sym(B_mass)
             # Add stability term once in the original space.
             B_mass = B_mass + float(eps) * np.eye(B_mass.shape[0])
-            eigvals_raw, eigvecs = eigh(A, B_mass)
-        order = np.argsort(eigvals_raw)
-        select = order[: min(take, eigvecs.shape[1])]
-        eigvals = eigvals_raw[select]
-        Z = eigvecs[:, select]
+            eigvals, eigvecs = _smallest_eigh(A, take, B=B_mass)
+        Z = eigvecs
         return Z, eigvals
 
     if not anchors_inter:
