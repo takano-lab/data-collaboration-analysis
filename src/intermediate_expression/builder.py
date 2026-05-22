@@ -196,8 +196,30 @@ class IntermediateExpressionBuilder:
             self.anchors_inter.append(anchor_reduced)
             self.anchors_test_inter.append(anchor_test_reduced)
 
-        # Assign anchor labels if not already determined (e.g., non-SMOTE methods)
-        if self.anchor_y.size == 0 or self.anchor_y_test.size == 0:
+        # Assign anchor labels.
+        # Default behavior keeps SMOTE-provided labels when available.
+        # Set `anchor_label_source: intermediate_knn` to force relabeling
+        # from neighborhood search on intermediate representations.
+        raw_anchor_label_source = getattr(self.config, "anchor_label_source", None)
+        anchor_label_source = str(raw_anchor_label_source).strip().lower() if raw_anchor_label_source is not None else "smote"
+        if anchor_label_source in {"intermediate", "intermediate_knn", "knn"}:
+            force_relabel_from_intermediate = True
+        elif anchor_label_source in {"smote", "source", "original", "auto", ""}:
+            force_relabel_from_intermediate = False
+        else:
+            force_relabel_from_intermediate = False
+            if self.logger:
+                self.logger.warning(
+                    "Unknown anchor_label_source=%r; fallback to default behavior (keep SMOTE labels when available).",
+                    raw_anchor_label_source,
+                )
+
+        need_assign_labels = (
+            force_relabel_from_intermediate
+            or self.anchor_y.size == 0
+            or self.anchor_y_test.size == 0
+        )
+        if need_assign_labels:
             assign_k = int(getattr(self.config, "anchor_assign_k", 10) or 10)
             max_anchor_dist = float(getattr(self.config, "anchor_label_max_dist", 0.0) or 0.0)
             if is_regression_task(self.config, dataset.train_df):
